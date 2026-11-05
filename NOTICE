@@ -1,0 +1,11 @@
+aiviz bundles parts of draw.io (https://github.com/jgraph/drawio) in
+assets/drawio: the diagram runtime, editor, shape libraries and libavoid
+router. draw.io is Copyright (c) JGraph Ltd and licensed under the Apache
+License 2.0; see assets/drawio/LICENSE. libavoid-js is LGPL-2.1; see
+assets/drawio/js/libavoid-js/LICENSE. The bundled version is in
+assets/drawio/VERSION.
+
+aiviz bundles three fonts in assets/fonts, all under the SIL Open Font
+License 1.1: IBM Plex Sans and IBM Plex Mono (Copyright IBM Corp.) and
+Kalam (Copyright Indian Type Foundry). The license text for each is next to its files. aiviz
+embeds subsets of them in the SVGs it writes, which the license allows.

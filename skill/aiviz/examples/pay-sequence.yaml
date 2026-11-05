@@ -1,0 +1,28 @@
+type: sequence
+title: Card payment
+participants:
+  user:   { label: Shopper, kind: person }
+  web:    { label: Web app, kind: client }
+  api:    { label: Checkout API }
+  stripe: { label: Stripe, kind: external }
+  db:     { label: Orders DB, kind: database }
+messages:
+  - user -> web: Click "Pay"
+  - web -> api: POST /checkout
+  - api -> db: insert order (pending)
+  - db --> api: order id
+  - api -> stripe: create PaymentIntent
+  - stripe --> api: client_secret
+  - api --> web: client_secret
+  - web -> stripe: confirmCardPayment
+  - alt:
+      - when: succeeded
+        do:
+          - stripe -.-> api: webhook payment_succeeded
+          - api -> db: mark paid
+          - note over api, db: idempotent on event id
+      - when: declined
+        do:
+          - stripe --> web: card_declined
+          - web -> web: show error
+  - web --> user: result page

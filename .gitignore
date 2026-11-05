@@ -1,0 +1,11 @@
+node_modules/
+dist/
+out/
+vendor/
+spikes/node_modules/
+spikes/out/
+spikes/mermaid/*.png
+.agents/
+.claude/
+skills-lock.json
+.DS_Store

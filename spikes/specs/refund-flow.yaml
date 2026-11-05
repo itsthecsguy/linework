@@ -1,0 +1,29 @@
+type: flow
+title: Refund request
+direction: TB
+nodes:
+  start:    { label: Refund requested, kind: terminal }
+  lookup:   { label: Look up order }
+  window:   { label: Within 30 days?, kind: decision }
+  amount:   { label: Over $500?, kind: decision }
+  auto:     { label: Auto-approve }
+  review:   { label: Queue for manual review }
+  approved: { label: Approved?, kind: decision }
+  refund:   { label: Issue refund via Stripe }
+  notify:   { label: Email customer }
+  deny:     { label: Deny with reason, kind: error }
+  done:     { label: Done, kind: terminal }
+edges:
+  - start -> lookup
+  - lookup -> window
+  - window -> amount: "yes"
+  - window -> deny: "no"
+  - amount -> auto: "no"
+  - amount -> review: "yes"
+  - review -> approved
+  - approved -> refund: "yes"
+  - approved -> deny: "no"
+  - auto -> refund
+  - refund -> notify
+  - deny -> notify
+  - notify -> done

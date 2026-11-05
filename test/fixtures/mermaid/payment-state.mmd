@@ -1,0 +1,12 @@
+stateDiagram-v2
+  [*] --> Created
+  Created --> Authorizing: submit
+  Authorizing --> Authorized: approved
+  Authorizing --> Failed: declined
+  Authorized --> Captured: capture
+  Authorized --> Voided: void
+  Captured --> Refunded: refund
+  Failed --> Created: retry
+  Captured --> [*]
+  Voided --> [*]
+  Refunded --> [*]

@@ -1,0 +1,11 @@
+%% a comment
+flowchart LR
+    A[Client<br/>React] -->|REST| B(API Gateway)
+    B --> C{Auth ok?}
+    C -- yes --> D[[Orders service]]
+    C -- no --> E[Reject]
+    D -.-> F[(Postgres)] & G([order-events])
+    G ==> H>Notifier]
+    classDef red fill:#f00
+    class E red
+    click A "https://example.com"

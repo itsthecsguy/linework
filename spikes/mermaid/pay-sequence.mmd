@@ -1,0 +1,22 @@
+sequenceDiagram
+  actor user as Shopper
+  participant web as Web app
+  participant api as Checkout API
+  participant stripe as Stripe
+  participant db as Orders DB
+  user->>web: Click "Pay"
+  web->>api: POST /checkout
+  api->>db: insert order (pending)
+  api->>stripe: create PaymentIntent
+  stripe-->>api: client_secret
+  api-->>web: client_secret
+  web->>stripe: confirmCardPayment
+  alt succeeded
+    stripe->>api: webhook payment_succeeded
+    api->>db: mark paid
+    api-->>web: order confirmed
+  else declined
+    stripe-->>web: card_declined
+    web->>web: show error
+  end
+  web-->>user: result page
