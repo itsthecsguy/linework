@@ -1,0 +1,17 @@
+flowchart TB
+  user[Shopper] -->|browses| web[Web app<br/>Next.js]
+  web -->|HTTPS| gw
+  subgraph vpc[Production VPC]
+    gw[API gateway<br/>Envoy] -->|gRPC| api[Checkout API<br/>Go]
+    api -.->|OrderPlaced| queue([order-events<br/>Kafka])
+    queue -.->|consume| worker[Fulfillment worker<br/>Go]
+    subgraph data[Data tier]
+      db[(Orders<br/>Postgres)]
+      cache[Session cache<br/>Redis]
+    end
+  end
+  api -->|read session| cache
+  api -->|SQL| db
+  api -->|charge| stripe[Stripe<br/>Payments API]
+  worker -->|update status| db
+  worker -->|receipt| email[SendGrid<br/>Email]

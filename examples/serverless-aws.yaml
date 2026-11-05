@@ -1,0 +1,23 @@
+type: architecture
+title: Image pipeline
+groups:
+  aws: { label: AWS account }
+nodes:
+  user:    { label: Uploader, kind: person, icon: aws.users }
+  api:     { label: Upload API, icon: aws.api_gateway, in: aws }
+  sign:    { label: Presign, kind: function, icon: aws.lambda, in: aws }
+  bucket:  { label: Raw images, kind: storage, icon: aws.s3, in: aws }
+  queue:   { label: resize-jobs, kind: queue, icon: aws.sqs, in: aws }
+  resize:  { label: Resizer, kind: function, icon: aws.lambda, in: aws }
+  table:   { label: Image index, kind: database, icon: aws.dynamodb, in: aws }
+  cdn:     { label: CDN, icon: aws.cloudfront, in: aws }
+edges:
+  - user -> api: POST /uploads
+  - api -> sign: invoke
+  - sign -> bucket: presigned PUT
+  - user -> bucket: upload
+  - bucket -.-> queue: ObjectCreated
+  - queue -.-> resize: poll
+  - resize -> bucket: write variants
+  - resize -> table: index
+  - cdn -> bucket: origin

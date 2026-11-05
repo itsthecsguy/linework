@@ -1,0 +1,10 @@
+flowchart TB
+  start([Refund requested]) --> lookup[Look up order] --> window{Within 30 days?}
+  window -->|yes| amount{Over $500?}
+  window -->|no| deny[Deny with reason]
+  amount -->|no| auto[Auto-approve]
+  amount -->|yes| review[Queue for manual review] --> approved{Approved?}
+  approved -->|yes| refund[Issue refund via Stripe]
+  approved -->|no| deny
+  auto --> refund --> notify[Email customer]
+  deny --> notify --> done([Done])

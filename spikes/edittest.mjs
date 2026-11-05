@@ -1,0 +1,50 @@
+// Drives `aiviz edit` like a person would: drag a node, save, exit. Checks the file.
+import { spawn, execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import { chromium } from 'playwright';
+const [file, shot] = process.argv.slice(2);
+const before = fs.readFileSync(file, 'utf8');
+const cli = spawn('npx', ['tsx', '../src/cli.ts', 'edit', file, '--no-open'], { stdio: ['ignore', 'pipe', 'inherit'] });
+let out = '';
+const url = await new Promise((res) => cli.stdout.on('data', (d) => { out += d; const m = /open (http\S+)/.exec(out); if (m) res(m[1]); }));
+console.log('url', url);
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+page.on('pageerror', (e) => console.error('[page]', e.message));
+await page.goto(url);
+const frame = () => page.frames().find((f) => f.url().includes('embed=1'));
+await page.waitForFunction(() => document.getElementById('f')?.contentWindow?.document?.querySelector('.geDiagramContainer svg g'), null, { timeout: 60000 }).catch(() => {});
+await page.waitForTimeout(2500);
+// Select "Checkout API" and nudge it right with the keyboard.
+await page.mouse.click(733, 425);
+await page.waitForTimeout(300);
+for (let i = 0; i < 6; i++) await page.keyboard.press('Shift+ArrowRight');
+await page.waitForTimeout(500);
+await page.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s');
+await page.waitForTimeout(2500);
+await page.screenshot({ path: shot });
+const after = fs.readFileSync(file, 'utf8');
+console.log('file changed:', after !== before, 'size', before.length, '->', after.length);
+const shown = execFileSync('npx', ['tsx', '../src/cli.ts', 'show', file, '--geometry'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+console.log(shown.split('\n').filter((l) => /api:|geometry/.test(l)).join('\n'));
+// Someone else rewrites the file while it's open; the next save must not clobber it.
+fs.appendFileSync(file, '\n<!-- touched -->\n');
+await page.mouse.click(733, 425);
+await page.keyboard.press('Shift+ArrowDown');
+await page.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s');
+await page.waitForTimeout(2500);
+await page.screenshot({ path: shot.replace('.png', '-conflict.png') });
+console.log('original kept:', fs.readFileSync(file, 'utf8').includes('touched'));
+// Dismiss the dialog, then File > Exit.
+await page.keyboard.press('Enter');
+await page.waitForTimeout(300);
+await frame().click('a.geItem:text-is("File")');
+await page.waitForTimeout(500);
+await page.screenshot({ path: shot.replace('.png', '-file.png') });
+await frame().click('td:text-is("Exit")').catch((e) => console.log('no Exit item', e.message.split('\n')[0]));
+await page.waitForTimeout(800);
+await frame().click('button:text-is("Discard Changes")').catch(() => {});
+const code = await Promise.race([new Promise((r) => cli.on('exit', r)), new Promise((r) => setTimeout(() => r('timeout'), 10000))]);
+console.log('cli exit', code, '\n' + out.trim());
+await browser.close();
+if (code === 'timeout') cli.kill();

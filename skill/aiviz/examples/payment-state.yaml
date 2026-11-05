@@ -1,0 +1,22 @@
+type: state
+title: Payment lifecycle
+nodes:
+  created:     { label: Created }
+  authorizing: { label: Authorizing }
+  authorized:  { label: Authorized }
+  captured:    { label: Captured, kind: success }
+  failed:      { label: Failed, kind: error }
+  voided:      { label: Voided }
+  refunded:    { label: Refunded }
+edges:
+  - "[*] -> created"
+  - created -> authorizing: submit
+  - authorizing -> authorized: approved
+  - authorizing -> failed: declined
+  - authorized -> captured: capture
+  - authorized -> voided: void
+  - captured -> refunded: refund
+  - failed -> created: retry
+  - "captured -> [*]"
+  - "voided -> [*]"
+  - "refunded -> [*]"

@@ -1,0 +1,11 @@
+import { chromium } from 'playwright';
+import fs from 'node:fs';
+import path from 'node:path';
+const [file, out] = process.argv.slice(2);
+const html = path.join(path.dirname(path.resolve(file)), '_view.html');
+fs.writeFileSync(html, `<body style="margin:0;background:#fff"><img id=i src="${path.basename(file)}" style="width:900px"></body>`);
+const b = await chromium.launch(); const p = await b.newPage({ deviceScaleFactor: 1 });
+await p.goto('file://' + html);
+await p.waitForFunction(() => document.getElementById('i').complete);
+await p.waitForTimeout(500);
+await p.locator('#i').screenshot({ path: out }); await b.close(); fs.unlinkSync(html);

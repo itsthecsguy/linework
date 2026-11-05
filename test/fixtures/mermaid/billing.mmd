@@ -1,0 +1,13 @@
+erDiagram
+    ORGANIZATION ||--o{ USER : "has members"
+    ORGANIZATION ||--o{ SUBSCRIPTION : "billed via"
+    SUBSCRIPTION ||--|{ INVOICE : issues
+    USER {
+        uuid id PK
+        uuid org_id FK
+        string email UK "login"
+    }
+    ORGANIZATION {
+        uuid id PK
+        string name
+    }

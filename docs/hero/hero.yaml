@@ -1,0 +1,15 @@
+type: architecture
+direction: LR
+groups:
+  vpc: Production VPC
+nodes:
+  web: { label: Web app, kind: client, tech: Next.js }
+  api: { label: Checkout API, tech: Go, highlight: true, in: vpc }
+  db: { label: Orders, kind: database, tech: Postgres, in: vpc }
+  bus: { label: order-events, kind: queue, tech: Kafka, in: vpc }
+  stripe: { label: Stripe, kind: external }
+edges:
+  - web ==> api: HTTPS
+  - api -> db: SQL
+  - api -.-> bus: OrderPlaced
+  - api ==> stripe: charge

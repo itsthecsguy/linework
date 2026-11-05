@@ -1,0 +1,31 @@
+type: er
+title: Billing schema
+nodes:
+  orgs:
+    label: organizations
+    fields:
+      - id: uuid pk
+      - name: text
+      - plan: text
+  users:
+    fields:
+      - id: uuid pk
+      - org_id: uuid fk
+      - email: text unique
+      - created_at: timestamptz
+  subscriptions:
+    fields:
+      - id: uuid pk
+      - org_id: uuid fk
+      - stripe_id: text unique
+      - status: text
+  invoices:
+    fields:
+      - id: uuid pk
+      - subscription_id: uuid fk
+      - amount_cents: int
+      - paid_at: timestamptz null
+edges:
+  - users }o--|| orgs: belongs to
+  - subscriptions }o--|| orgs: billed to
+  - invoices }o--|| subscriptions: issued for
