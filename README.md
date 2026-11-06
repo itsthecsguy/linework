@@ -11,27 +11,67 @@ Your agent writes a short YAML spec. Linework lays it out, styles it and writes 
 
 ## Quick start
 
-You need Node 20+ and Chrome, Edge or another Chromium browser. Then give your agent the skill:
+### 1. Check what you need
+
+- **Node 22.20 or newer** for the skills installer in step 2. Linework itself runs on Node 20+. Check with `node -v`.
+- **Chrome, Edge or another Chromium browser.** Linework uses it in the background to measure text and draw. If you have neither, run `npx playwright install chromium`.
+
+### 2. Give your agent the skill
 
 ```bash
 npx skills add itsthecsguy/linework
 ```
 
-That's it. The [skills](https://github.com/vercel-labs/skills) installer finds the agents on your machine and puts the skill where each one looks: Claude Code, Codex, Cursor, Antigravity, Gemini CLI, GitHub Copilot, Grok Build, OpenCode, Windsurf and about 70 more. Add `-g` to install it for every project instead of this one.
+The [skills](https://github.com/vercel-labs/skills) installer finds the agents on your machine, asks which ones to set up, and puts the skill where each one looks. It covers Claude Code, Codex, Cursor, Antigravity, Gemini CLI, GitHub Copilot, Grok Build, OpenCode, Windsurf and about 70 more.
 
-Now ask for a diagram:
+It installs for the current project by default. Add `-g` to install it for every project. To skip the prompts, name the agents:
+
+```bash
+npx skills add itsthecsguy/linework -g -a claude-code -a codex -y
+```
+
+### 3. Check that it works
+
+This builds a two-box diagram without an agent:
+
+```bash
+printf 'type: flow\nnodes: { a: Hello, b: World }\nedges:\n  - a -> b\n' | npx -y @itsthecsguy/linework build - -o hello.drawio.svg --png hello.png
+```
+
+It should print `check: 0 errors, 0 warnings` and write `hello.drawio.svg` and `hello.png`. The first run takes a few seconds longer while `npx` downloads the package. If it says no browser was found, run `npx playwright install chromium` and try again.
+
+### 4. Ask for a diagram
+
+Start a new agent session so it loads the skill, then ask:
 
 > Add an architecture diagram of the checkout flow to docs/design.md.
 
-The agent reads the skill, writes the spec, runs `npx -y @itsthecsguy/linework build`, looks at the PNG preview, fixes what's off and embeds the `.drawio.svg`. There's no separate install step. The first run downloads the package through `npx`.
+The agent writes the spec, runs Linework, looks at the PNG preview, fixes what's off and embeds the `.drawio.svg` in the doc. You don't install anything else. The skill runs Linework through `npx`.
 
-**Agent can't run shell commands?** Use the MCP server instead. See [Connect over MCP](#connect-over-mcp).
+### Optional: install the command
 
-**No skill support at all?** Add this line to your `AGENTS.md`, `CLAUDE.md` or `GEMINI.md`:
+The skill works without this, but a global install skips the `npx` download check on every run and puts `linework` on your PATH:
 
-```markdown
-For diagrams, use Linework: run `npx -y @itsthecsguy/linework skill` to get the guide's path, and read SKILL.md there before your first diagram.
+```bash
+npm install -g @itsthecsguy/linework
 ```
+
+### Updating
+
+```bash
+npx skills update linework
+```
+
+If you installed the command globally, update it with `npm install -g @itsthecsguy/linework@latest`.
+
+### Other setups
+
+- **Agent can't run shell commands?** Use the MCP server. See [Connect over MCP](#connect-over-mcp).
+- **Agent doesn't load skills?** Add this line to your `AGENTS.md`, `CLAUDE.md` or `GEMINI.md`:
+
+  ```markdown
+  For diagrams, use Linework: run `npx -y @itsthecsguy/linework skill` to get the guide's path, and read SKILL.md there before your first diagram.
+  ```
 
 ## How it works
 
