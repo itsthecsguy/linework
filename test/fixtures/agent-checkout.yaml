@@ -1,0 +1,31 @@
+# Written by Claude Code from skills/linework in a headless test. Two things went wrong here:
+# api -> stripe looped around the whole VPC, and the webhook label covered the VPC title.
+type: architecture
+title: Checkout
+direction: auto
+groups:
+  vpc: { label: Production VPC }
+nodes:
+  user: { label: Shopper, kind: person }
+  web: { label: Web app, kind: client, tech: Next.js }
+  gw: { label: API gateway, in: vpc }
+  api: { label: Checkout API, tech: Go, in: vpc, highlight: true }
+  stripe: { kind: external, tech: Payments API }
+  cache: { label: Carts, kind: cache, tech: Redis, in: vpc }
+  db: { label: Orders, kind: database, tech: Postgres, in: vpc }
+  queue: { label: OrderPlaced, kind: queue, tech: Kafka, in: vpc }
+  dlq: { label: Dead-letter queue, kind: queue, in: vpc }
+  worker: { label: Fulfillment worker, in: vpc }
+  shipping: { label: Shipping provider, kind: external, tech: API }
+edges:
+  - user -> web: browses
+  - web ==> gw: HTTPS
+  - gw ==> api
+  - api -> cache: cache cart
+  - api -> db: write order
+  - api ==> stripe: charge card
+  - stripe -.-> api: payment webhook
+  - api -.-> queue: publish OrderPlaced
+  - { from: api, to: dlq, label: failed charge, style: async, color: red }
+  - queue -.-> worker: consume
+  - worker -> shipping: create shipment

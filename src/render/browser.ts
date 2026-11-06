@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { FONT_STACK } from '../drawio/theme.js';
 import { FACES, embedFonts, fontFaceCss, fontsDir } from './fonts.js';
@@ -214,6 +215,16 @@ export class DrawioBrowser {
   }
 }
 
+/** Playwright-core's own installer, so the Chromium build always matches the version we run. */
+export function browserInstallCommand(): string[] {
+  const pkg = createRequire(import.meta.url).resolve('playwright-core/package.json');
+  return [process.execPath, path.join(path.dirname(pkg), 'cli.js'), 'install', 'chromium', '--only-shell'];
+}
+
+function installHint(): string {
+  return 'linework install-browser';
+}
+
 async function launchChromium(): Promise<Browser> {
   const errors: string[] = [];
   const attempts: Array<() => Promise<Browser>> = [];
@@ -228,9 +239,25 @@ async function launchChromium(): Promise<Browser> {
       errors.push((e as Error).message.split('\n')[0]!);
     }
   }
+  // A browser that exists but dies on launch is almost always a sandbox (Codex,
+  // seatbelt, containers without --no-sandbox) blocking it, not a missing install.
+  const crashed = errors.some((m) => !/doesn't exist|is not found|not installed|ENOENT/i.test(m));
+  if (crashed) {
+    // Playwright's headless shell still starts under macOS seatbelt (Codex's sandbox)
+    // when it runs as one process. Only as a fallback: single-process mode is less robust.
+    try {
+      return await chromium.launch({ args: ['--single-process', '--no-zygote'] });
+    } catch (e) {
+      errors.push((e as Error).message.split('\n')[0]!);
+    }
+  }
   throw new Error(
-    'linework needs a Chromium-based browser to lay out and render diagrams, and none was found.\n' +
-      'Fix one of these ways:\n  npx playwright install chromium\n  install Google Chrome\n  set LINEWORK_CHROME=/path/to/chrome\n' +
-      `(tried: ${errors.join(' | ')})`,
+    crashed
+      ? 'linework found a Chromium-based browser but it could not start. If this runs inside a sandbox (an AI agent\'s sandbox, a container), the sandbox is probably blocking it.\n' +
+          `Fix: run this command outside the sandbox, or allow it to launch a browser. Linework can start inside some sandboxes (Codex's included) if Playwright's own Chromium is installed: run \`${installHint()}\` once, outside the sandbox.\n` +
+          `(tried: ${errors.join(' | ')})`
+      : 'linework needs a Chromium-based browser to lay out and render diagrams, and none was found.\n' +
+          `Fix one of these ways:\n  ${installHint()}\n  install Google Chrome\n  set LINEWORK_CHROME=/path/to/chrome\n` +
+          `(tried: ${errors.join(' | ')})`,
   );
 }

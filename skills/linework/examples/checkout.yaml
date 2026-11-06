@@ -8,7 +8,7 @@ nodes:
   user:    { label: Shopper, kind: person }
   web:     { label: Web app, kind: client, tech: Next.js }
   gw:      { label: API gateway, kind: service, tech: Envoy, in: vpc }
-  api:     { label: Checkout API, kind: service, tech: Go, in: vpc }
+  api:     { label: Checkout API, kind: service, tech: Go, in: vpc, highlight: true }
   worker:  { label: Fulfillment worker, kind: service, tech: Go, in: vpc }
   queue:   { label: order-events, kind: queue, tech: Kafka, in: vpc }
   db:      { label: Orders, kind: database, tech: Postgres, in: data }
@@ -17,11 +17,11 @@ nodes:
   email:   { label: SendGrid, kind: external, tech: Email }
 edges:
   - user -> web: browses
-  - web -> gw: HTTPS
-  - gw -> api: gRPC
+  - web ==> gw: HTTPS
+  - gw ==> api: gRPC
   - api -> cache: read session
   - api -> db: SQL
-  - api -> stripe: charge
+  - api ==> stripe: charge
   - api -.-> queue: OrderPlaced
   - queue -.-> worker: consume
   - worker -> db: update status

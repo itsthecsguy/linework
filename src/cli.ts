@@ -50,6 +50,10 @@ Usage:
       List node kinds for each diagram type.
   linework schema
       Print the spec's JSON Schema.
+
+  linework install-browser
+      Download the headless Chromium build that matches this version. Needed only
+      when no Chrome or Edge is installed, or to run inside an agent's sandbox.
 `;
 
 async function main(argv: string[]) {
@@ -219,6 +223,15 @@ async function main(argv: string[]) {
     case 'schema':
       console.log(JSON.stringify(jsonSchema(), null, 2));
       return;
+    case 'install-browser': {
+      const { browserInstallCommand } = await import('./render/browser.js');
+      const { spawnSync } = await import('node:child_process');
+      const [bin, ...args] = browserInstallCommand();
+      console.log('downloading headless Chromium for linework...');
+      const r = spawnSync(bin!, args, { stdio: 'inherit' });
+      process.exitCode = r.status ?? 1;
+      return;
+    }
     default:
       fail(`unknown command "${cmd}"\n\n${USAGE}`);
   }

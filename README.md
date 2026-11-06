@@ -14,7 +14,8 @@ Your agent writes a short YAML spec. Linework lays it out, styles it and writes 
 ### 1. Check what you need
 
 - **Node 22.20 or newer** for the skills installer in step 2. Linework itself runs on Node 20+. Check with `node -v`.
-- **Chrome, Edge or another Chromium browser.** Linework uses it in the background to measure text and draw. If you have neither, run `npx playwright install chromium`.
+- **Chrome, Edge or another Chromium browser.** Linework uses it in the background to measure text and draw. If you have neither, run `npx -y @itsthecsguy/linework install-browser`.
+- **Using Codex?** Its sandbox stops Chrome from starting. Run `npx -y @itsthecsguy/linework install-browser` once, outside Codex. Linework's own headless Chromium does start inside the sandbox.
 
 ### 2. Give your agent the skill
 
@@ -38,7 +39,7 @@ This builds a two-box diagram without an agent:
 printf 'type: flow\nnodes: { a: Hello, b: World }\nedges:\n  - a -> b\n' | npx -y @itsthecsguy/linework build - -o hello.drawio.svg --png hello.png
 ```
 
-It should print `check: 0 errors, 0 warnings` and write `hello.drawio.svg` and `hello.png`. The first run takes a few seconds longer while `npx` downloads the package. If it says no browser was found, run `npx playwright install chromium` and try again.
+It should print `check: 0 errors, 0 warnings` and write `hello.drawio.svg` and `hello.png`. The first run takes a few seconds longer while `npx` downloads the package. If it says no browser was found, run `npx -y @itsthecsguy/linework install-browser` and try again.
 
 ### 4. Ask for a diagram
 
@@ -113,7 +114,7 @@ Color is for meaning. Nodes stay neutral by default, and errors and successes ar
 
 Linework sizes every box from the real width of its text in the font it renders with, wrapping long labels instead of widening boxes. Each SVG carries a subset of that font (about 10 to 15KB), so text fits the same way on GitHub, in a browser or in a doc. `check` flags labels that overflow, overlap a box, another label, another edge or a group border, and `build` moves edge labels until they're clear.
 
-Linework needs Node 20+ and a Chromium-based browser, which it uses headless to measure text and render. It tries Playwright's Chromium, then Chrome, then Edge. If none is found, run `npx playwright install chromium`, or set `LINEWORK_CHROME` to a browser binary.
+Linework needs Node 20+ and a Chromium-based browser, which it uses headless to measure text and render. It tries Playwright's Chromium, then Chrome, then Edge. If none is found, run `linework install-browser`, or set `LINEWORK_CHROME` to a browser binary. If a browser is found but crashes on launch, an agent's sandbox is usually blocking it. Linework then retries Playwright's Chromium in single-process mode, which starts inside Codex's sandbox.
 
 ## Connect over MCP
 
@@ -188,6 +189,7 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 | `linework mcp [--root dir]` | MCP server over stdio |
 | `linework kinds [type]` | node kinds per diagram type |
 | `linework schema` | JSON Schema of the spec |
+| `linework install-browser` | download the headless Chromium build this version uses |
 
 ## Status
 
