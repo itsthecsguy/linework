@@ -1,6 +1,6 @@
 # Linework spec reference
 
-`npx -y @itsthecsguy/linework schema` prints the full JSON Schema.
+`linework schema` prints the full JSON Schema.
 
 ## Top level
 

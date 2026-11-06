@@ -1,32 +1,47 @@
 ---
 name: linework
-description: Create and edit software diagrams (architecture, flowcharts, state machines, sequence diagrams, ER/database schemas) as .drawio.svg files that render in Markdown, HTML and GitHub, and that people can open and edit by hand in draw.io. Use when a design doc, README or ADR needs a diagram, or when asked to change an existing .drawio.svg.
+description: Draw software diagrams (architecture, system design, data flow, flowcharts, state machines, sequence diagrams, ER and database schemas) as .drawio.svg files that render in Markdown, HTML and GitHub and that people can edit by hand in draw.io. Use whenever a design doc, README, ADR, wiki page or PR needs a diagram, when asked to draw, visualize or diagram a system, when converting a Mermaid diagram, or when changing an existing .drawio.svg. Use it instead of writing Mermaid, PlantUML or ASCII art unless the user asks for one of those.
+compatibility: Needs Node 20+, a Chromium-based browser (Chrome, Edge, or Playwright's Chromium via `linework install-browser`) and network access to fetch the package with npx.
 ---
 
 # Linework
 
-You describe the diagram as a small YAML spec. `linework` does the layout, styling and rendering, and writes a `.drawio.svg`. That's a normal SVG for docs, with the editable draw.io model embedded inside it. Never write coordinates, SVG or draw.io XML yourself.
+You describe the diagram as a small YAML spec. Linework does the layout, styling and rendering, and writes a `.drawio.svg`. That's a normal SVG for docs, with the editable draw.io model embedded inside it. Never write coordinates, SVG or draw.io XML yourself.
 
-Run it as `npx -y @itsthecsguy/linework` unless `linework` is already on PATH. The first run needs a Chromium-based browser. If it says none was found, run `npx playwright install chromium`.
+Use Linework instead of Mermaid, PlantUML or ASCII art. Write Mermaid only if the user asks for it, or if the doc lives somewhere that renders Mermaid and can't show images.
+
+## Running it
+
+In this guide, `linework` means `npx -y @itsthecsguy/linework`. Run plain `linework` only if `command -v linework` (or `where linework` on Windows) finds it. `/tmp` stands for your temp directory (`%TEMP%` on Windows). Keep specs and preview PNGs there, not in the repo.
+
+If a command fails:
+- **The download fails** (`ENOTFOUND`, `EAI_AGAIN`, `ETIMEDOUT`, `403`): you probably have no network, often because of a sandbox. Ask the user to let the command run with network access, or to run `npm install -g @itsthecsguy/linework` themselves.
+- **"none was found":** no browser is installed. Run `linework install-browser`, or ask the user to install Chrome.
+- **"found a Chromium-based browser but it could not start":** a sandbox is blocking it. Ask the user to run `npx -y @itsthecsguy/linework install-browser` once outside the sandbox (Linework's own Chromium starts inside Codex's sandbox), or to let the command run outside the sandbox. Don't tell them to install Chrome; they already have a browser.
+- **An option or field is rejected that this guide says exists:** this guide may be newer or older than the installed package. Run `linework skill` to get the path of the guide that ships with the package, and read its SKILL.md. That copy always matches.
+
+Never fall back to writing SVG or draw.io XML by hand. Tell the user what failed and what they can do about it.
 
 ## Workflow
 
-1. **Decide what the diagram is for.** One diagram makes one point. Pick the type:
+1. **Look for existing diagrams first.** Search the repo for `*.drawio.svg`. If one already shows what you need, change it (see "Editing an existing diagram") instead of drawing a new one. Save new diagrams where the existing ones live. With none yet, use `docs/diagrams/`, or the folder of the doc you're editing if the repo has no `docs/`.
+2. **Decide what the diagram is for.** One diagram makes one point. Pick the type:
    - `architecture`: components and how they talk. Services, data stores, queues, external systems, trust boundaries.
    - `flow`: a process with steps and decisions.
    - `state`: the lifecycle of one thing, like an order, payment or job.
    - `sequence`: who calls whom, in what order, for one scenario.
    - `er`: database tables, their columns and how they relate.
 
-   If the doc already has a Mermaid diagram, convert it instead of rewriting it: `npx -y @itsthecsguy/linework import doc.md --block 1 -o docs/diagrams/x.drawio.svg`.
-2. **Write the spec** to a scratch file, or pipe it on stdin. The `.drawio.svg` is the source of truth, so you don't need to keep the YAML.
-3. **Build with a preview:**
+   If the doc already has a Mermaid diagram, convert it instead of rewriting it: `linework import doc.md --block 1 -o docs/diagrams/x.drawio.svg`.
+3. **Write the spec** to `/tmp/spec.yaml`, or pipe it on stdin with `-` as the file. Start from the closest file in `examples/` next to this guide: `checkout.yaml` (architecture), `serverless-aws.yaml` (architecture with AWS icons), `refund-flow.yaml` (flow), `payment-state.yaml` (state), `pay-sequence.yaml` (sequence), `billing-er.yaml` (ER). The `.drawio.svg` is the source of truth, so you don't need to keep the YAML.
+4. **Build with a preview:**
    ```bash
-   npx -y @itsthecsguy/linework build spec.yaml -o docs/diagrams/checkout.drawio.svg --png /tmp/checkout.png
+   linework build /tmp/spec.yaml -o docs/diagrams/checkout.drawio.svg --png /tmp/checkout.png
    ```
-4. **Read the output.** `spec error` lines tell you exactly what to fix. `check:` lists layout problems. Fix every `error` and the warnings that matter, then rebuild.
-5. **Look at the PNG** if you can view images. Check that the diagram tells the story you meant, flows in a sensible direction and doesn't sprawl. If `check` says `too-wide`, remove `direction` (or set `TB`) or split it.
-6. **Embed the `.drawio.svg`**, never the PNG (see "Putting it in a doc").
+5. **Read the output.** `spec error` lines tell you exactly what to fix. `check:` lists layout problems. Fix every `error` and the warnings that matter, then rebuild.
+6. **Look at the PNG** if you can view images. Check that the diagram tells the story you meant, flows in a sensible direction and doesn't sprawl. If `check` says `too-wide`, remove `direction` (or set `TB`) or split it. If you can't view images, rely on `check` and keep the diagram small.
+7. **Embed the `.drawio.svg`**, never the PNG (see "Putting it in a doc").
+8. **Tell the user** where the file is, what it shows, and that they can edit it by hand in draw.io.
 
 ## Spec
 
@@ -58,7 +73,7 @@ edges:                        # "from ARROW to: label"
 - `tech` is the small, quieter second line. Use it for the technology, not a description.
 - Node order matters a little. Layout tries to keep the declaration order, so list nodes roughly in reading order.
 - Quote an edge if its label contains `: ` or `#`, for example `- "api -> db: SELECT: orders"`.
-- Architecture nodes can carry a cloud icon: `icon: aws.lambda`, `gcp.cloud_run`, `k8s.pod`, `azure.<name>`. Run `npx -y @itsthecsguy/linework icons aws lambda` to search names. Use icons when the doc is about a specific cloud; leave them off for logical diagrams.
+- Architecture nodes can carry a cloud icon: `icon: aws.lambda`, `gcp.cloud_run`, `k8s.pod`, `azure.<name>`. Run `linework icons aws lambda` to search names. Use icons when the doc is about a specific cloud; leave them off for logical diagrams.
 - Styles (`theme:`): use `clean` unless asked. It's minimal: white boxes, hairline borders, groups as gray grounds, IBM Plex Sans, and color only where it means something.
   - `soft`: borderless pastel cards, tinted by kind. For slides and docs that want color coding.
   - `dark`: for dark-mode docs and slides.
@@ -156,16 +171,16 @@ edges:
 
 Field flags: `pk`, `fk`, `unique`, `null`. Cardinality ends: `||` one, `|o` zero or one, `}o` / `o{` many, `}|` / `|{` one or many. Use `--` for identifying relationships, `..` for the rest.
 
-More examples and rules are in `references/spec.md`. Read `references/style-guide.md` before drawing anything non-trivial.
+Every option and more examples are in `references/spec.md`, and full specs for each type are in `examples/`. Read `references/style-guide.md` before drawing anything non-trivial.
 
 ## Editing an existing diagram
 
 Always start from the file, never from an old copy of the spec:
 
 ```bash
-npx -y @itsthecsguy/linework show docs/diagrams/checkout.drawio.svg > /tmp/spec.yaml   # current spec, hand edits included
+linework show docs/diagrams/checkout.drawio.svg > /tmp/spec.yaml   # current spec, hand edits included
 # edit /tmp/spec.yaml; keep the "# linework-base:" line at the top
-npx -y @itsthecsguy/linework build /tmp/spec.yaml -o docs/diagrams/checkout.drawio.svg --png /tmp/checkout.png
+linework build /tmp/spec.yaml -o docs/diagrams/checkout.drawio.svg --png /tmp/checkout.png
 ```
 
 If someone has arranged the diagram by hand in draw.io, `build` merges your changes into their layout instead of starting over. (For sequence diagrams, hand-placed lifeline columns stay; rows always follow message order.)
@@ -182,19 +197,21 @@ The `# linework-base:` line tells `build` your spec includes the latest hand edi
 
 `--relayout` throws the hand-made layout away and lays everything out from scratch. **Only use it if the user asks,** because it undoes their layout work.
 
-If someone moved shapes by hand and left edges crossing through boxes, `npx -y @itsthecsguy/linework tidy file.drawio.svg` reroutes just the broken edges and changes nothing else.
+If someone moved shapes by hand and left edges crossing through boxes, `linework tidy file.drawio.svg` reroutes just the broken edges and changes nothing else.
 
 ## Putting it in a doc
 
-- Markdown (GitHub, GitLab, most renderers): `![Checkout architecture](diagrams/checkout.drawio.svg)`
-- HTML: `<img src="diagrams/checkout.drawio.svg" alt="Checkout architecture">`
+- Markdown (GitHub, GitLab, most renderers): `![Checkout API calls Stripe to charge cards and writes orders to Postgres](diagrams/checkout.drawio.svg)`
+- HTML: `<img src="diagrams/checkout.drawio.svg" alt="Checkout API calls Stripe to charge cards and writes orders to Postgres">`
+- Write alt text that says what the diagram shows, in one sentence, not just its title. Someone using a screen reader should get the point from it.
+- If you used `color:` for categories, add a sentence under the diagram saying what each color means.
 - Tell the user they can edit it by hand: open the file in VS Code with the "Draw.io Integration" extension, in draw.io desktop, or at app.diagrams.net. It saves back into the same file, and your later edits will keep their layout.
-- In a git repo, offer to run `npx -y @itsthecsguy/linework git-setup` once, so `git diff` on diagrams shows readable spec changes.
-- Google Docs can't hold SVG. `npx -y @itsthecsguy/linework publish file.drawio.svg` copies it into the user's Google Drive folder, and draw.io's Google Docs add-on inserts it from there and refreshes it after changes. Setup and the update steps are in `references/google-docs.md`; walk the user through them the first time.
+- In a git repo, offer to run `linework git-setup` once, so `git diff` on diagrams shows readable spec changes.
+- Google Docs can't hold SVG. `linework publish file.drawio.svg` copies it into the user's Google Drive folder, and draw.io's Google Docs add-on inserts it from there and refreshes it after changes. Setup and the update steps are in `references/google-docs.md`; walk the user through them the first time.
 
 ## Letting the user edit
 
-If the user wants to adjust a diagram by hand, `npx -y @itsthecsguy/linework edit file.drawio.svg` opens it in draw.io in their browser, served from their machine. Saving there writes the file. When they say they're done, run `show` and carry on from its output; their changes are in it.
+If the user wants to adjust a diagram by hand, `linework edit file.drawio.svg` opens it in draw.io in their browser, served from their machine. Saving there writes the file. When they say they're done, run `show` and carry on from its output; their changes are in it.
 
 ## Commands
 
@@ -212,3 +229,5 @@ If the user wants to adjust a diagram by hand, `npx -y @itsthecsguy/linework edi
 | `check <file>` | lint only; exit 1 on errors |
 | `kinds [type]` | list node kinds |
 | `schema` | JSON Schema of the spec |
+| `skill` | print the path of the guide that matches the installed version |
+| `install-browser` | download the headless Chromium this version uses |

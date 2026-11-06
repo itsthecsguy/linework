@@ -185,6 +185,19 @@ describe('fonts', () => {
 
 const run = process.env.LINEWORK_SKIP_E2E !== '1';
 
+describe.runIf(run)('fixes from agent runs', () => {
+  it('reroutes a call-and-callback pair instead of looping it around a group', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-agent-'));
+    const out = path.join(tmp, 'checkout.drawio.svg');
+    const r = await build(fs.readFileSync('test/fixtures/agent-checkout.yaml', 'utf8'), { out });
+    expect(r.check.findings.map((f) => f.message)).toEqual([]);
+    const m = readDrawio(fs.readFileSync(out, 'utf8'));
+    const pts = m.byId.get('e_api__stripe')!.geom!.points; // waypoints only
+    const len = pts.reduce((s, p, i) => (i ? s + Math.abs(p.x - pts[i - 1]!.x) + Math.abs(p.y - pts[i - 1]!.y) : 0), 0);
+    expect(len).toBeLessThan(500);
+  }, 60000);
+});
+
 describe.runIf(run)('every style builds clean', () => {
   it('builds each example in each style with no lint findings and embedded fonts', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-styles-'));

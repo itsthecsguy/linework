@@ -20,6 +20,19 @@ describe('parse', () => {
     }
   });
 
+  it('ships the same examples in the skill', () => {
+    const shipped = fs.readdirSync('skills/linework/examples').sort();
+    expect(shipped).toEqual(fs.readdirSync('examples').sort());
+    for (const f of shipped) expect(fs.readFileSync(`skills/linework/examples/${f}`, 'utf8'), f).toBe(fs.readFileSync(`examples/${f}`, 'utf8'));
+  });
+
+  it('keeps the skill header within the Agent Skills limits', () => {
+    const fm = fs.readFileSync('skills/linework/SKILL.md', 'utf8').split('---\n')[1]!;
+    expect(fm).toMatch(/^name: linework$/m);
+    expect(fm.match(/^description: (.*)$/m)![1]!.length).toBeLessThanOrEqual(1024);
+    expect(fm.match(/^compatibility: (.*)$/m)![1]!.length).toBeLessThanOrEqual(500);
+  });
+
   it('parses the snippets in SKILL.md', () => {
     const md = fs.readFileSync('skills/linework/SKILL.md', 'utf8');
     const blocks = [...md.matchAll(/```yaml\n(type:[\s\S]*?)```/g)].map((m) => m[1]!);

@@ -2,8 +2,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseSpecText, type Issue } from './spec/parse.js';
-import { layout } from './layout/layout.js';
-import { patchEdges, serialize, stampEdgeRoutes, toMxfile } from './drawio/write.js';
+import { layout, type Layout } from './layout/layout.js';
+import type { Diagram } from './spec/model.js';
+import { edgeCellId, patchEdges, serialize, stampEdgeRoutes, toMxfile } from './drawio/write.js';
 import { absBox, fingerprint, readDrawio, specBase, type DrawioModel } from './drawio/read.js';
 import { manualEdits, toDiagram, toYaml, type ManualEdit } from './drawio/show.js';
 import { merge, type MergeStats } from './drawio/merge.js';
@@ -109,7 +110,7 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
         xml = await rerouteInto(b, xml, broken);
         stats.rerouted += broken.filter((id) => !m.reroute.includes(id)).length;
       }
-    } else xml = toMxfile(diagram, l);
+    } else xml = await straightenDetours(b, toMxfile(diagram, l), detourEdges(diagram, l));
     xml = (await fixLabels(b, xml)).xml;
     xml = stampEdgeRoutes(xml);
     return finish(b, xml, { mode, warnings, direction: mode === 'merge' ? (old!.meta.aiviz_direction ?? l.direction) : l.direction, edits, old, stats });
@@ -133,6 +134,43 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
       discardedLayout: !!(opts.relayout && r.old && (r.old.meta.aiviz_layout === 'manual' || r.edits.length > 0)),
     };
   }
+}
+
+/**
+ * Edges whose route is far longer than the gap between their ends. Layered layout
+ * draws one edge of every cycle backwards, so the reply in a call-and-callback pair
+ * (api -> stripe, stripe -> api) can loop around a whole group.
+ */
+export function detourEdges(d: Diagram, l: Layout): string[] {
+  const out: string[] = [];
+  for (const e of d.edges) {
+    const r = l.edges.get(e.id), a = l.nodes.get(e.from), z = l.nodes.get(e.to);
+    if (!r || !a || !z || r.points.length < 2) continue;
+    let len = 0;
+    for (let i = 0; i < r.points.length - 1; i++) len += Math.abs(r.points[i + 1]!.x - r.points[i]!.x) + Math.abs(r.points[i + 1]!.y - r.points[i]!.y);
+    const gap =
+      Math.max(0, Math.abs(a.x + a.w / 2 - (z.x + z.w / 2)) - (a.w + z.w) / 2) +
+      Math.max(0, Math.abs(a.y + a.h / 2 - (z.y + z.h / 2)) - (a.h + z.h) / 2);
+    if (len > 2 * gap + 240) out.push(edgeCellId(e.id));
+  }
+  return out;
+}
+
+/**
+ * Reroute detours with libavoid. Keep the new routes when they're much shorter and
+ * cost at most a couple of crossings each: a short hop with a crossing reads better
+ * than a line wrapped around half the diagram.
+ */
+async function straightenDetours(b: DrawioBrowser, xml: string, ids: string[]): Promise<string> {
+  if (!ids.length) return xml;
+  const candidate = await rerouteInto(b, xml, ids);
+  const [before, after] = [await b.inspect(xml), await b.inspect(candidate)];
+  const length = (cells: typeof before) =>
+    cells.filter((c) => ids.includes(c.id)).reduce((sum, c) => sum + (c.points ?? []).reduce((s, p, i, a) => (i ? s + Math.abs(p.x - a[i - 1]!.x) + Math.abs(p.y - a[i - 1]!.y) : 0), 0), 0);
+  const [c0, c1] = [check(before), check(after)];
+  const errors = (c: CheckResult) => c.findings.filter((f) => f.level === 'error').length;
+  const keep = errors(c1) <= errors(c0) && c1.stats.crossings <= c0.stats.crossings + 2 * ids.length && length(after) < 0.6 * length(before);
+  return keep ? candidate : xml;
 }
 
 async function rerouteInto(b: DrawioBrowser, xml: string, edgeIds: string[]): Promise<string> {

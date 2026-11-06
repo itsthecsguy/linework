@@ -9,7 +9,7 @@ nodes:
   auto:     { label: Auto-approve }
   review:   { label: Queue for manual review }
   approved: { label: Approved?, kind: decision }
-  refund:   { label: Issue refund via Stripe }
+  refund:   { label: Issue refund via Stripe, highlight: true }
   notify:   { label: Email customer }
   deny:     { label: Deny with reason, kind: error }
   done:     { label: Done, kind: terminal }

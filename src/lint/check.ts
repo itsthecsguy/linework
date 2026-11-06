@@ -120,6 +120,10 @@ export function check(cells: InspectCell[]): CheckResult {
     for (const n of nodes)
       if (inter(e.textBox!, grow(n.box, 3)) > 4)
         findings.push({ level: 'warning', rule: 'label-on-node', message: `label "${e.label}" on edge ${edgeName(e, byId)} covers ${name(n)}`, labelEdges: [e.id] });
+    // Same for a group's title.
+    for (const g of containers)
+      if (!scaffold(g) && g.label && g.textBox && inter(e.textBox!, grow(g.textBox, 2)) > 4)
+        findings.push({ level: 'warning', rule: 'label-on-node', message: `label "${e.label}" on edge ${edgeName(e, byId)} covers the title of ${name(g)}`, labelEdges: [e.id] });
     // A label sitting on another edge, or on a group's border, hides part of that line.
     const tb = grow(e.textBox!, -2);
     const lines = [

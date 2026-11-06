@@ -3,12 +3,12 @@ title: Card payment
 participants:
   user:   { label: Shopper, kind: person }
   web:    { label: Web app, kind: client }
-  api:    { label: Checkout API }
+  api:    { label: Checkout API, highlight: true }
   stripe: { label: Stripe, kind: external }
   db:     { label: Orders DB, kind: database }
 messages:
   - user -> web: Click "Pay"
-  - web -> api: POST /checkout
+  - web ==> api: POST /checkout
   - api -> db: insert order (pending)
   - db --> api: order id
   - api -> stripe: create PaymentIntent

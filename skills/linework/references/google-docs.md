@@ -14,7 +14,7 @@ The add-on renders diagrams through draw.io's export service at convert.diagrams
 ## Put a diagram in a doc
 
 ```bash
-npx -y @itsthecsguy/linework publish docs/diagrams/checkout.drawio.svg
+linework publish docs/diagrams/checkout.drawio.svg
 ```
 
 This copies the file to `My Drive/linework/<project>/docs/diagrams/checkout.drawio.svg`. `<project>` is the git repository's folder name. With several Google accounts, or to use another synced folder, pass `--to <folder>`.
@@ -24,8 +24,8 @@ Then, in the doc: Extensions > draw.io > Insert diagrams, and pick the file. If 
 ## After the diagram changes
 
 ```bash
-npx -y @itsthecsguy/linework build spec.yaml -o docs/diagrams/checkout.drawio.svg   # or a hand edit in draw.io
-npx -y @itsthecsguy/linework publish docs/diagrams/checkout.drawio.svg
+linework build spec.yaml -o docs/diagrams/checkout.drawio.svg   # or a hand edit in draw.io
+linework publish docs/diagrams/checkout.drawio.svg
 ```
 
 Give Drive a few seconds to sync. Then, in the doc: Extensions > draw.io > Update diagrams. Every image whose file changed refreshes in place.
@@ -35,7 +35,7 @@ Give Drive a few seconds to sync. Then, in the doc: Extensions > draw.io > Updat
 Select the diagram and choose Extensions > draw.io > Edit selected. draw.io opens the Drive file, and saving writes it back to Drive. The repo copy is now behind. Bring the edit back with:
 
 ```bash
-npx -y @itsthecsguy/linework publish --pull docs/diagrams/checkout.drawio.svg
+linework publish --pull docs/diagrams/checkout.drawio.svg
 ```
 
 `publish` refuses to overwrite a Drive copy that someone edited after the last publish. It says so, and you choose `--pull` to take their version or `--force` to replace it.
@@ -43,4 +43,4 @@ npx -y @itsthecsguy/linework publish --pull docs/diagrams/checkout.drawio.svg
 ## Without Drive for desktop
 
 - Upload the `.drawio.svg` at drive.google.com and insert it with the add-on as above. To update it later, use the file's Manage versions > Upload new version in Drive. Uploading it again as a new file breaks the link to the doc.
-- Or skip the add-on: `npx -y @itsthecsguy/linework render docs/diagrams/checkout.drawio.svg -o checkout.png --scale 2`, insert the PNG, and put a link to the source file under it. You'll replace the image by hand when it changes.
+- Or skip the add-on: `linework render docs/diagrams/checkout.drawio.svg -o checkout.png --scale 2`, insert the PNG, and put a link to the source file under it. You'll replace the image by hand when it changes.
