@@ -1,6 +1,6 @@
-# aiviz spec reference
+# Linework spec reference
 
-`npx -y aiviz schema` prints the full JSON Schema.
+`npx -y @itsthecsguy/linework schema` prints the full JSON Schema.
 
 ## Top level
 
@@ -46,7 +46,7 @@ nodes:
 
 The "drawn as" columns below describe `soft`. In `clean`, `dark` and `blueprint`, kinds differ by shape and dash only, and color comes from `highlight`, `color` and the error/success kinds.
 
-aiviz embeds the font, subset to the characters the diagram uses (about 10 to 15KB), so the SVG looks the same on GitHub, in a browser and in docs.
+Linework embeds the font, subset to the characters the diagram uses (about 10 to 15KB), so the SVG looks the same on GitHub, in a browser and in docs.
 
 ### Architecture kinds
 
@@ -218,7 +218,7 @@ nodes:
   pod: { label: Worker pods, icon: k8s.deploy }
 ```
 
-`aiviz icons aws` lists every AWS name (about 1,000); add a filter word to search. Common short names work too: `aws.s3`, `aws.sqs`, `aws.kms`, `aws.msk`, `gcp.pubsub`, `gcp.gke`, `k8s.service`, `k8s.ingress`. An unknown name is a warning, and the node is drawn without an icon.
+`linework icons aws` lists every AWS name (about 1,000); add a filter word to search. Common short names work too: `aws.s3`, `aws.sqs`, `aws.kms`, `aws.msk`, `gcp.pubsub`, `gcp.gke`, `k8s.service`, `k8s.ingress`. An unknown name is a warning, and the node is drawn without an icon.
 
 ## Sequence
 
@@ -307,6 +307,6 @@ The middle is `--` for an identifying relationship (solid line) or `..` for a no
 
 ## Importing Mermaid
 
-`aiviz import file.mmd` prints an aiviz spec. `-o out.drawio.svg` builds it straight away. A Markdown file works too; use `--block N` when it has several Mermaid blocks. Supported: `flowchart`/`graph`, `stateDiagram`, `sequenceDiagram`, `erDiagram`.
+`linework import file.mmd` prints an linework spec. `-o out.drawio.svg` builds it straight away. A Markdown file works too; use `--block N` when it has several Mermaid blocks. Supported: `flowchart`/`graph`, `stateDiagram`, `sequenceDiagram`, `erDiagram`.
 
 A flowchart with diamonds becomes a `flow`. One with subgraphs or cylinders becomes an `architecture` diagram. In that case a `<br>` second line becomes `tech`, and kinds are guessed from shapes and names: a cylinder becomes a database, "Kafka" becomes a queue, "Stripe" becomes external. Mermaid styling (`classDef`, `style`, `click`) is dropped. Review the printed spec before building, and fix any kinds it guessed wrong.

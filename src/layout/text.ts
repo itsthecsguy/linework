@@ -46,7 +46,7 @@ export class TextMeasurer {
 
   private get(word: string, f: FontSpec): number {
     const w = this.widths.get(`${key(f)}|${word}`);
-    if (w == null) throw new Error(`aiviz: text not measured: "${word}"`);
+    if (w == null) throw new Error(`linework: text not measured: "${word}"`);
     return w + (f.tracking ?? 0) * word.length;
   }
 

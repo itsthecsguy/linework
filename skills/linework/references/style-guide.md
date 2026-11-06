@@ -1,6 +1,6 @@
 # What makes a good design-doc diagram
 
-aiviz handles the layout and the look. These rules are about content, which is the part only you can get right.
+Linework handles the layout and the look. These rules are about content, which is the part only you can get right.
 
 ## Scope
 

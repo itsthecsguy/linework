@@ -79,7 +79,7 @@ export interface ResolvedIcon {
 
 export function parseIcon(icon: string): { provider: Provider; name: string } | { error: string } {
   const m = /^(aws|gcp|k8s|azure)\.([\w-]+)$/.exec(icon.trim().toLowerCase());
-  if (!m) return { error: `icon "${icon}" should look like aws.lambda, gcp.cloud_run, k8s.pod or azure.<name>. Run "aiviz icons aws" to list names.` };
+  if (!m) return { error: `icon "${icon}" should look like aws.lambda, gcp.cloud_run, k8s.pod or azure.<name>. Run "linework icons aws" to list names.` };
   const provider = m[1] as Provider;
   const raw = m[2]!.replace(/-/g, '_');
   return { provider, name: ALIASES[provider][raw] ?? raw };

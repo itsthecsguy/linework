@@ -1,7 +1,7 @@
 // Bundled fonts. The headless browser measures and renders with them, and every
 // SVG gets a subset of the faces it uses (only the glyphs in its text), so a
 // diagram looks the same on GitHub, in a browser and in a doc, and text that fit
-// when aiviz sized the boxes still fits wherever it is shown.
+// when linework sized the boxes still fits wherever it is shown.
 import fs from 'node:fs';
 import path from 'node:path';
 import subsetFont from 'subset-font';

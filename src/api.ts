@@ -16,7 +16,7 @@ import { fixLabels } from './lint/fixlabels.js';
 export interface BuildOptions {
   out: string;
   png?: string;
-  /** Overwrite an existing file aiviz can't read. */
+  /** Overwrite an existing file linework can't read. */
   force?: boolean;
   /** Throw away the existing layout, including hand edits, and lay out from scratch. */
   relayout?: boolean;
@@ -51,7 +51,7 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
     try {
       old = readDrawio(fs.readFileSync(opts.out, 'utf8'));
     } catch {
-      if (!opts.force) throw new Error(`${opts.out} exists and isn't a draw.io file aiviz can read. Use --force to overwrite it.`);
+      if (!opts.force) throw new Error(`${opts.out} exists and isn't a draw.io file linework can read. Use --force to overwrite it.`);
     }
   }
   const edits = old ? manualEdits(old) : [];
@@ -63,7 +63,7 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
       if (!n.icon) continue;
       const r = resolveIcon(n.icon);
       if ('error' in r || !(await b.hasStencil(r.stencil))) {
-        warnings.push({ path: `nodes.${n.id}.icon`, message: `no icon named "${n.icon}"; run "aiviz icons ${n.icon.split('.')[0]} ${n.icon.split('.')[1] ?? ''}" to search. Drawing it without one.` });
+        warnings.push({ path: `nodes.${n.id}.icon`, message: `no icon named "${n.icon}"; run "linework icons ${n.icon.split('.')[0]} ${n.icon.split('.')[1] ?? ''}" to search. Drawing it without one.` });
         delete n.icon;
       }
     }
@@ -155,7 +155,7 @@ export async function tidy(file: string, browser?: DrawioBrowser): Promise<{ fix
 export function show(file: string, opts: { geometry?: boolean } = {}): { yaml: string; notes: string[]; edits: ManualEdit[] } {
   const m = readDrawio(fs.readFileSync(file, 'utf8'));
   const { diagram, notes, idMap } = toDiagram(m);
-  let yaml = toYaml(diagram, `aiviz-base: ${fingerprint(m)}  (keep this line; it tells build this spec includes the latest hand edits)`);
+  let yaml = toYaml(diagram, `linework-base: ${fingerprint(m)}  (keep this line; it tells build this spec includes the latest hand edits)`);
   if (opts.geometry) {
     // Positions as comments: invisible to build, but they make `git diff` show moves.
     const lines = ['# geometry (x,y width x height)'];

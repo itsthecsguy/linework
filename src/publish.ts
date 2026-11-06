@@ -1,4 +1,4 @@
-// `aiviz publish`: copy diagrams into a Google Drive folder synced by Google
+// `linework publish`: copy diagrams into a Google Drive folder synced by Google
 // Drive for desktop, so draw.io's Google Docs add-on can insert them and later
 // refresh them. Each file always lands at the same path, which keeps its Drive
 // file id, so "Update diagrams" in Docs picks up new versions.
@@ -12,7 +12,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 
-const MANIFEST = '.aiviz-publish.json';
+const MANIFEST = '.linework-publish.json';
 
 export interface PublishItem {
   file: string;
@@ -60,13 +60,13 @@ const sha = (buf: Buffer) => crypto.createHash('sha1').update(buf).digest('hex')
 
 /**
  * Where publish writes. An explicit `to` is used as is. Otherwise the single
- * Google Drive folder on this machine, under aiviz/<project>.
+ * Google Drive folder on this machine, under linework/<project>.
  */
 export function publishDir(to: string | undefined, cwd = process.cwd()): string {
   if (to) return path.resolve(cwd, to);
-  if (process.env.AIVIZ_PUBLISH_DIR) return path.resolve(cwd, process.env.AIVIZ_PUBLISH_DIR);
+  if (process.env.LINEWORK_PUBLISH_DIR) return path.resolve(cwd, process.env.LINEWORK_PUBLISH_DIR);
   const drives = driveFolders();
-  if (drives.length === 1) return path.join(drives[0]!, 'aiviz', projectName(cwd));
+  if (drives.length === 1) return path.join(drives[0]!, 'linework', projectName(cwd));
   if (drives.length > 1) throw new Error(`found several Google Drive folders; pick one with --to:\n${drives.map((d) => '  ' + d).join('\n')}`);
   throw new Error(
     'no Google Drive folder found. Install Google Drive for desktop (it syncs a local folder to Drive), or pass --to <folder> to publish into any synced folder.',

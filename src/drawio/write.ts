@@ -306,7 +306,7 @@ function labelFraction(pts: Point[], c: Point) {
 export const routeAttr = (pts: Array<{ x: number; y: number }>) => pts.map((p) => `${r(p.x)},${r(p.y)}`).join(' ');
 
 /**
- * Record each aiviz edge's route as aiviz_auto, so a later merge can tell a route
+ * Record each linework edge's route as aiviz_auto, so a later merge can tell a route
  * nobody touched (safe to reroute) from one a person adjusted (keep).
  */
 export function stampEdgeRoutes(xml: string): string {

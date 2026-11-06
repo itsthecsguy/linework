@@ -8,47 +8,47 @@ import { KINDS, DIAGRAM_TYPES, type DiagramType } from './spec/model.js';
 import type { CheckResult } from './lint/check.js';
 import { buildLines, checkLines } from './report.js';
 
-const USAGE = `aiviz: AI-written, hand-editable diagrams (YAML spec -> .drawio.svg)
+const USAGE = `linework: AI-written, hand-editable diagrams (YAML spec -> .drawio.svg)
 
 Usage:
-  aiviz build <spec.yaml|-> -o <out.drawio.svg> [--png preview.png] [--relayout]
+  linework build <spec.yaml|-> -o <out.drawio.svg> [--png preview.png] [--relayout]
       Lay out and write the diagram, then lint it. "-" reads the spec from stdin.
       If the file exists and someone edited it by hand, the spec is merged in:
       existing positions stay, new nodes are placed next to their neighbours.
       --relayout throws the existing layout away (hand edits included).
-  aiviz show <file.drawio.svg> [--geometry]
+  linework show <file.drawio.svg> [--geometry]
       Print the spec of an existing diagram (including hand edits) as YAML.
       --geometry appends node positions as comments.
-  aiviz render <file.drawio.svg> -o <out.png|out.svg> [--scale 2]
+  linework render <file.drawio.svg> -o <out.png|out.svg> [--scale 2]
       Render a preview image.
-  aiviz check <file.drawio.svg>
+  linework check <file.drawio.svg>
       Lint layout: overlaps, edges through nodes, labels that don't fit.
-  aiviz tidy <file.drawio.svg>
+  linework tidy <file.drawio.svg>
       Reroute edges that check flags as broken (e.g. after moving nodes by hand).
       Nothing else in the file changes.
-  aiviz edit <file.drawio.svg> [--no-open] [--port N]
+  linework edit <file.drawio.svg> [--no-open] [--port N]
       Open the diagram in draw.io (bundled, offline) in your browser. Saving in
       the editor writes the file. Stops when you exit the editor or close the tab.
-  aiviz import <file.mmd|doc.md|-> [--block N] [-o out.drawio.svg] [--png p.png]
-      Convert a Mermaid diagram (flowchart, state, sequence, ER) to an aiviz spec.
+  linework import <file.mmd|doc.md|-> [--block N] [-o out.drawio.svg] [--png p.png]
+      Convert a Mermaid diagram (flowchart, state, sequence, ER) to an linework spec.
       Prints the spec, or builds it straight away with -o.
-  aiviz icons <aws|gcp|k8s|azure> [filter]
+  linework icons <aws|gcp|k8s|azure> [filter]
       List icon names, for "icon: aws.lambda" on architecture nodes.
-  aiviz publish <file.drawio.svg...> [--to DIR] [--pull] [--force]
+  linework publish <file.drawio.svg...> [--to DIR] [--pull] [--force]
       Copy diagrams into your Google Drive folder (Google Drive for desktop) so
       draw.io's Google Docs add-on can insert them and refresh them later.
       --pull copies back a diagram someone edited from Docs or Drive.
-  aiviz skill [install <dir>]
-      Print where the bundled agent skill is, or copy it to <dir>/aiviz
+  linework skill [install <dir>]
+      Print where the bundled agent skill is, or copy it to <dir>/linework
       (e.g. .claude/skills, ~/.agents/skills).
-  aiviz mcp [--root DIR]
+  linework mcp [--root DIR]
       Run as an MCP server over stdio, for chat apps and agents without a shell.
       Relative paths resolve against --root (default: the current folder).
-  aiviz git-setup
+  linework git-setup
       Make git diff show .drawio.svg changes as spec changes (this repo only).
-  aiviz kinds [architecture|flow|state]
+  linework kinds [architecture|flow|state]
       List node kinds for each diagram type.
-  aiviz schema
+  linework schema
       Print the spec's JSON Schema.
 `;
 
@@ -79,14 +79,14 @@ async function main(argv: string[]) {
   switch (cmd) {
     case 'build': {
       const src = positionals[0];
-      if (!src || !values.out) fail('usage: aiviz build <spec.yaml|-> -o <out.drawio.svg>');
+      if (!src || !values.out) fail('usage: linework build <spec.yaml|-> -o <out.drawio.svg>');
       const text = src === '-' ? fs.readFileSync(0, 'utf8') : fs.readFileSync(src, 'utf8');
       const res = await build(text, { out: values.out, png: values.png, force: values.force, relayout: values.relayout });
       for (const line of buildLines(res, values.png)) console.log(line);
       return;
     }
     case 'show': {
-      const file = positionals[0] ?? fail('usage: aiviz show <file.drawio.svg>');
+      const file = positionals[0] ?? fail('usage: linework show <file.drawio.svg>');
       const res = show(file, { geometry: values.geometry });
       process.stdout.write(res.yaml);
       if (values.quiet) return;
@@ -100,7 +100,7 @@ async function main(argv: string[]) {
     }
     case 'render': {
       const file = positionals[0];
-      if (!file || !values.out) fail('usage: aiviz render <file.drawio.svg> -o <out.png>');
+      if (!file || !values.out) fail('usage: linework render <file.drawio.svg> -o <out.png>');
       const { DrawioBrowser } = await import('./render/browser.js');
       const b = await DrawioBrowser.launch({ scale: values.scale ? Number(values.scale) : 2 });
       try {
@@ -112,21 +112,21 @@ async function main(argv: string[]) {
       return;
     }
     case 'check': {
-      const file = positionals[0] ?? fail('usage: aiviz check <file.drawio.svg>');
+      const file = positionals[0] ?? fail('usage: linework check <file.drawio.svg>');
       const res = await checkFile(file);
       printCheck(res);
       if (res.findings.some((f) => f.level === 'error')) process.exitCode = 1;
       return;
     }
     case 'tidy': {
-      const file = positionals[0] ?? fail('usage: aiviz tidy <file.drawio.svg>');
+      const file = positionals[0] ?? fail('usage: linework tidy <file.drawio.svg>');
       const res = await tidy(file);
       console.log(res.fixed ? `rerouted ${res.fixed} edges in ${file}` : 'nothing to fix');
       printCheck(res.check);
       return;
     }
     case 'edit': {
-      const file = positionals[0] ?? fail('usage: aiviz edit <file.drawio.svg>');
+      const file = positionals[0] ?? fail('usage: linework edit <file.drawio.svg>');
       const { startEditor, openInBrowser } = await import('./edit/server.js');
       const session = await startEditor(file, { port: values.port ? Number(values.port) : undefined });
       const opened = !values['no-open'] && openInBrowser(session.url);
@@ -139,7 +139,7 @@ async function main(argv: string[]) {
       return;
     }
     case 'import': {
-      const src = positionals[0] ?? fail('usage: aiviz import <file.mmd|doc.md|-> [-o out.drawio.svg]');
+      const src = positionals[0] ?? fail('usage: linework import <file.mmd|doc.md|-> [-o out.drawio.svg]');
       const { importMermaid, mermaidBlocks } = await import('./import/mermaid.js');
       const { toYaml } = await import('./drawio/show.js');
       let text = src === '-' ? fs.readFileSync(0, 'utf8') : fs.readFileSync(src, 'utf8');
@@ -164,13 +164,13 @@ async function main(argv: string[]) {
     }
     case 'icons': {
       const provider = positionals[0] as 'aws' | 'gcp' | 'k8s' | 'azure' | undefined;
-      if (!provider || !['aws', 'gcp', 'k8s', 'azure'].includes(provider)) fail('usage: aiviz icons <aws|gcp|k8s|azure> [filter]');
+      if (!provider || !['aws', 'gcp', 'k8s', 'azure'].includes(provider)) fail('usage: linework icons <aws|gcp|k8s|azure> [filter]');
       const names = await listIcons(provider, positionals[1]);
       console.log(names.map((n) => `${provider}.${n}`).join('\n') || 'no matches');
       return;
     }
     case 'publish': {
-      if (!positionals.length) fail('usage: aiviz publish <file.drawio.svg...> [--to DIR]');
+      if (!positionals.length) fail('usage: linework publish <file.drawio.svg...> [--to DIR]');
       const { publish } = await import('./publish.js');
       const items = publish(positionals, { to: values.to, pull: values.pull, force: values.force });
       for (const i of items) {
@@ -188,18 +188,18 @@ async function main(argv: string[]) {
     }
     case 'skill': {
       const { fileURLToPath } = await import('node:url');
-      const src = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'skill', 'aiviz');
+      const src = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'linework');
       if (positionals[0] !== 'install') return void console.log(src);
-      const dir = positionals[1] ?? fail('usage: aiviz skill install <skills-dir>   e.g. .claude/skills');
-      const dest = path.join(dir.replace(/^~(?=$|\/)/, process.env.HOME ?? '~'), 'aiviz');
+      const dir = positionals[1] ?? fail('usage: linework skill install <skills-dir>   e.g. .claude/skills');
+      const dest = path.join(dir.replace(/^~(?=$|\/)/, process.env.HOME ?? '~'), 'linework');
       fs.mkdirSync(dest, { recursive: true });
       fs.cpSync(src, dest, { recursive: true });
-      console.log(`installed the aiviz skill to ${dest}`);
+      console.log(`installed the linework skill to ${dest}`);
       return;
     }
     case 'mcp': {
       const { runStdio } = await import('./mcp/server.js');
-      await runStdio({ root: path.resolve(values.root ?? process.env.AIVIZ_ROOT ?? process.cwd()) });
+      await runStdio({ root: path.resolve(values.root ?? process.env.LINEWORK_ROOT ?? process.cwd()) });
       return;
     }
     case 'git-setup': {

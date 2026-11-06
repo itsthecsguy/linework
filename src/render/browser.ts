@@ -1,5 +1,5 @@
 // Headless draw.io. Loads the bundled draw.io runtime into Chromium and uses
-// its own Graph code to measure, render and inspect diagrams, so what aiviz
+// its own Graph code to measure, render and inspect diagrams, so what linework
 // renders matches what the draw.io editor shows.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -18,7 +18,7 @@ export function assetsDir() {
     if (fs.existsSync(path.join(candidate, 'js', 'app.min.js'))) return candidate;
     dir = path.dirname(dir);
   }
-  throw new Error('aiviz: bundled draw.io runtime not found (assets/drawio). Reinstall aiviz.');
+  throw new Error('linework: bundled draw.io runtime not found (assets/drawio). Reinstall linework.');
 }
 
 const host = () => `<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -173,7 +173,7 @@ export class DrawioBrowser {
       (faces) => Promise.all(faces.map((f) => document.fonts.load(`${f.weight} 16px "${f.family}"`).then((r) => r.length > 0))),
       FACES.map(({ family, weight }) => ({ family, weight })),
     );
-    if (ok.includes(false)) throw new Error('aiviz: bundled fonts failed to load (assets/fonts). Reinstall aiviz.');
+    if (ok.includes(false)) throw new Error('linework: bundled fonts failed to load (assets/fonts). Reinstall linework.');
     return new DrawioBrowser(browser, page);
   }
 
@@ -217,7 +217,7 @@ export class DrawioBrowser {
 async function launchChromium(): Promise<Browser> {
   const errors: string[] = [];
   const attempts: Array<() => Promise<Browser>> = [];
-  if (process.env.AIVIZ_CHROME) attempts.push(() => chromium.launch({ executablePath: process.env.AIVIZ_CHROME }));
+  if (process.env.LINEWORK_CHROME) attempts.push(() => chromium.launch({ executablePath: process.env.LINEWORK_CHROME }));
   attempts.push(() => chromium.launch());
   attempts.push(() => chromium.launch({ channel: 'chrome' }));
   attempts.push(() => chromium.launch({ channel: 'msedge' }));
@@ -229,8 +229,8 @@ async function launchChromium(): Promise<Browser> {
     }
   }
   throw new Error(
-    'aiviz needs a Chromium-based browser to lay out and render diagrams, and none was found.\n' +
-      'Fix one of these ways:\n  npx playwright install chromium\n  install Google Chrome\n  set AIVIZ_CHROME=/path/to/chrome\n' +
+    'linework needs a Chromium-based browser to lay out and render diagrams, and none was found.\n' +
+      'Fix one of these ways:\n  npx playwright install chromium\n  install Google Chrome\n  set LINEWORK_CHROME=/path/to/chrome\n' +
       `(tried: ${errors.join(' | ')})`,
   );
 }

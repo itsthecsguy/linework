@@ -5,8 +5,8 @@ import path from 'node:path';
 import { publish } from '../src/publish.js';
 
 function setup() {
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'aiviz-proj-'));
-  const drive = fs.mkdtempSync(path.join(os.tmpdir(), 'aiviz-drive-'));
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-proj-'));
+  const drive = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-drive-'));
   fs.mkdirSync(path.join(proj, 'docs'));
   const file = path.join(proj, 'docs', 'a.drawio.svg');
   fs.writeFileSync(file, '<svg>v1</svg>');

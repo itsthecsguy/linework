@@ -1,4 +1,4 @@
-// Needs Chromium. Set AIVIZ_SKIP_E2E=1 to skip.
+// Needs Chromium. Set LINEWORK_SKIP_E2E=1 to skip.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -7,13 +7,13 @@ import { DrawioBrowser } from '../src/render/browser.js';
 import { build, checkFile, render, show, tidy } from '../src/api.js';
 
 let browser: DrawioBrowser | undefined;
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aiviz-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-'));
 beforeAll(async () => {
-  if (process.env.AIVIZ_SKIP_E2E !== '1') browser = await DrawioBrowser.launch();
+  if (process.env.LINEWORK_SKIP_E2E !== '1') browser = await DrawioBrowser.launch();
 }, 60000);
 afterAll(async () => { await browser?.close(); });
 
-describe.runIf(process.env.AIVIZ_SKIP_E2E !== '1')('end to end', () => {
+describe.runIf(process.env.LINEWORK_SKIP_E2E !== '1')('end to end', () => {
   for (const f of fs.readdirSync('examples')) {
     it(`builds ${f} with no lint errors`, async () => {
       const out = path.join(tmp, f.replace('.yaml', '.drawio.svg'));
@@ -39,7 +39,7 @@ describe.runIf(process.env.AIVIZ_SKIP_E2E !== '1')('end to end', () => {
   }, 60000);
 });
 
-describe.runIf(process.env.AIVIZ_SKIP_E2E !== '1')('editing loop', () => {
+describe.runIf(process.env.LINEWORK_SKIP_E2E !== '1')('editing loop', () => {
   const spec = fs.readFileSync('examples/checkout.yaml', 'utf8');
 
   it('merges after a hand move, and a repeat build changes nothing', async () => {
@@ -80,7 +80,7 @@ describe.runIf(process.env.AIVIZ_SKIP_E2E !== '1')('editing loop', () => {
   }, 60000);
 });
 
-describe.runIf(process.env.AIVIZ_SKIP_E2E !== '1')('phase 3 end to end', () => {
+describe.runIf(process.env.LINEWORK_SKIP_E2E !== '1')('phase 3 end to end', () => {
   for (const f of fs.readdirSync('test/fixtures/mermaid')) {
     it(`imports and builds ${f} cleanly`, async () => {
       const { importMermaid } = await import('../src/import/mermaid.js');

@@ -1,5 +1,5 @@
 // The loop the tool exists for: an agent builds a diagram, a person moves a node
-// in `aiviz edit` and saves, the agent edits the spec again, and the move survives.
+// in `linework edit` and saves, the agent edits the spec again, and the move survives.
 // Needs Chromium.
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
@@ -10,7 +10,7 @@ import { build, show } from '../src/api.js';
 import { startEditor } from '../src/edit/server.js';
 import { absBox, readDrawio } from '../src/drawio/read.js';
 
-const run = process.env.AIVIZ_SKIP_E2E !== '1';
+const run = process.env.LINEWORK_SKIP_E2E !== '1';
 
 async function launch(): Promise<Browser> {
   for (const o of [{}, { channel: 'chrome' }, { channel: 'msedge' }]) {
@@ -23,9 +23,9 @@ async function launch(): Promise<Browser> {
 
 const apiBox = (file: string) => absBox(readDrawio(fs.readFileSync(file, 'utf8')), 'api')!;
 
-describe.runIf(run)('aiviz edit', () => {
+describe.runIf(run)('linework edit', () => {
   it('saves a hand edit that the next build keeps', async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aiviz-edit-'));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-edit-'));
     const file = path.join(tmp, 'checkout.drawio.svg');
     await build(fs.readFileSync('examples/checkout.yaml', 'utf8'), { out: file });
     const before = apiBox(file);
