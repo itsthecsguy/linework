@@ -1,5 +1,5 @@
 {
-  "name": "aiviz",
+  "name": "@itsthecsguy/linework",
   "version": "0.1.0",
   "description": "Software diagrams an AI can write and a person can edit. YAML spec in, .drawio.svg out, editable in draw.io.",
   "keywords": [
@@ -20,12 +20,13 @@
   "license": "MIT",
   "type": "module",
   "bin": {
+    "linework": "dist/cli.js",
     "aiviz": "dist/cli.js"
   },
   "files": [
     "dist",
     "assets",
-    "skill",
+    "skills",
     "LICENSE",
     "NOTICE",
     "README.md"
@@ -65,5 +66,8 @@
     "type": "git",
     "url": "git+https://github.com/itsthecsguy/linework.git"
   },
-  "homepage": "https://github.com/itsthecsguy/linework#readme"
+  "homepage": "https://github.com/itsthecsguy/linework#readme",
+  "publishConfig": {
+    "access": "public"
+  }
 }

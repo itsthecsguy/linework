@@ -1,5 +1,5 @@
 // Copies the bundled fonts from @fontsource packages into assets/fonts.
-// aiviz measures text with these and embeds a subset of them in every SVG,
+// linework measures text with these and embeds a subset of them in every SVG,
 // so text renders the same everywhere and always fits its box.
 // Usage: node scripts/copy-fonts.mjs
 import fs from 'node:fs';

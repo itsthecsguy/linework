@@ -1,4 +1,4 @@
-// Drives `aiviz mcp` through the official MCP client over stdio. Needs Chromium.
+// Drives `linework mcp` through the official MCP client over stdio. Needs Chromium.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -6,8 +6,8 @@ import path from 'node:path';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 
-const run = process.env.AIVIZ_SKIP_E2E !== '1';
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aiviz-mcp-'));
+const run = process.env.LINEWORK_SKIP_E2E !== '1';
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-mcp-'));
 let client: Client;
 
 type Block = { type: string; text?: string; data?: string; mimeType?: string };
@@ -18,7 +18,7 @@ async function call(name: string, args: Record<string, unknown>) {
 
 beforeAll(async () => {
   if (!run) return;
-  client = new Client({ name: 'aiviz-test', version: '0.0.0' });
+  client = new Client({ name: 'linework-test', version: '0.0.0' });
   await client.connect(
     new StdioClientTransport({
       command: process.execPath,
@@ -35,10 +35,10 @@ describe.runIf(run)('mcp server', () => {
   it('lists the tools and gives instructions', async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ['aiviz_guide', 'build_diagram', 'check_diagram', 'edit_diagram', 'import_mermaid', 'list_icons', 'publish_diagram', 'render_diagram', 'show_diagram', 'tidy_diagram'],
+      ['build_diagram', 'check_diagram', 'edit_diagram', 'import_mermaid', 'linework_guide', 'list_icons', 'publish_diagram', 'render_diagram', 'show_diagram', 'tidy_diagram'],
     );
     expect(client.getInstructions()).toContain('show_diagram');
-    const guide = await call('aiviz_guide', { topic: 'spec' });
+    const guide = await call('linework_guide', { topic: 'spec' });
     expect(guide.text).toContain('build -> build_diagram');
     expect(guide.text).toContain('## Sequence');
   });
@@ -54,7 +54,7 @@ describe.runIf(run)('mcp server', () => {
     expect(fs.existsSync(path.join(tmp, 'docs/checkout.drawio.svg'))).toBe(true);
 
     const shown = await call('show_diagram', { path: 'docs/checkout.drawio.svg' });
-    expect(shown.text).toContain('# aiviz-base:');
+    expect(shown.text).toContain('# linework-base:');
     const edited = shown.text.replace('edges:\n', 'edges:\n  - api -> audit: append\n').replace('nodes:\n', 'nodes:\n  audit: { label: Audit log, kind: storage }\n');
     const rebuilt = await call('build_diagram', { spec: edited, path: 'docs/checkout.drawio.svg', preview: false });
     expect(rebuilt.text).toContain('check: 0 errors');

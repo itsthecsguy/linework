@@ -1,5 +1,5 @@
-// Copies the parts of draw.io that aiviz needs from a drawio checkout into assets/drawio.
-// The renderer needs the core runtime; `aiviz edit` also needs the editor UI.
+// Copies the parts of draw.io that linework needs from a drawio checkout into assets/drawio.
+// The renderer needs the core runtime; `linework edit` also needs the editor UI.
 // Usage: node scripts/copy-drawio-assets.mjs [path/to/drawio]   (default: vendor/drawio)
 import fs from 'node:fs';
 import path from 'node:path';

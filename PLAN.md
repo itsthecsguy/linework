@@ -1,4 +1,4 @@
-# aiviz plan
+# Linework plan
 
 ## The problem
 
@@ -12,11 +12,11 @@ What I want instead: the AI describes the diagram semantically, a real layout en
 
 2. **The file you embed is the file you edit.** Output is `.drawio.svg`. It's a normal SVG that browsers, GitHub and Markdown renderers display, and it carries the full draw.io model inside it. Open it in draw.io desktop, the VS Code Draw.io Integration extension or app.diagrams.net, edit, save, and the same file updates. No export step and no source file drifting away from the image.
 
-3. **Semantics ride along inside the file.** Every shape stores its stable `id`, `kind`, `tech` and auto-layout position as draw.io custom properties. So `aiviz show` can turn any diagram back into the spec, including one a human edited. The AI edits YAML, never mxGraph XML.
+3. **Semantics ride along inside the file.** Every shape stores its stable `id`, `kind`, `tech` and auto-layout position as draw.io custom properties. So `linework show` can turn any diagram back into the spec, including one a human edited. The AI edits YAML, never mxGraph XML.
 
 4. **Quality lives in the tool, not the prompt.** Layout, theme, spacing and lint rules are deterministic code. A mid-tier model following the skill should produce the same quality diagram as a frontier model, because the model only decides what goes in the diagram.
 
-5. **One CLI, several front doors.** `npx aiviz` does all the work. The skill teaches agents to call it. An MCP server wraps it for chat apps with no shell. An AGENTS.md snippet covers agents without skill support.
+5. **One CLI, several front doors.** `npx @itsthecsguy/linework` does all the work. The skill teaches agents to call it. An MCP server wraps it for chat apps with no shell. An AGENTS.md snippet covers agents without skill support.
 
 ## Why draw.io as the container
 
@@ -37,14 +37,14 @@ The ecosystem is the real reason. VS Code, Obsidian, Confluence and Google Works
 ```mermaid
 flowchart LR
   A[Agent + SKILL.md] -->|writes| S[spec YAML]
-  M[Mermaid] -->|aiviz import| S
+  M[Mermaid] -->|linework import| S
   S --> L[layout: ELK + custom]
   L --> T[theme]
   T --> D[.drawio.svg]
   D -->|open, drag, save| E[draw.io / VS Code]
   E --> D
-  D -->|aiviz show| S
-  D --> C[aiviz check + PNG preview]
+  D -->|linework show| S
+  D --> C[linework check + PNG preview]
   C -->|agent looks, fixes| S
 ```
 
@@ -79,20 +79,20 @@ hints:
 - Edge shorthand is `a -> b: label`, `a <-> b`, `a -.-> b`.
 - Layout hints are relational, like same rank, align or keep near. Never coordinates.
 - We publish a JSON Schema so any harness can validate. Validation errors say how to fix the problem, because the model reads them.
-- `aiviz import` accepts Mermaid flowchart, stateDiagram and sequenceDiagram, since every model already writes those fluently.
+- `linework import` accepts Mermaid flowchart, stateDiagram and sequenceDiagram, since every model already writes those fluently.
 
 ## CLI
 
 ```
-aiviz build spec.yaml -o docs/arch.drawio.svg   # create, or merge into an existing file
-aiviz show docs/arch.drawio.svg                  # print the spec; the AI edits this
-aiviz check docs/arch.drawio.svg                 # lint layout and style
-aiviz render docs/arch.drawio.svg -o preview.png # preview for agents that can see images
-aiviz export docs/arch.drawio.svg --png --scale 2 --theme dark
-aiviz import flow.mmd -o docs/flow.drawio.svg
-aiviz edit docs/arch.drawio.svg                  # local draw.io in the browser, saves back
-aiviz git-setup                                  # textconv so `git diff` shows spec changes
-aiviz mcp                                        # stdio MCP server, same operations
+Linework build spec.yaml -o docs/arch.drawio.svg   # create, or merge into an existing file
+Linework show docs/arch.drawio.svg                  # print the spec; the AI edits this
+Linework check docs/arch.drawio.svg                 # lint layout and style
+Linework render docs/arch.drawio.svg -o preview.png # preview for agents that can see images
+Linework export docs/arch.drawio.svg --png --scale 2 --theme dark
+Linework import flow.mmd -o docs/flow.drawio.svg
+Linework edit docs/arch.drawio.svg                  # local draw.io in the browser, saves back
+Linework git-setup                                  # textconv so `git diff` shows spec changes
+Linework mcp                                        # stdio MCP server, same operations
 ```
 
 `build` reads stdin too. Editing an existing diagram is `show`, change the YAML, `build` back into the same file.
@@ -126,14 +126,14 @@ Layout per diagram type:
 - **Sequence.** A custom layouter with lifelines as columns, messages as rows, activation bars, and alt/loop frames. ELK doesn't help here.
 - **ER.** draw.io table shapes placed by ELK.
 
-`aiviz check` fails on overlapping nodes, labels overflowing their shapes and edges running through nodes. It warns on more than 15 nodes, high crossing counts, unlabeled edges in flows and low contrast.
+`linework check` fails on overlapping nodes, labels overflowing their shapes and edges running through nodes. It warns on more than 15 nodes, high crossing counts, unlabeled edges in flows and low contrast.
 
 The skill tells the agent to loop: build, check, render a PNG, look at it, fix. Models that can see images catch things lint can't, like a lopsided layout or a label that reads wrong.
 
 ## The skill
 
 ```
-skill/aiviz/
+skills/linework/
   SKILL.md              # when to use it, the loop, spec cheat sheet; under ~300 lines
   references/
     architecture.md  flow.md  state.md  sequence.md  er.md
@@ -146,15 +146,15 @@ The style guide is opinionated. One idea per diagram, around 12 nodes at most, e
 Portability:
 
 - SKILL.md follows the Agent Skills format that most coding agents now load, including Claude Code, Codex, Cursor and Gemini CLI.
-- The only runtime requirement is Node, via `npx aiviz`. Nothing in the skill depends on one vendor's tools.
-- Harnesses with no shell use `aiviz mcp`. Its `render` tool returns a PNG so the model can still look at its work.
+- The only runtime requirement is Node, via `npx @itsthecsguy/linework`. Nothing in the skill depends on one vendor's tools.
+- Harnesses with no shell use `linework mcp`. Its `render` tool returns a PNG so the model can still look at its work.
 - Anything else gets a short AGENTS.md snippet that points at the CLI.
 
 ## Where diagrams end up
 
 - **Markdown in a repo.** `![Checkout](docs/arch.drawio.svg)` renders inline on GitHub and GitLab. Clicking the file in VS Code with the draw.io extension opens the editor. Obsidian has draw.io plugins too.
-- **HTML.** `<img src="arch.drawio.svg">`, or inline the SVG. `aiviz export --strip` removes the embedded model when file size matters.
-- **Google Docs.** This is the weak spot, and I'd rather say so now. Docs can't hold SVG and strips image metadata, so true in-place editing is impossible. The workable path is draw.io's Google Workspace add-on: it inserts a diagram stored in Drive and refreshes it after you edit. The fallback is `aiviz export --png --scale 2` with a link to the source. A later `aiviz publish --gdoc` could upload to Drive and swap the image through the Docs API.
+- **HTML.** `<img src="arch.drawio.svg">`, or inline the SVG. `linework export --strip` removes the embedded model when file size matters.
+- **Google Docs.** This is the weak spot, and I'd rather say so now. Docs can't hold SVG and strips image metadata, so true in-place editing is impossible. The workable path is draw.io's Google Workspace add-on: it inserts a diagram stored in Drive and refreshes it after you edit. The fallback is `linework export --png --scale 2` with a link to the source. A later `linework publish --gdoc` could upload to Drive and swap the image through the Docs API.
 - **Confluence** reads the same files through the draw.io app. **Notion and Slides** get PNG exports.
 
 ## Repo layout
@@ -191,7 +191,7 @@ Dependencies: elkjs, zod, a bundled draw.io viewer, and Playwright for rendering
 
 **3. Breadth.** Done. Sequence diagrams use draw.io's UML shapes, with activation bars inferred from call and reply pairs and frames that rebuild from vertical position. ER diagrams use crow's-foot notation. Mermaid import covers flowchart, state, sequence and ER. Icons cover AWS, GCP, Kubernetes and Azure from draw.io's bundled stencils. Themes: dark, sketch and C4. `build` also now slides colliding edge labels apart.
 
-**4. Distribution.** Built; not yet published to npm. `aiviz mcp` serves the same operations over MCP stdio (official v2 SDK), and `build_diagram` returns a PNG preview. A headless Claude with only those tools and no shell drew and then edited two diagrams with no lint errors. `aiviz edit` serves the bundled draw.io editor on 127.0.0.1 and writes saves through the embed protocol. A save after someone else changed the file goes to a side copy. Google Docs goes through Drive: `aiviz publish` copies files into the Google Drive for desktop folder at a fixed path for draw.io's Docs add-on, and `--pull` brings edits made from Docs back. `aiviz skill install` copies the skill. The tarball is 8 MB and installs and runs from a clean folder. Still unverified: the add-on round trip on a real Google account, and the VS Code extension.
+**4. Distribution.** Built; not yet published to npm. `linework mcp` serves the same operations over MCP stdio (official v2 SDK), and `build_diagram` returns a PNG preview. A headless Claude with only those tools and no shell drew and then edited two diagrams with no lint errors. `linework edit` serves the bundled draw.io editor on 127.0.0.1 and writes saves through the embed protocol. A save after someone else changed the file goes to a side copy. Google Docs goes through Drive: `linework publish` copies files into the Google Drive for desktop folder at a fixed path for draw.io's Docs add-on, and `--pull` brings edits made from Docs back. `linework skill install` copies the skill. The tarball is 8 MB and installs and runs from a clean folder. Still unverified: the add-on round trip on a real Google account, and the VS Code extension.
 
 **5. Look.** Built. Six styles: `clean` (new default: neutral boxes, hairline borders, groups as gray grounds, IBM Plex Sans), `soft`, `dark` (GitHub's dark colors), `sketch` (Kalam handwriting), `blueprint` (IBM Plex Mono) and `c4`. Color now follows rules: nodes stay neutral, error and success kinds keep red and green, `highlight: true` and `==>` draw the important path in the accent color, and `color:` marks categories. Boxes are sized from word-wrapped text measured in the bundled font, and each SVG embeds a subset of that font, so text fits wherever it renders. Edge labels sit mid-run on their edge, and `check` also flags labels on other edges or group borders. Sequence labels and guards move off lifelines.
 
@@ -209,7 +209,7 @@ Run these from phase 1 on, not at the end.
 - **draw.io drops our metadata on save.** Fallback is storing the spec in one root-level attribute and matching shapes by label and shape type. Spike 0 finds out.
 - **The theme can't reach the quality bar inside draw.io's style system.** Then we need our own renderer and editor, which is a much bigger project. Spike 0 again.
 - **foreignObject.** draw.io's HTML labels render through `<foreignObject>`, which non-browser renderers and some PDF pipelines can't draw. Prefer plain-text labels and export PNG for those targets.
-- **Fonts.** Solved by embedding a subset of the bundled font in each SVG. Editors that rewrite the SVG (draw.io desktop, VS Code) drop it and fall back to system fonts until the next `aiviz build`; `aiviz edit` re-embeds on save.
+- **Fonts.** Solved by embedding a subset of the bundled font in each SVG. Editors that rewrite the SVG (draw.io desktop, VS Code) drop it and fall back to system fonts until the next `linework build`; `linework edit` re-embeds on save.
 - **A new spec format.** Models don't know it yet. Keep it tiny, publish the schema, put a cheat sheet in SKILL.md, and accept Mermaid.
 - **Heavy dependency.** Chromium is big for an `npx` tool. Only download it when rendering is needed.
 

@@ -1,4 +1,4 @@
-// Mermaid -> aiviz Diagram. Covers the subset people actually use in design docs:
+// Mermaid -> linework Diagram. Covers the subset people actually use in design docs:
 // flowchart/graph, stateDiagram(-v2), sequenceDiagram and erDiagram. Styling
 // directives (classDef, style, linkStyle, click) are dropped with a warning.
 import { humanize } from '../spec/parse.js';
@@ -20,7 +20,7 @@ export function importMermaid(src: string): ImportResult {
   if (/^stateDiagram(-v2)?\b/.test(head)) return stateDiagram(lines);
   if (/^sequenceDiagram\b/.test(head)) return sequenceDiagram(lines);
   if (/^erDiagram\b/.test(head)) return erDiagram(lines);
-  throw new Error(`unsupported Mermaid diagram "${head.split(/\s/)[0]}". aiviz imports flowchart/graph, stateDiagram, sequenceDiagram and erDiagram.`);
+  throw new Error(`unsupported Mermaid diagram "${head.split(/\s/)[0]}". linework imports flowchart/graph, stateDiagram, sequenceDiagram and erDiagram.`);
 }
 
 /** Pull ```mermaid blocks out of a Markdown document. */
@@ -112,7 +112,7 @@ function flowchart(lines: string[]): ImportResult {
         continue;
       }
       if (/^(classDef|class|style|linkStyle|click|accTitle|accDescr)\b/.test(stmt)) {
-        warnings.add('styling directives (classDef, style, click, ...) are dropped; aiviz applies its own theme');
+        warnings.add('styling directives (classDef, style, click, ...) are dropped; linework applies its own theme');
         continue;
       }
       if (/^direction\s+/.test(stmt)) continue;
@@ -241,7 +241,7 @@ function parseChain(stmt: string, touch: (n: FNode) => void, edges: Array<{ from
   };
   let left = readGroup();
   if (!left) {
-    warnings.add(`skipped a line aiviz couldn't read: "${stmt.slice(0, 60)}"`);
+    warnings.add(`skipped a line linework couldn't read: "${stmt.slice(0, 60)}"`);
     return;
   }
   for (;;) {
@@ -250,7 +250,7 @@ function parseChain(stmt: string, touch: (n: FNode) => void, edges: Array<{ from
     pos = e.end;
     const right = readGroup();
     if (!right) break;
-    // Mermaid's thick links (==>) mark what matters: aiviz's highlight.
+    // Mermaid's thick links (==>) mark what matters: linework's highlight.
     for (const a of left) for (const b of right) edges.push({ from: a, to: b, label: e.label || undefined, style: e.style, ...(e.thick ? { highlight: true } : {}) });
     left = right;
   }
@@ -310,7 +310,7 @@ function stateDiagram(lines: string[]): ImportResult {
     }
     if ((m = /^([\w.-]+)\s*:\s*(.+)$/.exec(l))) { labels.set(m[1]!, clean(m[2]!)); touch(m[1]!); continue; }
     if ((m = /^([\w.-]+)$/.exec(l))) { touch(m[1]!); continue; }
-    warnings.add(`skipped a line aiviz couldn't read: "${l.slice(0, 60)}"`);
+    warnings.add(`skipped a line linework couldn't read: "${l.slice(0, 60)}"`);
   }
   const groupIds = new Set(groups.map((g) => g.raw));
   const used = new Set<string>();
@@ -413,7 +413,7 @@ function sequenceDiagram(lines: string[]): ImportResult {
       matched = true;
       break;
     }
-    if (!matched) warnings.add(`skipped a line aiviz couldn't read: "${l.slice(0, 60)}"`);
+    if (!matched) warnings.add(`skipped a line linework couldn't read: "${l.slice(0, 60)}"`);
   }
   return { diagram: { type: 'sequence', direction: 'auto', theme: 'clean', groups: [], nodes: [...parts.values()], edges: [], seq: root }, warnings: [...warnings] };
 }
@@ -469,7 +469,7 @@ function erDiagram(lines: string[]): ImportResult {
     }
     if ((m = /^("?[\w.-]+"?)$/.exec(l))) { ent(m[1]!); continue; }
     if (/^(direction|title|classDef|class|style)\b/.test(l)) continue;
-    warnings.add(`skipped a line aiviz couldn't read: "${l.slice(0, 60)}"`);
+    warnings.add(`skipped a line linework couldn't read: "${l.slice(0, 60)}"`);
   }
   // Mermaid entity names are often UPPERCASE; show them as written.
   for (const n of ents.values()) if (!n.fields?.length) delete n.fields;

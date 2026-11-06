@@ -21,7 +21,7 @@ describe('parse', () => {
   });
 
   it('parses the snippets in SKILL.md', () => {
-    const md = fs.readFileSync('skill/aiviz/SKILL.md', 'utf8');
+    const md = fs.readFileSync('skills/linework/SKILL.md', 'utf8');
     const blocks = [...md.matchAll(/```yaml\n(type:[\s\S]*?)```/g)].map((m) => m[1]!);
     expect(blocks.length).toBeGreaterThanOrEqual(3);
     for (const b of blocks) parseSpecText(b);

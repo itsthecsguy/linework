@@ -183,11 +183,11 @@ describe('fonts', () => {
   });
 });
 
-const run = process.env.AIVIZ_SKIP_E2E !== '1';
+const run = process.env.LINEWORK_SKIP_E2E !== '1';
 
 describe.runIf(run)('every style builds clean', () => {
   it('builds each example in each style with no lint findings and embedded fonts', async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aiviz-styles-'));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-styles-'));
     const b = await DrawioBrowser.launch();
     try {
       for (const name of ['checkout', 'pay-sequence', 'billing-er', 'refund-flow']) {

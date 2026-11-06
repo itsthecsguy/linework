@@ -1,5 +1,5 @@
-// draw.io model -> Diagram -> YAML spec. Works on files aiviz wrote, files a
-// person edited, and plain draw.io files with no aiviz metadata at all.
+// draw.io model -> Diagram -> YAML spec. Works on files linework wrote, files a
+// person edited, and plain draw.io files with no linework metadata at all.
 import {
   DEFAULT_KIND,
   DIAGRAM_TYPES,
@@ -57,7 +57,7 @@ export function toDiagram(m: DrawioModel): ShowResult {
         : vertices.some((v) => 'rhombus' in v.style)
           ? 'flow'
           : 'architecture';
-    if (!m.meta.aiviz_type) notes.push(`no aiviz metadata; guessed type: ${type}`);
+    if (!m.meta.aiviz_type) notes.push(`no linework metadata; guessed type: ${type}`);
   }
   const dirRaw = m.meta.aiviz_direction as Direction | undefined;
   const direction: Direction = dirRaw && DIRECTIONS.includes(dirRaw) ? dirRaw : 'auto';
@@ -74,7 +74,7 @@ export function toDiagram(m: DrawioModel): ShowResult {
   // Text-only cells (free notes) aren't diagram nodes.
   const isText = (c: Cell) => 'text' in c.style && !c.attrs.aiviz_kind && !isRow(c);
 
-  // Assign spec ids: keep aiviz/readable ids, slug the rest from their labels.
+  // Assign spec ids: keep linework/readable ids, slug the rest from their labels.
   const idMap = new Map<string, string>();
   const used = new Set<string>();
   const claim = (want: string) => {

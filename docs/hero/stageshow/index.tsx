@@ -3,7 +3,7 @@ import light from './diagram-light.png'
 import dark from './diagram-dark.png'
 import './hero.css'
 
-// aiviz README hero. A still. The story: the YAML an agent writes on the left
+// linework README hero. A still. The story: the YAML an agent writes on the left
 // becomes the diagram in the design doc behind it.
 //
 // - Copied from `overlap`: one window with chrome, one card a level above it.
@@ -26,7 +26,7 @@ const SPEC = [
   '  - api ==> stripe: charge',
 ]
 
-export default function AivizHero() {
+export default function LineworkHero() {
   return (
     <Stage width={960} height={675} className="avh">
       {() => (

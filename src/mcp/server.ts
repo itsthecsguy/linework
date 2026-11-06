@@ -1,4 +1,4 @@
-// `aiviz mcp`: the same operations as the CLI, over MCP stdio, for chat apps
+// `linework mcp`: the same operations as the CLI, over MCP stdio, for chat apps
 // and harnesses without a shell. Tools return text the model can act on, plus a
 // PNG preview so models that see images can check their work.
 import fs from 'node:fs';
@@ -14,22 +14,22 @@ import { SpecError } from '../spec/parse.js';
 import { buildLines, checkLines } from '../report.js';
 import { PROVIDERS, type Provider } from '../drawio/icons.js';
 
-const INSTRUCTIONS = `aiviz draws software diagrams (architecture, flow, state, sequence, ER) as .drawio.svg files. They render in Markdown, HTML and GitHub like any SVG, and people can open them in draw.io and edit them by hand.
+const INSTRUCTIONS = `linework draws software diagrams (architecture, flow, state, sequence, ER) as .drawio.svg files. They render in Markdown, HTML and GitHub like any SVG, and people can open them in draw.io and edit them by hand.
 
-You write a small YAML spec; aiviz does layout and styling. Never write coordinates, SVG or draw.io XML.
-- Call aiviz_guide once before your first diagram. It has the spec format and the style rules.
+You write a small YAML spec; linework does layout and styling. Never write coordinates, SVG or draw.io XML.
+- Call linework_guide once before your first diagram. It has the spec format and the style rules.
 - build_diagram writes the file and returns lint results and a PNG preview. Fix every check error, look at the preview, rebuild until it reads well.
-- To change an existing diagram, call show_diagram first, edit the YAML it returns (keep its "# aiviz-base:" line), then build_diagram to the same path. Hand edits made in draw.io survive.
+- To change an existing diagram, call show_diagram first, edit the YAML it returns (keep its "# linework-base:" line), then build_diagram to the same path. Hand edits made in draw.io survive.
 - Never pass relayout: true unless the user asks; it throws away their hand-made layout.
 - Embed the .drawio.svg in docs, not the PNG.`;
 
 const PKG = (() => {
   let dir = path.dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 4; i++) {
-    if (fs.existsSync(path.join(dir, 'skill', 'aiviz', 'SKILL.md'))) return dir;
+    if (fs.existsSync(path.join(dir, 'skills', 'linework', 'SKILL.md'))) return dir;
     dir = path.dirname(dir);
   }
-  throw new Error('aiviz: bundled skill not found. Reinstall aiviz.');
+  throw new Error('linework: bundled skill not found. Reinstall linework.');
 })();
 
 const TOOL_NAMES = `In this MCP server the CLI commands in the guide are tools: build -> build_diagram, show -> show_diagram, check -> check_diagram, render -> render_diagram, tidy -> tidy_diagram, import -> import_mermaid, icons -> list_icons, edit -> edit_diagram, publish -> publish_diagram. Pass the spec text to build_diagram directly instead of writing a file.\n\n`;
@@ -70,14 +70,14 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
     return { type: 'image', data: png.toString('base64'), mimeType: 'image/png' };
   };
 
-  const server = new McpServer({ name: 'aiviz', version: version() }, { instructions: INSTRUCTIONS, capabilities: { tools: {} } });
+  const server = new McpServer({ name: 'linework', version: version() }, { instructions: INSTRUCTIONS, capabilities: { tools: {} } });
   const pathArg = z.string().describe(`Diagram file, e.g. docs/diagrams/checkout.drawio.svg. Relative paths resolve against ${opts.root}.`);
 
   server.registerTool(
-    'aiviz_guide',
+    'linework_guide',
     {
-      title: 'How to write aiviz diagrams',
-      description: 'Returns the aiviz guide: diagram types, the YAML spec format with examples, and the style rules. Read it before your first diagram.',
+      title: 'How to write linework diagrams',
+      description: 'Returns the linework guide: diagram types, the YAML spec format with examples, and the style rules. Read it before your first diagram.',
       inputSchema: z.object({
         topic: z
           .enum(['overview', 'spec', 'style', 'google-docs'])
@@ -88,7 +88,7 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
     },
     async ({ topic }) => {
       const file = { overview: 'SKILL.md', spec: 'references/spec.md', style: 'references/style-guide.md', 'google-docs': 'references/google-docs.md' }[topic];
-      const body = fs.readFileSync(path.join(PKG, 'skill', 'aiviz', file), 'utf8').replace(/^---\n[\s\S]*?\n---\n/, '');
+      const body = fs.readFileSync(path.join(PKG, 'skills', 'linework', file), 'utf8').replace(/^---\n[\s\S]*?\n---\n/, '');
       return { content: [text(TOOL_NAMES + body)] };
     },
   );
@@ -100,7 +100,7 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
       description:
         'Lay out a YAML spec and write it as a .drawio.svg. If the file exists and someone edited it by hand, the spec is merged in and their layout is kept. Returns what changed, lint results and a PNG preview.',
       inputSchema: z.object({
-        spec: z.string().describe('The YAML spec. See aiviz_guide.'),
+        spec: z.string().describe('The YAML spec. See linework_guide.'),
         path: pathArg,
         relayout: z.boolean().default(false).describe('Throw away the existing layout, hand edits included. Only when the user asks.'),
         preview: z.boolean().default(true).describe('Return a PNG preview.'),
@@ -184,8 +184,8 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
   server.registerTool(
     'import_mermaid',
     {
-      title: 'Convert Mermaid to an aiviz spec',
-      description: 'Converts a Mermaid diagram (flowchart, stateDiagram, sequenceDiagram, erDiagram) to an aiviz spec. Returns the spec; review the guessed node kinds, then build it. With path, builds it straight away.',
+      title: 'Convert Mermaid to an linework spec',
+      description: 'Converts a Mermaid diagram (flowchart, stateDiagram, sequenceDiagram, erDiagram) to an linework spec. Returns the spec; review the guessed node kinds, then build it. With path, builds it straight away.',
       inputSchema: z.object({ source: z.string().describe('Mermaid source, without the ``` fence.'), path: pathArg.optional() }),
     },
     (args) =>
@@ -251,7 +251,7 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
     {
       title: 'Publish diagrams to Google Drive',
       description:
-        "Copies diagrams into the user's Google Drive folder (Google Drive for desktop) at a fixed path, so draw.io's Google Docs add-on can insert them and refresh them. pull: true copies back a version someone edited from Docs. See aiviz_guide topic google-docs.",
+        "Copies diagrams into the user's Google Drive folder (Google Drive for desktop) at a fixed path, so draw.io's Google Docs add-on can insert them and refresh them. pull: true copies back a version someone edited from Docs. See linework_guide topic google-docs.",
       inputSchema: z.object({
         paths: z.array(z.string()).min(1).describe('Diagram files to publish.'),
         to: z.string().optional().describe('Publish into this synced folder instead of the detected Google Drive folder.'),

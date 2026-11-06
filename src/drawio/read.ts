@@ -26,7 +26,7 @@ export interface DrawioModel {
   xml: string;
   cells: Cell[];
   byId: Map<string, Cell>;
-  /** Attributes on the root object (id "0"), where aiviz keeps diagram-level metadata. */
+  /** Attributes on the root object (id "0"), where linework keeps diagram-level metadata. */
   meta: Record<string, string>;
   /** Name of the first page. */
   name: string;
@@ -70,7 +70,7 @@ export function readDrawio(text: string): DrawioModel {
   else {
     const diagrams = rootEl.getElementsByTagName('diagram');
     if (diagrams.length === 0) throw new Error('mxfile has no <diagram>');
-    if (diagrams.length > 1) process.emitWarning?.('aiviz: file has several pages; only the first is used');
+    if (diagrams.length > 1) process.emitWarning?.('linework: file has several pages; only the first is used');
     const diag = diagrams[0]!;
     name = diag.getAttribute('name') ?? name;
     const inner = diag.getElementsByTagName('mxGraphModel')[0];
@@ -195,7 +195,7 @@ export function fingerprint(m: DrawioModel): string {
   return createHash('sha1').update(m.cells.map((c) => c.raw).join('')).digest('hex').slice(0, 12);
 }
 
-const BASE_RE = /^#\s*aiviz-base:\s*([0-9a-f]{6,40})/m;
+const BASE_RE = /^#\s*(?:linework|aiviz)-base:\s*([0-9a-f]{6,40})/m;
 export function specBase(specText: string): string | undefined {
   return BASE_RE.exec(specText)?.[1];
 }

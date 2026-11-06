@@ -1,4 +1,4 @@
-// `aiviz edit`: open a diagram in the bundled draw.io editor, in the user's own
+// `linework edit`: open a diagram in the bundled draw.io editor, in the user's own
 // browser, and write saves back to the same file. Uses draw.io's JSON embed
 // protocol, the one the VS Code extension uses, so saved files are what
 // draw.io itself writes. Everything is served from 127.0.0.1; nothing goes online.
@@ -43,7 +43,7 @@ const EMBED_PARAMS = 'embed=1&proto=json&spin=1&libraries=1&noSaveBtn=0&noExitBt
 function hostPage(name: string, xml: string, mtime: number, token: string, format: 'svg' | 'xml') {
   // JSON inside a <script>: escape "<" so a label containing "</script>" can't end the tag.
   const data = JSON.stringify({ name, xml, mtime, format }).replace(/</g, '\\u003c');
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${name.replace(/[<&]/g, '')} - aiviz edit</title>
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${name.replace(/[<&]/g, '')} - linework edit</title>
 <style>html,body{margin:0;height:100%;overflow:hidden;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 iframe{border:0;width:100%;height:100%} #msg{display:none;padding:48px;color:#334155}</style></head>
 <body><iframe id="f" src="/app/index.html?${EMBED_PARAMS}"></iframe><div id="msg"></div>
@@ -92,11 +92,11 @@ window.addEventListener('pagehide', () => navigator.sendBeacon(base + '/closed')
 
 export async function startEditor(file: string, opts: { port?: number } = {}): Promise<EditSession> {
   const abs = path.resolve(file);
-  if (!fs.existsSync(abs)) throw new Error(`${file} doesn't exist. Create it with aiviz build first.`);
+  if (!fs.existsSync(abs)) throw new Error(`${file} doesn't exist. Create it with linework build first.`);
   const format: 'svg' | 'xml' = abs.endsWith('.svg') ? 'svg' : 'xml';
   extractMxfile(fs.readFileSync(abs, 'utf8')); // fail early on files draw.io can't open
   const assets = assetsDir();
-  if (!fs.existsSync(path.join(assets, 'index.html'))) throw new Error('aiviz: the bundled draw.io editor is missing (assets/drawio/index.html). Reinstall aiviz.');
+  if (!fs.existsSync(path.join(assets, 'index.html'))) throw new Error('linework: the bundled draw.io editor is missing (assets/drawio/index.html). Reinstall linework.');
   const token = crypto.randomBytes(16).toString('hex');
   const result: EditResult = { saves: 0, conflicts: [] };
   let resolveDone!: (r: EditResult) => void;
@@ -131,7 +131,7 @@ export async function startEditor(file: string, opts: { port?: number } = {}): P
             if (!content) return json(400, { error: 'empty save' });
             let target = abs;
             if (fs.statSync(abs).mtimeMs !== msg.mtime) {
-              // Someone (often an agent running aiviz build) changed the file while it was open.
+              // Someone (often an agent running linework build) changed the file while it was open.
               target = conflictPath(abs);
               result.conflicts.push(target);
             }

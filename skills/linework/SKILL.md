@@ -1,13 +1,13 @@
 ---
-name: aiviz
+name: linework
 description: Create and edit software diagrams (architecture, flowcharts, state machines, sequence diagrams, ER/database schemas) as .drawio.svg files that render in Markdown, HTML and GitHub, and that people can open and edit by hand in draw.io. Use when a design doc, README or ADR needs a diagram, or when asked to change an existing .drawio.svg.
 ---
 
-# aiviz
+# Linework
 
-You describe the diagram as a small YAML spec. `aiviz` does the layout, styling and rendering, and writes a `.drawio.svg`. That's a normal SVG for docs, with the editable draw.io model embedded inside it. Never write coordinates, SVG or draw.io XML yourself.
+You describe the diagram as a small YAML spec. `linework` does the layout, styling and rendering, and writes a `.drawio.svg`. That's a normal SVG for docs, with the editable draw.io model embedded inside it. Never write coordinates, SVG or draw.io XML yourself.
 
-Run it as `npx -y aiviz` unless `aiviz` is already on PATH. The first run needs a Chromium-based browser. If it says none was found, run `npx playwright install chromium`.
+Run it as `npx -y @itsthecsguy/linework` unless `linework` is already on PATH. The first run needs a Chromium-based browser. If it says none was found, run `npx playwright install chromium`.
 
 ## Workflow
 
@@ -18,11 +18,11 @@ Run it as `npx -y aiviz` unless `aiviz` is already on PATH. The first run needs 
    - `sequence`: who calls whom, in what order, for one scenario.
    - `er`: database tables, their columns and how they relate.
 
-   If the doc already has a Mermaid diagram, convert it instead of rewriting it: `npx -y aiviz import doc.md --block 1 -o docs/diagrams/x.drawio.svg`.
+   If the doc already has a Mermaid diagram, convert it instead of rewriting it: `npx -y @itsthecsguy/linework import doc.md --block 1 -o docs/diagrams/x.drawio.svg`.
 2. **Write the spec** to a scratch file, or pipe it on stdin. The `.drawio.svg` is the source of truth, so you don't need to keep the YAML.
 3. **Build with a preview:**
    ```bash
-   npx -y aiviz build spec.yaml -o docs/diagrams/checkout.drawio.svg --png /tmp/checkout.png
+   npx -y @itsthecsguy/linework build spec.yaml -o docs/diagrams/checkout.drawio.svg --png /tmp/checkout.png
    ```
 4. **Read the output.** `spec error` lines tell you exactly what to fix. `check:` lists layout problems. Fix every `error` and the warnings that matter, then rebuild.
 5. **Look at the PNG** if you can view images. Check that the diagram tells the story you meant, flows in a sensible direction and doesn't sprawl. If `check` says `too-wide`, remove `direction` (or set `TB`) or split it.
@@ -58,7 +58,7 @@ edges:                        # "from ARROW to: label"
 - `tech` is the small, quieter second line. Use it for the technology, not a description.
 - Node order matters a little. Layout tries to keep the declaration order, so list nodes roughly in reading order.
 - Quote an edge if its label contains `: ` or `#`, for example `- "api -> db: SELECT: orders"`.
-- Architecture nodes can carry a cloud icon: `icon: aws.lambda`, `gcp.cloud_run`, `k8s.pod`, `azure.<name>`. Run `npx -y aiviz icons aws lambda` to search names. Use icons when the doc is about a specific cloud; leave them off for logical diagrams.
+- Architecture nodes can carry a cloud icon: `icon: aws.lambda`, `gcp.cloud_run`, `k8s.pod`, `azure.<name>`. Run `npx -y @itsthecsguy/linework icons aws lambda` to search names. Use icons when the doc is about a specific cloud; leave them off for logical diagrams.
 - Styles (`theme:`): use `clean` unless asked. It's minimal: white boxes, hairline borders, groups as gray grounds, IBM Plex Sans, and color only where it means something.
   - `soft`: borderless pastel cards, tinted by kind. For slides and docs that want color coding.
   - `dark`: for dark-mode docs and slides.
@@ -71,7 +71,7 @@ edges:                        # "from ARROW to: label"
   - Kinds `error` and `success` are red and green in every style.
   - An edge with a color uses the object form: `- { from: api, to: dlq, label: on failure, style: async, color: red }`.
 
-Node kinds, also listed by `aiviz kinds`:
+Node kinds, also listed by `linework kinds`:
 
 | type | kinds (default first) |
 |---|---|
@@ -163,9 +163,9 @@ More examples and rules are in `references/spec.md`. Read `references/style-guid
 Always start from the file, never from an old copy of the spec:
 
 ```bash
-npx -y aiviz show docs/diagrams/checkout.drawio.svg > /tmp/spec.yaml   # current spec, hand edits included
-# edit /tmp/spec.yaml; keep the "# aiviz-base:" line at the top
-npx -y aiviz build /tmp/spec.yaml -o docs/diagrams/checkout.drawio.svg --png /tmp/checkout.png
+npx -y @itsthecsguy/linework show docs/diagrams/checkout.drawio.svg > /tmp/spec.yaml   # current spec, hand edits included
+# edit /tmp/spec.yaml; keep the "# linework-base:" line at the top
+npx -y @itsthecsguy/linework build /tmp/spec.yaml -o docs/diagrams/checkout.drawio.svg --png /tmp/checkout.png
 ```
 
 If someone has arranged the diagram by hand in draw.io, `build` merges your changes into their layout instead of starting over. (For sequence diagrams, hand-placed lifeline columns stay; rows always follow message order.)
@@ -178,30 +178,30 @@ If someone has arranged the diagram by hand in draw.io, `build` merges your chan
 
 The `merged into the existing layout:` line tells you what happened. Mention it to the user.
 
-The `# aiviz-base:` line tells `build` your spec includes the latest hand edits. Without it, `build` won't delete shapes someone added by hand that your spec doesn't mention. It keeps them and prints a note. If you see that note, run `show` again and redo your edit from its output.
+The `# linework-base:` line tells `build` your spec includes the latest hand edits. Without it, `build` won't delete shapes someone added by hand that your spec doesn't mention. It keeps them and prints a note. If you see that note, run `show` again and redo your edit from its output.
 
 `--relayout` throws the hand-made layout away and lays everything out from scratch. **Only use it if the user asks,** because it undoes their layout work.
 
-If someone moved shapes by hand and left edges crossing through boxes, `npx -y aiviz tidy file.drawio.svg` reroutes just the broken edges and changes nothing else.
+If someone moved shapes by hand and left edges crossing through boxes, `npx -y @itsthecsguy/linework tidy file.drawio.svg` reroutes just the broken edges and changes nothing else.
 
 ## Putting it in a doc
 
 - Markdown (GitHub, GitLab, most renderers): `![Checkout architecture](diagrams/checkout.drawio.svg)`
 - HTML: `<img src="diagrams/checkout.drawio.svg" alt="Checkout architecture">`
 - Tell the user they can edit it by hand: open the file in VS Code with the "Draw.io Integration" extension, in draw.io desktop, or at app.diagrams.net. It saves back into the same file, and your later edits will keep their layout.
-- In a git repo, offer to run `npx -y aiviz git-setup` once, so `git diff` on diagrams shows readable spec changes.
-- Google Docs can't hold SVG. `npx -y aiviz publish file.drawio.svg` copies it into the user's Google Drive folder, and draw.io's Google Docs add-on inserts it from there and refreshes it after changes. Setup and the update steps are in `references/google-docs.md`; walk the user through them the first time.
+- In a git repo, offer to run `npx -y @itsthecsguy/linework git-setup` once, so `git diff` on diagrams shows readable spec changes.
+- Google Docs can't hold SVG. `npx -y @itsthecsguy/linework publish file.drawio.svg` copies it into the user's Google Drive folder, and draw.io's Google Docs add-on inserts it from there and refreshes it after changes. Setup and the update steps are in `references/google-docs.md`; walk the user through them the first time.
 
 ## Letting the user edit
 
-If the user wants to adjust a diagram by hand, `npx -y aiviz edit file.drawio.svg` opens it in draw.io in their browser, served from their machine. Saving there writes the file. When they say they're done, run `show` and carry on from its output; their changes are in it.
+If the user wants to adjust a diagram by hand, `npx -y @itsthecsguy/linework edit file.drawio.svg` opens it in draw.io in their browser, served from their machine. Saving there writes the file. When they say they're done, run `show` and carry on from its output; their changes are in it.
 
 ## Commands
 
 | command | does |
 |---|---|
 | `build <spec\|-> -o out.drawio.svg [--png p.png] [--relayout]` | layout (or merge into an existing file), write, lint |
-| `show <file> [--geometry]` | print the spec, stamped with `aiviz-base` |
+| `show <file> [--geometry]` | print the spec, stamped with `linework-base` |
 | `tidy <file>` | reroute edges that pass through nodes; nothing else changes |
 | `import <file.mmd\|doc.md> [--block N] [-o out.drawio.svg]` | convert Mermaid (flowchart, state, sequence, ER) |
 | `icons <aws\|gcp\|k8s\|azure> [filter]` | list icon names |

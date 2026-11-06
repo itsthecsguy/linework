@@ -1,10 +1,10 @@
-// `aiviz git-setup`: make `git diff` show diagram changes as spec changes.
+// `linework git-setup`: make `git diff` show diagram changes as spec changes.
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const PATTERNS = ['*.drawio.svg diff=aiviz', '*.drawio diff=aiviz'];
+const PATTERNS = ['*.drawio.svg diff=linework', '*.drawio diff=linework'];
 
 function onPath(cmd: string): boolean {
   try {
@@ -16,10 +16,10 @@ function onPath(cmd: string): boolean {
 }
 
 /** The command git should run. Prefer a stable name over this machine's paths. */
-export function aivizCommand(): string {
+export function cliCommand(): string {
   const cli = fileURLToPath(new URL('./cli.js', import.meta.url));
-  if (onPath('aiviz')) return 'aiviz';
-  if (cli.includes(`${path.sep}_npx${path.sep}`)) return 'npx -y aiviz';
+  if (onPath('linework')) return 'linework';
+  if (cli.includes(`${path.sep}_npx${path.sep}`)) return 'npx -y @itsthecsguy/linework';
   return `"${process.execPath}" "${cli.replace(/\.ts$/, '.js').replace(`${path.sep}src${path.sep}`, `${path.sep}dist${path.sep}`)}"`;
 }
 
@@ -38,9 +38,9 @@ export function gitSetup(cwd = process.cwd()): string[] {
     fs.writeFileSync(attrs, existing + (existing && !existing.endsWith('\n') ? '\n' : '') + missing.join('\n') + '\n');
     done.push(`added to .gitattributes: ${missing.join(', ')}`);
   }
-  const cmd = `${aivizCommand()} show --geometry --quiet`;
-  execFileSync('git', ['config', 'diff.aiviz.textconv', cmd], { cwd: top });
-  execFileSync('git', ['config', 'diff.aiviz.cachetextconv', 'true'], { cwd: top });
-  done.push(`set git config diff.aiviz.textconv to: ${cmd}  (this repo only)`);
+  const cmd = `${cliCommand()} show --geometry --quiet`;
+  execFileSync('git', ['config', 'diff.linework.textconv', cmd], { cwd: top });
+  execFileSync('git', ['config', 'diff.linework.cachetextconv', 'true'], { cwd: top });
+  done.push(`set git config diff.linework.textconv to: ${cmd}  (this repo only)`);
   return done;
 }
