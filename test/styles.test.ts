@@ -13,7 +13,7 @@ import { toDiagram, toYaml } from '../src/drawio/show.js';
 import { merge } from '../src/drawio/merge.js';
 import { serialize, toMxfile } from '../src/drawio/write.js';
 import { importMermaid } from '../src/import/mermaid.js';
-import { embedFonts, familiesIn } from '../src/render/fonts.js';
+import { embedFonts, familiesIn, forgetSubsets } from '../src/render/fonts.js';
 import { build } from '../src/api.js';
 import { DrawioBrowser } from '../src/render/browser.js';
 import { THEMES } from '../src/spec/model.js';
@@ -180,6 +180,34 @@ describe('fonts', () => {
     expect(once).toMatch(/<style id="aiviz-fonts"[^>]*>@font-face\{font-family:"IBM Plex Sans";font-weight:400/);
     expect(twice.match(/aiviz-fonts/g)!.length).toBe(1);
     expect(once.length - svg.length).toBeLessThan(20000); // a subset, not the 24KB face
+  });
+
+  it('caches subsets by character set, and ignores a broken cache file', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-cache-'));
+    const prev = process.env.XDG_CACHE_HOME;
+    process.env.XDG_CACHE_HOME = dir;
+    try {
+      const svg = (t: string) => `<svg xmlns="http://www.w3.org/2000/svg"><defs/><text font-family="IBM Plex Mono, monospace">${t}</text></svg>`;
+      const face = (s: string) => /url\(data:font\/woff2;base64,([^)]+)\)/.exec(s)![1];
+      const a = await embedFonts(svg('Queue zebra'));
+      const files = fs.readdirSync(path.join(dir, 'linework', 'fonts'));
+      expect(files.length).toBeGreaterThan(0);
+      // Same characters in another order: the same subset.
+      expect(face(await embedFonts(svg('zebra Queue')))).toBe(face(a));
+      // A truncated file in the cache is rebuilt, not embedded.
+      const other = svg('Kalam-free text 42');
+      const before = new Set(fs.readdirSync(path.join(dir, 'linework', 'fonts')));
+      const fresh = await embedFonts(other);
+      const added = fs.readdirSync(path.join(dir, 'linework', 'fonts')).filter((f) => !before.has(f));
+      expect(added.length).toBeGreaterThan(0);
+      for (const f of added) fs.writeFileSync(path.join(dir, 'linework', 'fonts', f), 'junk');
+      forgetSubsets();
+      expect(face(await embedFonts(other.replace('42', '24')))).toBe(face(fresh));
+      for (const f of added) expect(fs.readFileSync(path.join(dir, 'linework', 'fonts', f)).subarray(0, 4).toString('latin1')).toBe('wOF2');
+    } finally {
+      if (prev === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = prev;
+    }
   });
 });
 

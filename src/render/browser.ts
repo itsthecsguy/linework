@@ -5,11 +5,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { FONT_STACK } from '../drawio/theme.js';
 import { FACES, embedFonts, fontFaceCss, fontsDir } from './fonts.js';
-
-const ORIGIN = 'http://aiviz.local';
 
 export function assetsDir() {
   // dist/render/browser.js or src/render/browser.ts -> <pkg>/assets/drawio
@@ -92,6 +92,23 @@ window.aiviz = {
   hasStencil: function (name) {
     return mxStencilRegistry.getStencil(name) != null;
   },
+  // Where an edge's label lands at each of several positions along the edge
+  // (draw.io's -1..1 x). Moving a label changes nothing else in the diagram, so
+  // one decode serves every candidate instead of one full inspect per try.
+  labelBoxes: function (xml, id, xs) {
+    return withGraph(xml, function (graph) {
+      var model = graph.getModel(), cell = model.getCell(id);
+      if (!cell) return xs.map(function () { return null; });
+      return xs.map(function (x) {
+        var g = cell.geometry.clone();
+        g.x = x;
+        model.setGeometry(cell, g);
+        var st = graph.view.getState(cell);
+        var tb = st && st.text && st.text.boundingBox;
+        return tb ? { x: tb.x, y: tb.y, w: tb.width, h: tb.height } : null;
+      });
+    });
+  },
   inspect: function (xml) {
     return withGraph(xml, function (graph) {
       var model = graph.getModel(), out = [];
@@ -146,36 +163,31 @@ export interface InspectCell {
 }
 
 export class DrawioBrowser {
-  private constructor(private browser: Browser, private page: Page) {}
+  private constructor(private browser: Browser, private page: Page, private server: http.Server) {}
 
   static async launch(opts: { scale?: number } = {}): Promise<DrawioBrowser> {
-    const browser = await launchChromium();
-    const page = await browser.newPage({ deviceScaleFactor: opts.scale ?? 2 });
-    const dir = assetsDir();
-    const fonts = fontsDir();
-    const html = host();
-    await page.route(`${ORIGIN}/**`, async (route) => {
-      const url = new URL(route.request().url());
-      if (url.pathname === '/' || url.pathname === '/host.html') return route.fulfill({ status: 200, contentType: 'text/html', body: html });
-      if (url.pathname.startsWith('/aiviz-fonts/')) {
-        const f = FACES.find((x) => `/aiviz-fonts/${x.file}` === url.pathname);
-        return f ? route.fulfill({ status: 200, contentType: 'font/woff2', body: fs.readFileSync(path.join(fonts, f.file)) }) : route.fulfill({ status: 404, body: '' });
-      }
-      const file = path.join(dir, path.normalize(url.pathname));
-      if (!file.startsWith(dir) || !fs.existsSync(file)) return route.fulfill({ status: 404, body: '' });
-      return route.fulfill({ status: 200, contentType: TYPES[path.extname(file)] ?? 'application/octet-stream', body: fs.readFileSync(file) });
-    });
-    // Nothing else may load: keeps rendering offline and deterministic.
-    await page.route(/^(?!http:\/\/aiviz\.local\/).*/, (route) => route.abort());
-    await page.goto(`${ORIGIN}/host.html`);
-    await page.waitForFunction(() => (window as unknown as { ready?: boolean }).ready === true, null, { timeout: 30000 });
-    // Measuring before a font loads would size every box for the fallback font.
-    const ok = await page.evaluate(
-      (faces) => Promise.all(faces.map((f) => document.fonts.load(`${f.weight} 16px "${f.family}"`).then((r) => r.length > 0))),
-      FACES.map(({ family, weight }) => ({ family, weight })),
-    );
-    if (ok.includes(false)) throw new Error('linework: bundled fonts failed to load (assets/fonts). Reinstall linework.');
-    return new DrawioBrowser(browser, page);
+    // Chromium starts while the asset server binds.
+    const [browser, server] = await Promise.all([launchChromium(), serveAssets()]);
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const page = await browser.newPage({ deviceScaleFactor: opts.scale ?? 2 });
+      // Nothing else may load: keeps rendering offline and deterministic.
+      const own = new RegExp(`^${origin.replace(/[.]/g, '\\.')}/`);
+      await page.route((url) => !own.test(url.href), (route) => route.abort());
+      await page.goto(`${origin}/host.html`);
+      await page.waitForFunction(() => (window as unknown as { ready?: boolean }).ready === true, null, { timeout: 30000 });
+      // Measuring before a font loads would size every box for the fallback font.
+      const ok = await page.evaluate(
+        (faces) => Promise.all(faces.map((f) => document.fonts.load(`${f.weight} 16px "${f.family}"`).then((r) => r.length > 0))),
+        FACES.map(({ family, weight }) => ({ family, weight })),
+      );
+      if (ok.includes(false)) throw new Error('linework: bundled fonts failed to load (assets/fonts). Reinstall linework.');
+      return new DrawioBrowser(browser, page, server);
+    } catch (e) {
+      await browser.close().catch(() => {});
+      server.close();
+      throw e;
+    }
   }
 
   measure(reqs: Array<[string, number, number, string?]>): Promise<number[]> {
@@ -206,13 +218,64 @@ export class DrawioBrowser {
     return this.page.evaluate((n) => (window as any).aiviz.hasStencil(n), name);
   }
 
+  // inspect is a pure function of the XML, and a build asks about the same XML
+  // more than once (lint, label fixing, the final check).
+  private seen = new Map<string, Promise<InspectCell[]>>();
+
   inspect(xml: string): Promise<InspectCell[]> {
-    return this.page.evaluate((x) => (window as any).aiviz.inspect(x), xml);
+    let hit = this.seen.get(xml);
+    if (!hit) {
+      hit = this.page.evaluate((x) => (window as any).aiviz.inspect(x), xml);
+      hit.catch(() => this.seen.delete(xml));
+      if (this.seen.size >= 8) this.seen.delete(this.seen.keys().next().value!);
+      this.seen.set(xml, hit);
+    }
+    // Callers may change the cells; each gets its own copy.
+    return hit.then((cells) => structuredClone(cells));
   }
 
-  close() {
-    return this.browser.close();
+  /** Label boxes for edge `id` with its label at each draw.io position in `xs`. */
+  labelBoxes(xml: string, id: string, xs: number[]): Promise<Array<InspectCell['textBox']>> {
+    return this.page.evaluate(([x, i, p]) => (window as any).aiviz.labelBoxes(x, i, p), [xml, id, xs] as const);
   }
+
+  async close() {
+    await this.browser.close();
+    this.server.closeAllConnections();
+    this.server.close();
+  }
+}
+
+/**
+ * The draw.io runtime is 16MB of script. Served from a local port, Chromium reads
+ * it straight off the socket; through Playwright's request interception every
+ * byte would cross the DevTools protocol first.
+ */
+function serveAssets(): Promise<http.Server> {
+  const dir = assetsDir();
+  const fonts = fontsDir();
+  const html = host();
+  const send = (res: http.ServerResponse, status: number, type: string, body: string | Buffer) => {
+    res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' });
+    res.end(body);
+  };
+  const server = http.createServer((req, res) => {
+    const pathname = new URL(req.url ?? '/', 'http://x').pathname;
+    if (pathname === '/' || pathname === '/host.html') return send(res, 200, 'text/html', html);
+    if (pathname.startsWith('/aiviz-fonts/')) {
+      const f = FACES.find((x) => `/aiviz-fonts/${x.file}` === pathname);
+      return f ? send(res, 200, 'font/woff2', fs.readFileSync(path.join(fonts, f.file))) : send(res, 404, 'text/plain', '');
+    }
+    const file = path.join(dir, path.normalize(decodeURIComponent(pathname)));
+    if (!file.startsWith(dir + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) return send(res, 404, 'text/plain', '');
+    send(res, 200, TYPES[path.extname(file)] ?? 'application/octet-stream', fs.readFileSync(file));
+  });
+  // A server that's only waiting on a browser that already exited shouldn't keep node alive.
+  server.unref();
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve(server));
+  });
 }
 
 /** Playwright-core's own installer, so the Chromium build always matches the version we run. */

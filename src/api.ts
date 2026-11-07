@@ -10,7 +10,7 @@ import { manualEdits, toDiagram, toYaml, type ManualEdit } from './drawio/show.j
 import { merge, type MergeStats } from './drawio/merge.js';
 import { sequenceScene } from './layout/sequence.js';
 import { resolveIcon, PROVIDERS, type Provider } from './drawio/icons.js';
-import { DrawioBrowser } from './render/browser.js';
+import { DrawioBrowser, type InspectCell } from './render/browser.js';
 import { brokenEdges, check, type CheckResult } from './lint/check.js';
 import { fixLabels } from './lint/fixlabels.js';
 
@@ -111,23 +111,27 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
         stats.rerouted += broken.filter((id) => !m.reroute.includes(id)).length;
       }
     } else xml = await straightenDetours(b, toMxfile(diagram, l), detourEdges(diagram, l));
-    xml = (await fixLabels(b, xml)).xml;
+    const fixed = await fixLabels(b, xml);
+    xml = fixed.xml;
     xml = stampEdgeRoutes(xml);
-    return finish(b, xml, { mode, warnings, direction: mode === 'merge' ? (old!.meta.aiviz_direction ?? l.direction) : l.direction, edits, old, stats });
+    // Stamping routes changes attributes, not geometry: the cells fixLabels read still hold.
+    return finish(b, xml, { mode, warnings, direction: mode === 'merge' ? (old!.meta.aiviz_direction ?? l.direction) : l.direction, edits, old, stats, cells: fixed.cells });
   });
 
   async function finish(
     b: DrawioBrowser,
     xml: string,
-    r: { mode: 'fresh' | 'merge'; warnings: Issue[]; direction: string; edits: ManualEdit[]; old?: DrawioModel; stats?: MergeStats },
+    r: { mode: 'fresh' | 'merge'; warnings: Issue[]; direction: string; edits: ManualEdit[]; old?: DrawioModel; stats?: MergeStats; cells?: InspectCell[] },
   ): Promise<BuildResult> {
     fs.mkdirSync(path.dirname(path.resolve(opts.out)), { recursive: true });
-    fs.writeFileSync(opts.out, kind === 'svg' ? await b.renderSvg(xml) : xml);
-    if (opts.png) await b.renderPng(xml, opts.png);
+    // Issued together: the browser renders the preview and lays out the lint pass
+    // while node subsets the fonts for the SVG.
+    const [file, , cells] = await Promise.all([kind === 'svg' ? b.renderSvg(xml) : xml, opts.png ? b.renderPng(xml, opts.png) : undefined, r.cells ?? b.inspect(xml)]);
+    fs.writeFileSync(opts.out, file);
     return {
       out: opts.out,
       warnings: r.warnings,
-      check: check(await b.inspect(xml)),
+      check: check(cells),
       direction: r.direction,
       mode: r.mode,
       merge: r.stats,

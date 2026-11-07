@@ -159,6 +159,8 @@ Linework sizes every box from the real width of its text in the font it renders 
 
 Linework needs Node 20+ and a Chromium-based browser, which it uses headless to measure text and render. It tries Playwright's Chromium, then Chrome, then Edge. If none is found, run `linework install-browser`, or set `LINEWORK_CHROME` to a browser binary. If a browser is found but crashes on launch, an agent's sandbox is usually blocking it. Linework then retries Playwright's Chromium in single-process mode, which starts inside Codex's sandbox.
 
+Linework keeps the font subsets it embeds in your cache folder (`~/Library/Caches/linework` on macOS, `~/.cache/linework` on Linux, `%LOCALAPPDATA%\linework` on Windows), so rebuilding a diagram doesn't compress the same fonts again. Set `LINEWORK_NO_CACHE=1` to turn that off.
+
 ## Connect over MCP
 
 The MCP server is for chat apps and agents that can't run shell commands. Agents with a shell do better with the skill, since they can run the CLI and see its output directly.

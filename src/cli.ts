@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import module from 'node:module';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { build, checkFile, listIcons, render, show, tidy } from './api.js';
-import { SpecError, jsonSchema } from './spec/parse.js';
-import { KINDS, DIAGRAM_TYPES, type DiagramType } from './spec/model.js';
 import type { CheckResult } from './lint/check.js';
-import { buildLines, checkLines } from './report.js';
+import type { DrawioBrowser } from './render/browser.js';
+import type { DiagramType } from './spec/model.js';
+import type { SpecError } from './spec/parse.js';
 
 const USAGE = `linework: AI-written, hand-editable diagrams (YAML spec -> .drawio.svg)
 
@@ -56,41 +56,91 @@ Usage:
       when no Chrome or Edge is installed, or to run inside an agent's sandbox.
 `;
 
+// Node 22.1+ can keep compiled bytecode for linework's modules on disk, which
+// takes about a quarter off loading them on every run after the first. Older
+// Node has no such call. NODE_DISABLE_COMPILE_CACHE=1 turns it off.
+(module as { enableCompileCache?: () => unknown }).enableCompileCache?.();
+
 async function main(argv: string[]) {
   const [cmd, ...rest] = argv;
-  const { values, positionals } = parseArgs({
-    args: rest,
-    allowPositionals: true,
-    options: {
-      out: { type: 'string', short: 'o' },
-      png: { type: 'string' },
-      force: { type: 'boolean', default: false },
-      relayout: { type: 'boolean', default: false },
-      geometry: { type: 'boolean', default: false },
-      quiet: { type: 'boolean', short: 'q', default: false },
-      block: { type: 'string' },
-      scale: { type: 'string' },
-      'no-open': { type: 'boolean', default: false },
-      port: { type: 'string' },
-      root: { type: 'string' },
-      to: { type: 'string' },
-      pull: { type: 'boolean', default: false },
-      help: { type: 'boolean', short: 'h' },
-    },
-  });
+  const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: OPTIONS });
   if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h' || values.help) return void process.stdout.write(USAGE);
 
+  // Commands that draw start Chromium first and load the rest of linework while it
+  // boots and loads draw.io: the two take about the same time, so they overlap.
+  const needsBrowser = ['build', 'render', 'check', 'tidy', 'icons'].includes(cmd) || (cmd === 'import' && !!values.out);
+  const launching = needsBrowser ? import('./render/browser.js').then((m) => m.DrawioBrowser.launch({ scale: cmd === 'render' && values.scale ? Number(values.scale) : 2 })) : undefined;
+  // A failure here surfaces where the browser is awaited; don't report it twice.
+  launching?.catch(() => {});
+  try {
+    await run(cmd, values, positionals, launching);
+  } finally {
+    if (launching) await (await launching.catch(() => undefined))?.close();
+  }
+  // The font subsetter's WebAssembly keeps node alive for ~100ms after the work
+  // is done, with nothing left to run. A drawing command is finished here.
+  if (launching) await exitWhenFlushed();
+}
+
+/** A small spec with a group, labels and a cycle: enough to exercise ELK's main paths. */
+const WARM_SPEC = 'type: architecture\ngroups: { g: G }\nnodes:\n  a: { in: g }\n  b: { in: g }\n  c: {}\nedges:\n  - a -> b: x\n  - b -> c: y\n  - c -> a\n';
+
+async function warmUp() {
+  const [{ parseSpecText }, { layout }] = await Promise.all([import('./spec/parse.js'), import('./layout/layout.js')]);
+  await layout(parseSpecText(WARM_SPEC).diagram);
+}
+
+function exitWhenFlushed(): Promise<never> {
+  return new Promise(() => {
+    let pending = 2;
+    const done = () => --pending === 0 && process.exit();
+    process.stdout.write('', done);
+    process.stderr.write('', done);
+  });
+}
+
+type Values = ReturnType<typeof parseArgs<{ options: typeof OPTIONS; allowPositionals: true }>>['values'];
+
+const OPTIONS = {
+  out: { type: 'string', short: 'o' },
+  png: { type: 'string' },
+  force: { type: 'boolean', default: false },
+  relayout: { type: 'boolean', default: false },
+  geometry: { type: 'boolean', default: false },
+  quiet: { type: 'boolean', short: 'q', default: false },
+  block: { type: 'string' },
+  scale: { type: 'string' },
+  'no-open': { type: 'boolean', default: false },
+  port: { type: 'string' },
+  root: { type: 'string' },
+  to: { type: 'string' },
+  pull: { type: 'boolean', default: false },
+  help: { type: 'boolean', short: 'h' },
+} as const;
+
+async function run(cmd: string, values: Values, positionals: string[], launching: Promise<DrawioBrowser> | undefined) {
+  const browser = async () => {
+    // ELK compiles its code on first use. Laying out a tiny graph while Chromium
+    // is still starting takes that cost off the real layout.
+    if (launching && ['build', 'import'].includes(cmd)) await warmUp();
+    return launching!;
+  };
+  const { buildLines } = await import('./report.js');
   switch (cmd) {
     case 'build': {
       const src = positionals[0];
       if (!src || !values.out) fail('usage: linework build <spec.yaml|-> -o <out.drawio.svg>');
       const text = src === '-' ? fs.readFileSync(0, 'utf8') : fs.readFileSync(src, 'utf8');
-      const res = await build(text, { out: values.out, png: values.png, force: values.force, relayout: values.relayout });
+      const { build } = await import('./api.js');
+      // Spec errors first: they shouldn't wait on, or hide behind, a browser problem.
+      (await import('./spec/parse.js')).parseSpecText(text);
+      const res = await build(text, { out: values.out, png: values.png, force: values.force, relayout: values.relayout, browser: await browser() });
       for (const line of buildLines(res, values.png)) console.log(line);
       return;
     }
     case 'show': {
       const file = positionals[0] ?? fail('usage: linework show <file.drawio.svg>');
+      const { show } = await import('./api.js');
       const res = show(file, { geometry: values.geometry });
       process.stdout.write(res.yaml);
       if (values.quiet) return;
@@ -105,28 +155,25 @@ async function main(argv: string[]) {
     case 'render': {
       const file = positionals[0];
       if (!file || !values.out) fail('usage: linework render <file.drawio.svg> -o <out.png>');
-      const { DrawioBrowser } = await import('./render/browser.js');
-      const b = await DrawioBrowser.launch({ scale: values.scale ? Number(values.scale) : 2 });
-      try {
-        await render(file, values.out, b);
-      } finally {
-        await b.close();
-      }
+      const { render } = await import('./api.js');
+      await render(file, values.out, await browser());
       console.log(`wrote ${values.out}`);
       return;
     }
     case 'check': {
       const file = positionals[0] ?? fail('usage: linework check <file.drawio.svg>');
-      const res = await checkFile(file);
-      printCheck(res);
+      const { checkFile } = await import('./api.js');
+      const res = await checkFile(file, await browser());
+      await printCheck(res);
       if (res.findings.some((f) => f.level === 'error')) process.exitCode = 1;
       return;
     }
     case 'tidy': {
       const file = positionals[0] ?? fail('usage: linework tidy <file.drawio.svg>');
-      const res = await tidy(file);
+      const { tidy } = await import('./api.js');
+      const res = await tidy(file, await browser());
       console.log(res.fixed ? `rerouted ${res.fixed} edges in ${file}` : 'nothing to fix');
-      printCheck(res.check);
+      await printCheck(res.check);
       return;
     }
     case 'edit': {
@@ -161,15 +208,17 @@ async function main(argv: string[]) {
       for (const w of res.warnings) console.error(`import: ${w}`);
       const yaml = toYaml(res.diagram, 'imported from Mermaid');
       if (!values.out) return void process.stdout.write(yaml);
-      const built = await build(yaml, { out: values.out, png: values.png, relayout: values.relayout, force: values.force });
+      const { build } = await import('./api.js');
+      const built = await build(yaml, { out: values.out, png: values.png, relayout: values.relayout, force: values.force, browser: await browser() });
       console.log(`wrote ${built.out} (${built.check.stats.nodes} nodes, ${built.check.stats.edges} edges, ${built.direction})`);
-      printCheck(built.check);
+      await printCheck(built.check);
       return;
     }
     case 'icons': {
       const provider = positionals[0] as 'aws' | 'gcp' | 'k8s' | 'azure' | undefined;
       if (!provider || !['aws', 'gcp', 'k8s', 'azure'].includes(provider)) fail('usage: linework icons <aws|gcp|k8s|azure> [filter]');
-      const names = await listIcons(provider, positionals[1]);
+      const { listIcons } = await import('./api.js');
+      const names = await listIcons(provider, positionals[1], await browser());
       console.log(names.map((n) => `${provider}.${n}`).join('\n') || 'no matches');
       return;
     }
@@ -212,6 +261,7 @@ async function main(argv: string[]) {
       return;
     }
     case 'kinds': {
+      const { KINDS, DIAGRAM_TYPES } = await import('./spec/model.js');
       const types = (positionals.length ? positionals : DIAGRAM_TYPES) as DiagramType[];
       for (const t of types) {
         if (!KINDS[t]) fail(`unknown type ${t}`);
@@ -220,9 +270,11 @@ async function main(argv: string[]) {
       }
       return;
     }
-    case 'schema':
+    case 'schema': {
+      const { jsonSchema } = await import('./spec/parse.js');
       console.log(JSON.stringify(jsonSchema(), null, 2));
       return;
+    }
     case 'install-browser': {
       const { browserInstallCommand } = await import('./render/browser.js');
       const { spawnSync } = await import('node:child_process');
@@ -237,7 +289,8 @@ async function main(argv: string[]) {
   }
 }
 
-function printCheck(res: CheckResult) {
+async function printCheck(res: CheckResult) {
+  const { checkLines } = await import('./report.js');
   for (const line of checkLines(res)) console.log(line);
 }
 
@@ -247,9 +300,9 @@ function fail(msg: string): never {
 }
 
 main(process.argv.slice(2)).catch((e) => {
-  if (e instanceof SpecError) {
+  if ((e as Error)?.name === 'SpecError') {
     console.error('spec error:');
-    for (const i of e.issues) console.error(`  ${i.path ? i.path + ': ' : ''}${i.message}`);
+    for (const i of (e as SpecError).issues) console.error(`  ${i.path ? i.path + ': ' : ''}${i.message}`);
     process.exit(1);
   }
   console.error(`error: ${(e as Error).message}`);

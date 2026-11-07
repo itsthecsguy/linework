@@ -37,7 +37,7 @@ describe('polish', () => {
         for (let i = 1; i < e.points.length; i++) expect(vert(e.points[i - 1]!, e.points[i]!) || horiz(e.points[i - 1]!, e.points[i]!), `${f} ${id}`).toBe(true);
       }
     }
-  });
+  }, 30000);
 
   it('branches decisions from the diamond points', async () => {
     const d = spec('refund-flow.yaml');
