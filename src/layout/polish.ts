@@ -221,6 +221,41 @@ export function polish(d: Diagram, l: Layout, inp: PolishInput): void {
     le.points = e.pts.map(f.from);
   }
 
+  // A one-column group is only as wide as its node, so an edge dropping into the
+  // node's middle crosses the title. ELK ignores a minimum size on groups it lays
+  // out with their children, so widen them here: evenly to both sides, when the
+  // added strips hold nothing else.
+  const owner = new Map<string, string | undefined>([...d.groups.map((g) => [g.id, g.parent] as const), ...d.nodes.map((n) => [n.id, n.parent] as const)]);
+  const within = (id: string | undefined, gid: string): boolean => !!id && (id === gid || within(owner.get(id), gid));
+  const depth = (gid: string): number => { let k = 0; for (let p = owner.get(gid); p; p = owner.get(p)) k++; return k; };
+  for (const gid of [...l.groups.keys()].sort((a, b) => depth(b) - depth(a))) {
+    const g = l.groups.get(gid)!, tt = inp.groupTitle.get(gid);
+    if (!tt) continue;
+    const half = Math.ceil((2 * (tt.w + inp.titleInset + 10) - g.w) / 2);
+    if (half <= 0) continue;
+    const strips = [{ x: g.x - half, y: g.y, w: half, h: g.h }, { x: g.x + g.w, y: g.y, w: half, h: g.h }];
+    const hits = (r: Box) => strips.some((s) => r.x < s.x + s.w + 8 && r.x + r.w > s.x - 8 && r.y < s.y + s.h && r.y + r.h > s.y);
+    const parent = owner.get(gid) ? l.groups.get(owner.get(gid)!) : undefined;
+    const fits =
+      (!parent || (g.x - half >= parent.x + 8 && g.x + g.w + half <= parent.x + parent.w - 8)) &&
+      [...l.nodes].every(([id, b]) => within(id, gid) || !hits(b)) &&
+      [...l.groups].every(([id, b]) => id === gid || within(id, gid) || within(gid, id) || !hits(b)) &&
+      [...l.edges.values()].every((le) => le.points.slice(1).every((q, i) => strips.every((s) => !segHits(le.points[i]!, q, s))));
+    if (fits) l.groups.set(gid, { ...g, x: g.x - half, w: g.w + 2 * half });
+  }
+  // Keep the drawing clear of the canvas edge after widening.
+  const left = Math.min(...[...l.groups.values(), ...l.nodes.values()].map((b) => b.x));
+  if (left < 16) {
+    const dx = 16 - left;
+    const mv = (b: Box): Box => ({ ...b, x: b.x + dx });
+    for (const m of [l.nodes, l.groups]) for (const [k, b] of m) m.set(k, mv(b));
+    for (const le of l.edges.values()) {
+      le.points = le.points.map((p) => ({ ...p, x: p.x + dx }));
+      if (le.label) le.label = mv(le.label);
+    }
+  }
+  l.width = Math.max(l.width, ...[...l.groups.values(), ...l.nodes.values()].map((b) => b.x + b.w + 16));
+
   // Group titles: slide a title right when an edge runs through it.
   for (const [gid, g] of l.groups) {
     const tt = inp.groupTitle.get(gid);

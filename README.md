@@ -102,6 +102,29 @@ Linework lays it out with ELK and draws it with draw.io's own renderer. It draws
 
 To change a diagram, the agent runs `linework show` to get the spec back, hand edits included, edits it and rebuilds. The rebuild merges into your layout. Your boxes stay where you put them, new ones go next to their neighbours, and only the edges that need it get rerouted (with draw.io's libavoid router).
 
+## Examples
+
+These are first builds of the specs in [`examples/`](examples), with no hand edits. Each one is a `.drawio.svg`, so the image you see here is also the file you'd open in draw.io. Click one to see its spec.
+
+<table>
+<tr>
+<td width="50%" valign="top">Architecture, with AWS icons<br><br><a href="examples/serverless-aws.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/serverless-aws-dark.drawio.svg"><img alt="Architecture diagram: an uploader posts to an API Gateway, a Lambda presigns an S3 upload, and S3 events queue resize jobs for a second Lambda." src="docs/gallery/serverless-aws-light.drawio.svg" width="100%"></picture></a></td>
+<td width="50%" valign="top">Flow<br><br><a href="examples/refund-flow.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/refund-flow-dark.drawio.svg"><img alt="Flowchart of a refund: look up the order, check the 30-day window and the amount, then auto-approve, queue for review or deny, and email the customer." src="docs/gallery/refund-flow-light.drawio.svg" width="100%"></picture></a></td>
+</tr>
+</table>
+
+State
+
+<a href="examples/job-state.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/job-state-dark.drawio.svg"><img alt="State diagram of a background job: queued, running, paused, waiting to retry, succeeded, failed and cancelled, with the transitions between them." src="docs/gallery/job-state-light.drawio.svg"></picture></a>
+
+Sequence
+
+<a href="examples/pay-sequence.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/pay-sequence-dark.drawio.svg"><img alt="Sequence diagram of a card payment: the web app posts to the checkout API, which writes the order and creates a Stripe PaymentIntent, with an alt frame for success and decline." src="docs/gallery/pay-sequence-light.drawio.svg"></picture></a>
+
+ER
+
+<a href="examples/shop-er.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/shop-er-dark.drawio.svg"><img alt="Entity relationship diagram of a shop: customers, addresses, orders, order items, products, inventory and payments, with keys and crow's-foot cardinality." src="docs/gallery/shop-er-light.drawio.svg"></picture></a>
+
 ## Styles
 
 Set `theme:` in the spec.
@@ -114,6 +137,21 @@ Set `theme:` in the spec.
 | `sketch` | early drafts. Hand-drawn lines and a handwriting font. |
 | `blueprint` | technical deep dives. Blue ink on pale drafting paper, monospace. |
 | `c4` | C4-model diagrams, in quiet blues and grays |
+
+The same spec in each style:
+
+<table>
+<tr>
+<td width="33%" align="center" valign="top"><code>clean</code><br><br><img alt="A web app, checkout API and orders database in the clean style" src="docs/gallery/style-clean.drawio.svg"></td>
+<td width="33%" align="center" valign="top"><code>soft</code><br><br><img alt="A web app, checkout API and orders database in the soft style" src="docs/gallery/style-soft.drawio.svg"></td>
+<td width="33%" align="center" valign="top"><code>dark</code><br><br><img alt="A web app, checkout API and orders database in the dark style" src="docs/gallery/style-dark.drawio.svg"></td>
+</tr>
+<tr>
+<td width="33%" align="center" valign="top"><code>sketch</code><br><br><img alt="A web app, checkout API and orders database in the sketch style" src="docs/gallery/style-sketch.drawio.svg"></td>
+<td width="33%" align="center" valign="top"><code>blueprint</code><br><br><img alt="A web app, checkout API and orders database in the blueprint style" src="docs/gallery/style-blueprint.drawio.svg"></td>
+<td width="33%" align="center" valign="top"><code>c4</code><br><br><img alt="A web app, checkout API and orders database in the c4 style" src="docs/gallery/style-c4.drawio.svg"></td>
+</tr>
+</table>
 
 Color is for meaning. Nodes stay neutral by default, and errors and successes are red and green in every style. Mark the part the doc is about with `highlight: true` on a node or `==>` on an edge, and it's drawn in the style's accent color. Use `color: red` (or blue, violet, pink, orange, amber, green, teal, gray) for categories.
 
