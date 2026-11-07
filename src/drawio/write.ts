@@ -32,6 +32,8 @@ export interface SceneEdge {
   /** Either computed points + label position, or an <mxGeometry> kept verbatim from the old file. */
   points?: Point[];
   labelX?: number;
+  /** Shift of the label from its spot on the line, for labels that sit beside it. */
+  labelOffset?: Point;
   geomRaw?: string;
 }
 
@@ -168,6 +170,18 @@ export function groupAttrs(g: Diagram['groups'][number], theme: Diagram['theme']
   return { label: groupLabel(g.label, theme), aiviz_type: 'group', aiviz_label: g.label, ...lookAttrs(g) };
 }
 
+/**
+ * Layout sizes a decision's diamond from its text wrapped narrow (see nodeSizes),
+ * but draw.io wraps at the diamond's full width, so a long question runs out over
+ * the slanted sides. Inset the label to the width layout measured.
+ */
+function diamondInset(d: Diagram, n: Diagram['nodes'][number], box: Box): string {
+  if (kindDef(d.type, n.kind).shape !== 'diamond') return '';
+  const text = (box.w - 40) / 1.5;
+  const side = Math.max(0, Math.floor((box.w - text - 10) / 2));
+  return `spacingLeft=${side};spacingRight=${side};`;
+}
+
 /** Exit/entry constraints so draw.io leaves and enters nodes where ELK did. */
 export function portStyle(points: Point[], s: Box, t: Box): string {
   const start = points[0]!, end = points[points.length - 1]!;
@@ -192,22 +206,35 @@ export function sceneFromLayout(d: Diagram, l: Layout): Scene {
   const vertices: SceneVertex[] = [];
   for (const g of d.groups) {
     const box = rel(g.id);
-    vertices.push({ id: g.id, parent: g.parent ?? '1', attrs: { ...groupAttrs(g, d.theme), aiviz_auto: autoAttr(box) }, style: groupStyleFor(d, g), box });
+    const inset = l.titleInset?.get(g.id);
+    vertices.push({ id: g.id, parent: g.parent ?? '1', attrs: { ...groupAttrs(g, d.theme), aiviz_auto: autoAttr(box) }, style: groupStyleFor(d, g) + (inset ? `spacingLeft=${inset};` : ''), box });
   }
   for (const n of d.nodes) {
     const box = rel(n.id);
-    vertices.push({ id: n.id, parent: n.parent ?? '1', attrs: { ...nodeAttrs(d, n), aiviz_auto: autoAttr(box) }, style: styleFor(d, n), box });
+    vertices.push({ id: n.id, parent: n.parent ?? '1', attrs: { ...nodeAttrs(d, n), aiviz_auto: autoAttr(box) }, style: styleFor(d, n) + diamondInset(d, n, box), box });
     vertices.push(...nodeChildren(d, n, box));
   }
   const edges: SceneEdge[] = d.edges.map((e) => {
     const le = l.edges.get(e.id);
     const base: SceneEdge = { id: edgeCellId(e.id), parent: '1', attrs: edgeAttrs(e), style: edgeStyleFor(d, e, labelBg(d, l, le?.label)), source: e.from, target: e.to };
     if (!le) return base;
+    if (e.from === e.to && le.label && e.label && le.points.length === 4) {
+      // A self-loop: the label sits beside the loop's outer run, not on it.
+      const [, a, b] = le.points as [Point, Point, Point, Point];
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      return {
+        ...base,
+        style: base.style + portStyle(le.points, abs(e.from), abs(e.to)),
+        points: le.points.slice(1, -1),
+        labelX: 0.001,
+        labelOffset: { x: le.label.x + le.label.w / 2 - mid.x, y: le.label.y + le.label.h / 2 - mid.y },
+      };
+    }
     return {
       ...base,
       style: base.style + portStyle(le.points, abs(e.from), abs(e.to)),
       points: le.points.slice(1, -1),
-      labelX: le.label && e.label ? (labelSpot(le.points, le.label) ?? labelFraction(le.points, { x: le.label.x + le.label.w / 2, y: le.label.y + le.label.h / 2 })) : undefined,
+      labelX: le.label && e.label ? (labelSpot(le.points, le.label, l.direction) ?? labelFraction(le.points, { x: le.label.x + le.label.w / 2, y: le.label.y + le.label.h / 2 })) : undefined,
     };
   });
   return { name: d.title ?? 'Diagram', background: palette(d.theme).canvas, meta: diagramMeta(d), vertices, edges, raw: [] };
@@ -220,17 +247,33 @@ const attrString = (attrs: Record<string, string>) =>
     .join('');
 
 export function serialize(scene: Scene): string {
-  // Parents before children.
   const parentOf = new Map(scene.vertices.map((v) => [v.id, v.parent]));
-  const depth = (id: string): number => {
-    const p = parentOf.get(id);
-    return p && p !== '1' ? 1 + depth(p) : 0;
-  };
-  // Containers first (outermost first), then everything else in its original order,
-  // which show() reads back and ELK uses as a placement hint.
-  const isParent = new Set(scene.vertices.map((v) => v.parent));
-  const containers = scene.vertices.filter((v) => isParent.has(v.id) || v.attrs.aiviz_type === 'group').sort((a, b) => depth(a.id) - depth(b.id));
-  const vertices = [...containers, ...scene.vertices.filter((v) => !containers.includes(v))];
+  // Every cell after its parent, otherwise in the scene's order, which is spec
+  // order: show() reads it back and ELK uses it as a placement hint. Groups go
+  // first so nodes can sit in them; a node's own children (icon, table rows)
+  // already follow it.
+  const groups = scene.vertices.filter((v) => v.attrs.aiviz_type === 'group');
+  const rest = scene.vertices.filter((v) => v.attrs.aiviz_type !== 'group');
+  const placed = new Set(['1']);
+  const vertices: SceneVertex[] = [];
+  for (const list of [groups, rest]) {
+    let todo = [...list];
+    while (todo.length) {
+      const left: SceneVertex[] = [];
+      for (const v of todo) {
+        if (placed.has(v.parent) || !parentOf.has(v.parent)) {
+          vertices.push(v);
+          placed.add(v.id);
+        } else left.push(v);
+      }
+      // A cycle or a dangling parent: write the rest as they are rather than drop them.
+      if (left.length === todo.length) {
+        vertices.push(...left);
+        break;
+      }
+      todo = left;
+    }
+  }
   const cells: string[] = [];
   for (const v of vertices) {
     const b = v.box;
@@ -246,6 +289,7 @@ export function serialize(scene: Scene): string {
       e.geomRaw ??
       `<mxGeometry ${e.labelX ? `x="${e.labelX.toFixed(3)}" ` : ''}relative="1" as="geometry">` +
         (e.points?.length ? `<Array as="points">${e.points.map((p) => `<mxPoint x="${r(p.x)}" y="${r(p.y)}"/>`).join('')}</Array>` : '') +
+        (e.labelOffset ? `<mxPoint x="${r(e.labelOffset.x)}" y="${r(e.labelOffset.y)}" as="offset"/>` : '') +
         `</mxGeometry>`;
     cells.push(
       `<object id="${xmlEsc(e.id)}"${attrString({ label: '', ...e.attrs })}>` +
@@ -273,15 +317,20 @@ export function toMxfile(d: Diagram, l: Layout): string {
  * source node, which reads as a caption of that node. Returns draw.io's -1..1
  * fraction, or undefined when no run is long enough.
  */
-function labelSpot(pts: Point[], label: { w: number; h: number }): number | undefined {
+function labelSpot(pts: Point[], label: { w: number; h: number }, dir?: Layout['direction']): number | undefined {
   let total = 0;
-  let best: { room: number; at: number } | undefined;
+  let best: { room: number; at: number; along: boolean } | undefined;
+  // Runs along the flow belong to one edge; runs across it are often shared
+  // corridors where several edges' labels would stack up. Prefer the former.
+  const flowVertical = dir === 'TB' || dir === 'BT';
   for (let i = 0; i < pts.length - 1; i++) {
     const a = pts[i]!, b = pts[i + 1]!;
     const len = Math.hypot(b.x - a.x, b.y - a.y);
     const vertical = Math.abs(b.x - a.x) < Math.abs(b.y - a.y);
     const room = len - (vertical ? label.h : label.w) - 20;
-    if (room >= 0 && (!best || room > best.room)) best = { room, at: total + len / 2 };
+    const along = dir ? vertical === flowVertical : true;
+    const better = !best || (along && !best.along) || (along === best.along && room > best.room);
+    if (room >= 0 && better) best = { room, at: total + len / 2, along };
     total += len;
   }
   return best && total ? (best.at / total) * 2 - 1 : undefined;

@@ -33,7 +33,14 @@ Never fall back to writing SVG or draw.io XML by hand. Tell the user what failed
    - `er`: database tables, their columns and how they relate.
 
    If the doc already has a Mermaid diagram, convert it instead of rewriting it: `linework import doc.md --block 1 -o docs/diagrams/x.drawio.svg`.
-3. **Write the spec** to `/tmp/spec.yaml`, or pipe it on stdin with `-` as the file. Start from the closest file in `examples/` next to this guide: `checkout.yaml` (architecture), `serverless-aws.yaml` (architecture with AWS icons), `refund-flow.yaml` (flow), `payment-state.yaml` (state), `pay-sequence.yaml` (sequence), `billing-er.yaml` (ER). The `.drawio.svg` is the source of truth, so you don't need to keep the YAML.
+3. **Write the spec** to `/tmp/spec.yaml`, or pipe it on stdin with `-` as the file. Start from the closest file in `examples/` next to this guide:
+   - architecture: `checkout.yaml` (small), `platform.yaml` (clients, nested groups, 17 nodes), `serverless-aws.yaml` (AWS icons), `gcp-ingest.yaml` (GCP icons)
+   - flow: `refund-flow.yaml` (branches), `deploy-flow.yaml` (a retry loop back to an earlier step)
+   - state: `payment-state.yaml`, `job-state.yaml` (pause/resume pairs and a self-transition)
+   - sequence: `pay-sequence.yaml` (alt, note), `auth-seq.yaml` (loop with a nested opt)
+   - ER: `billing-er.yaml` (small), `shop-er.yaml` (7 tables, composite keys)
+
+   The `.drawio.svg` is the source of truth, so you don't need to keep the YAML.
 4. **Build with a preview:**
    ```bash
    linework build /tmp/spec.yaml -o docs/diagrams/checkout.drawio.svg --png /tmp/checkout.png
