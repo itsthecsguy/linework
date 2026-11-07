@@ -3,7 +3,7 @@
 // Spots in the middle of a straight run come first, so a label never ends up
 // wedged into a bend when there's a clear stretch of line for it.
 import { DOMParser, XMLSerializer, type Element } from '@xmldom/xmldom';
-import type { DrawioBrowser } from '../render/browser.js';
+import type { DrawioBrowser, InspectCell } from '../render/browser.js';
 import { check, type Finding } from './check.js';
 
 const OFFSETS = [-0.35, 0.35, -0.65, 0.65, -0.15, 0.15, -0.85, 0.85];
@@ -47,14 +47,19 @@ function labelEdges(findings: Finding[]): string[] {
   return [...new Set(findings.filter((f) => LABEL_RULES.has(f.rule) && f.labelEdges).flatMap((f) => f.labelEdges!))];
 }
 
-export async function fixLabels(b: DrawioBrowser, xml: string, maxRounds = 6): Promise<{ xml: string; moved: number }> {
+/**
+ * Returns the fixed XML and its cells. Only label backgrounds change after the
+ * cells are read, and those don't move anything, so the cells stay valid for it.
+ */
+export async function fixLabels(b: DrawioBrowser, xml: string, maxRounds = 6): Promise<{ xml: string; moved: number; cells: InspectCell[] }> {
   let cur = xml;
-  let score = check(await b.inspect(cur)).findings.filter((f) => LABEL_RULES.has(f.rule)).length;
+  const labelScore = (cells: InspectCell[]) => check(cells).findings.filter((f) => LABEL_RULES.has(f.rule)).length;
+  let score = labelScore(await b.inspect(cur));
   let moved = 0;
   for (let round = 0; round < maxRounds && score > 0; round++) {
+    // The cells of `cur`, kept current as labels move: a move changes only that label's box.
     const cells = await b.inspect(cur);
-    const res = check(cells);
-    const targets = labelEdges(res.findings);
+    const targets = labelEdges(check(cells).findings);
     let improved = false;
     for (const id of targets) {
       const doc = new DOMParser().parseFromString(cur, 'text/xml');
@@ -63,17 +68,18 @@ export async function fixLabels(b: DrawioBrowser, xml: string, maxRounds = 6): P
       const base = Number(g.getAttribute('x') ?? 0);
       const cell = cells.find((c) => c.id === id);
       const spots = cell?.points && cell.textBox ? runSpots(cell.points, cell.textBox) : [];
-      const tries = [...spots, ...OFFSETS.map((off) => Math.max(-0.9, Math.min(0.9, base + off)))];
-      let best: { xml: string; score: number } | undefined;
-      for (const x of tries) {
-        g.setAttribute('x', x.toFixed(3));
-        const candidate = new XMLSerializer().serializeToString(doc);
-        const s = check(await b.inspect(candidate)).findings.filter((f) => LABEL_RULES.has(f.rule)).length;
-        if (s < (best?.score ?? score)) best = { xml: candidate, score: s };
+      const tries = [...spots, ...OFFSETS.map((off) => Math.max(-0.9, Math.min(0.9, base + off)))].map((x) => Number(x.toFixed(3)));
+      const boxes = await b.labelBoxes(cur, id, tries);
+      let best: { x: number; score: number; box: InspectCell['textBox'] } | undefined;
+      for (let i = 0; i < tries.length; i++) {
+        const s = labelScore(cells.map((c) => (c.id === id ? { ...c, textBox: boxes[i]! } : c)));
+        if (s < (best?.score ?? score)) best = { x: tries[i]!, score: s, box: boxes[i]! };
         if (s === 0) break;
       }
       if (best) {
-        cur = best.xml;
+        g.setAttribute('x', best.x.toFixed(3));
+        cur = new XMLSerializer().serializeToString(doc);
+        if (cell) cell.textBox = best.box;
         score = best.score;
         moved++;
         improved = true;
@@ -82,8 +88,9 @@ export async function fixLabels(b: DrawioBrowser, xml: string, maxRounds = 6): P
     }
     if (!improved) break;
   }
-  cur = await matchLabelBackgrounds(b, cur);
-  return { xml: cur, moved };
+  const cells = await b.inspect(cur);
+  cur = await matchLabelBackgrounds(b, cur, cells);
+  return { xml: cur, moved, cells };
 }
 
 /**
@@ -91,8 +98,8 @@ export async function fixLabels(b: DrawioBrowser, xml: string, maxRounds = 6): P
  * under it, or the canvas. Run after labels move, since a move can carry a label
  * from the canvas onto a group or back.
  */
-export async function matchLabelBackgrounds(b: DrawioBrowser, xml: string): Promise<string> {
-  const cells = await b.inspect(xml);
+export async function matchLabelBackgrounds(b: DrawioBrowser, xml: string, known?: InspectCell[]): Promise<string> {
+  const cells = known ?? (await b.inspect(xml));
   const doc = new DOMParser().parseFromString(xml, 'text/xml');
   const canvas = doc.getElementsByTagName('mxGraphModel')[0]?.getAttribute('background') ?? '#FFFFFF';
   const styleOf = new Map<string, Element>();
