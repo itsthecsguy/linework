@@ -150,9 +150,9 @@ function lightPaint(sw: Swatches, neutral: { fill: string; stroke: string }, tex
   return (color: ColorName | 'neutral' | 'ink', highlight: boolean): Paint => {
     if (highlight) {
       const s = sw[color === 'neutral' || color === 'ink' ? accent : color];
-      return { fill: s.solid, stroke: s.solid, text: '#FFFFFF', sub: 'rgba(255,255,255,0.78)', strokeWidth: 1 };
+      return { fill: s.solid, stroke: s.solid, text: '#FFFFFF', sub: 'rgba(255,255,255,0.9)', strokeWidth: 1 };
     }
-    if (color === 'ink') return { fill: text, stroke: text, text: '#FFFFFF', sub: muted, strokeWidth: 1 };
+    if (color === 'ink') return { fill: text, stroke: text, text: '#FFFFFF', sub: 'rgba(255,255,255,0.72)', strokeWidth: 1 };
     if (color === 'neutral') return { ...neutral, text, sub: muted, strokeWidth: 1 };
     const s = sw[color];
     return { fill: s.tint, stroke: s.line, text, sub: s.ink, strokeWidth: 1 };
@@ -165,16 +165,16 @@ const CLEAN: Theme = {
   canvas: '#FFFFFF',
   text: '#17171C',
   muted: '#6B6B76',
-  edge: '#A0A0AB',
+  edge: '#868691',
   edgeText: '#52525C',
   edgeWidth: 1.25,
   accent: 'blue',
   kindColors: false,
   radius: 10,
-  group: { fill: '#F5F5F7', nested: '#EBEBEF', stroke: 'none', dashed: false, text: '#6B6B76' },
+  group: { fill: '#F5F5F7', nested: '#EBEBEF', stroke: 'none', dashed: false, text: '#61616C' },
   note: { fill: '#FFF4CC', stroke: 'none', text: '#5C4300' },
   well: '#F3F3F5',
-  paint: lightPaint(LIGHT_SW, { fill: '#FFFFFF', stroke: '#DADAE0' }, '#17171C', '#6B6B76', 'blue'),
+  paint: lightPaint(LIGHT_SW, { fill: '#FFFFFF', stroke: '#C4C4CC' }, '#17171C', '#6B6B76', 'blue'),
   edgePaint: (color, hl) => {
     const s = LIGHT_SW[color ?? 'blue'];
     if (hl) return { stroke: s.edge, text: s.ink, width: 2 };
@@ -188,11 +188,11 @@ const SOFT: Theme = {
   name: 'soft',
   kindColors: true,
   radius: 12,
-  group: { fill: '#F7F7F9', nested: '#EFEFF3', stroke: 'none', dashed: false, text: '#6B6B76' },
+  group: { fill: '#F7F7F9', nested: '#EFEFF3', stroke: 'none', dashed: false, text: '#61616C' },
   paint: (color, hl) => {
     if (hl || color === 'ink') return CLEAN.paint(color, hl);
     const c = color === 'neutral' ? 'gray' : color;
-    return { fill: SOFT_TINT[c], stroke: 'none', text: c === 'gray' ? '#17171C' : LIGHT_SW[c].ink, sub: c === 'gray' ? '#6B6B76' : LIGHT_SW[c].ink + 'B3', strokeWidth: 1 };
+    return { fill: SOFT_TINT[c], stroke: 'none', text: c === 'gray' ? '#17171C' : LIGHT_SW[c].ink, sub: c === 'gray' ? '#6B6B76' : LIGHT_SW[c].ink + 'E0', strokeWidth: 1 };
   },
 };
 
@@ -214,7 +214,7 @@ const DARK: Theme = {
   paint: (color, hl) => {
     if (hl) {
       const s = DARK_SW[color === 'neutral' || color === 'ink' ? 'blue' : color];
-      return { fill: s.solid, stroke: s.solid, text: '#FFFFFF', sub: 'rgba(255,255,255,0.78)', strokeWidth: 1 };
+      return { fill: s.solid, stroke: s.solid, text: '#FFFFFF', sub: 'rgba(255,255,255,0.9)', strokeWidth: 1 };
     }
     if (color === 'ink') return { fill: '#E6EDF3', stroke: '#E6EDF3', text: '#0D1117', sub: '#59636E', strokeWidth: 1 };
     if (color === 'neutral') return { fill: '#212830', stroke: '#3D444D', text: '#E6EDF3', sub: '#9198A1', strokeWidth: 1 };
@@ -281,7 +281,7 @@ const BLUEPRINT: Theme = {
   accent: 'blue',
   kindColors: false,
   radius: 4,
-  group: { fill: 'none', stroke: '#9DB0D0', dashed: true, text: '#5A6F92' },
+  group: { fill: 'none', stroke: '#7489AF', dashed: true, text: '#5A6F92' },
   note: { fill: '#EAF0FA', stroke: '#9DB0D0', text: BP_INK },
   well: '#EAF0FA',
   paint: (color, hl) => {
@@ -302,7 +302,7 @@ const BLUEPRINT: Theme = {
 // Other diagram types use `clean`.
 const C4_KIND: Record<string, { fill: string; stroke: string; text: string; type: string }> = {
   person: { fill: '#1E3466', stroke: '#1E3466', text: '#FFFFFF', type: 'Person' },
-  external: { fill: '#6B7383', stroke: '#6B7383', text: '#FFFFFF', type: 'External system' },
+  external: { fill: '#626A7A', stroke: '#626A7A', text: '#FFFFFF', type: 'External system' },
 };
 const C4_CONTAINER = { fill: '#456A9E', stroke: '#456A9E', text: '#FFFFFF', type: 'Container' };
 const C4: Theme = { ...CLEAN, name: 'c4', group: { fill: 'none', stroke: '#444444', dashed: true, text: '#444444' }, edge: '#707070', edgeText: '#444444' };
@@ -320,7 +320,7 @@ export function paintFor(type: DiagramType, kind: string, theme: ThemeName, look
   const t = palette(theme);
   if (theme === 'c4' && type === 'architecture' && !look.highlight && !look.color) {
     const c = C4_KIND[kind] ?? C4_CONTAINER;
-    return { fill: c.fill, stroke: c.stroke, text: c.text, sub: 'rgba(255,255,255,0.8)', strokeWidth: 1 };
+    return { fill: c.fill, stroke: c.stroke, text: c.text, sub: 'rgba(255,255,255,0.92)', strokeWidth: 1 };
   }
   const k = kindDef(type, kind);
   // A highlight is the style's accent unless the spec names a color.
@@ -346,7 +346,9 @@ export function nodeStyle(type: DiagramType, kind: string, theme: ThemeName = 'c
   const r = t.radius;
   switch (k.shape) {
     case 'cylinder':
-      return `shape=cylinder3;boundedLbl=1;backgroundOutline=1;size=7;${base}`;
+      // With an outline the lid is drawn, and the text centres on the face below
+      // it. Without one (soft) the lid is invisible: centre on the whole shape.
+      return `shape=cylinder3;boundedLbl=${stroke === 'none' ? 0 : 1};backgroundOutline=1;size=${CYL_SIZE};${base}`;
     case 'pill':
       return `rounded=1;arcSize=50;${base}`;
     case 'diamond':
@@ -371,6 +373,18 @@ export function nodeStyle(type: DiagramType, kind: string, theme: ThemeName = 'c
     default:
       return `rounded=1;absoluteArcSize=1;arcSize=${r * 2};${base}`;
   }
+}
+
+/** Depth of a cylinder's lid and base curve. */
+export const CYL_SIZE = 7;
+
+/**
+ * Vertical centre of a node's text, from the top of its box. draw.io bounds a
+ * cylinder's label between its lid (2 x size) and 0.3 x size above the base.
+ */
+export function textMiddle(style: string, h: number): number {
+  if (!/shape=cylinder3/.test(style) || !/boundedLbl=1/.test(style)) return h / 2;
+  return (2 * CYL_SIZE + h - 0.3 * CYL_SIZE) / 2;
 }
 
 /** Horizontal text padding inside a node, each side. */
@@ -452,8 +466,10 @@ export function lifelineStyle(kind: string, theme: ThemeName = 'clean', headH = 
   const t = palette(theme);
   const c = paintFor('sequence', kind, theme, look);
   const k = kindDef('sequence', kind);
-  const stroke = c.stroke === 'none' ? (k.dashed ? '#A1A1AA' : c.fill) : c.stroke;
-  // The lifeline's dashed stem uses the stroke colour: keep it quiet even when the head is loud.
+  // The dashed stem takes the stroke color, so a highlighted head keeps the plain
+  // participant line: the accent stays on the head and the highlighted messages.
+  const quiet = t.paint('neutral', false).stroke;
+  const stroke = look.highlight ? (quiet === 'none' ? t.edge : quiet) : c.stroke === 'none' ? (k.dashed ? '#A1A1AA' : c.fill) : c.stroke;
   return (
     `shape=umlLifeline;perimeter=lifelinePerimeter;container=1;collapsible=0;recursiveResize=0;outlineConnect=0;size=${headH};` +
     `html=1;whiteSpace=wrap;rounded=1;absoluteArcSize=1;arcSize=${t.radius * 2};fillColor=${c.fill};strokeColor=${stroke};strokeWidth=${Math.min(1.5, c.strokeWidth)};` +
@@ -485,18 +501,19 @@ export function messageStyle(style: MessageStyle, theme: ThemeName = 'clean', se
   );
 }
 
-/** Padding of a sequence frame's operator tab. */
-export const FRAME_TAB_X = 9, FRAME_TAB_Y = 3;
+/** Padding of a sequence frame's operator tab, and its inset from the frame's corner. */
+export const FRAME_TAB_X = 9, FRAME_TAB_Y = 3, FRAME_TAB_INSET = 4;
 
 export function frameStyle(theme: ThemeName = 'clean'): string {
   const t = palette(theme);
-  const line = t.name === 'dark' ? '#3D444D' : t.name === 'clean' || t.name === 'soft' || t.name === 'c4' ? '#DADAE0' : t.muted;
-  // The operator (alt, loop, opt) sits in a small tab on the frame's corner: UML's
-  // pentagon, drawn as a chip. Its padding equals its inset, so it sits flush.
+  // The operator (alt, loop, opt) sits in a small tab in the frame's corner: UML's
+  // pentagon, drawn as a chip, inset the same from both sides so its square corner
+  // stays inside the frame's rounded one. draw.io draws an HTML label's background
+  // 1px left of and 3.5px below where its spacing puts it; the +1 and -3.5 cancel that.
   return (
-    `rounded=1;absoluteArcSize=1;arcSize=${t.radius * 2};whiteSpace=wrap;html=1;container=0;verticalAlign=top;align=left;spacing=0;spacingLeft=${FRAME_TAB_X};spacingTop=${FRAME_TAB_Y};` +
+    `rounded=1;absoluteArcSize=1;arcSize=${t.radius * 2};whiteSpace=wrap;html=1;container=0;verticalAlign=top;align=left;spacing=0;spacingLeft=${FRAME_TAB_X + FRAME_TAB_INSET + 1};spacingTop=${FRAME_TAB_Y + FRAME_TAB_INSET - 3.5};` +
     `labelBackgroundColor=${t.well};labelPadding=${FRAME_TAB_Y} ${FRAME_TAB_X};` +
-    `fillColor=none;strokeColor=${line};strokeWidth=1;${fontPart(t, t.type.size.group, t.text)}fontStyle=1;${t.extra}`
+    `fillColor=none;strokeColor=${t.edge};strokeWidth=1;${fontPart(t, t.type.size.group, t.text)}fontStyle=1;${t.extra}`
   );
 }
 
@@ -507,7 +524,7 @@ export function guardStyle(theme: ThemeName = 'clean'): string {
 
 export function separatorStyle(theme: ThemeName = 'clean'): string {
   const t = palette(theme);
-  return `endArrow=none;dashed=1;dashPattern=4 4;html=1;strokeColor=${t.name === 'dark' ? '#3D444D' : t.name === 'clean' || t.name === 'soft' || t.name === 'c4' ? '#DADAE0' : t.muted};`;
+  return `endArrow=none;dashed=1;dashPattern=4 4;html=1;strokeColor=${t.edge};`;
 }
 
 export function noteStyle(theme: ThemeName = 'clean'): string {

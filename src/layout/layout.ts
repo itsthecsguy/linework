@@ -104,10 +104,27 @@ export async function layout(d: Diagram, measure: Measure = estimateMeasure): Pr
         pin(e.from, k.from, aLeft, 'from');
         pin(e.to, k.to, !aLeft, 'to');
       }
+      // Two relationships on one key row would meet at one point and stack their
+      // markers. Spread them across the row, the one from higher up on top.
+      for (const [node, list] of pins) {
+        const rows = new Map<string, PortPin[]>();
+        for (const p of list) rows.set(`${p.side}:${p.row}`, [...(rows.get(`${p.side}:${p.row}`) ?? []), p]);
+        for (const same of rows.values()) {
+          if (same.length < 2) continue;
+          const other = (p: PortPin) => {
+            const e = d.edges.find((x) => x.id === p.edge)!;
+            const b = l.nodes.get(e.from === node && p.end === 'from' ? e.to : e.from)!;
+            return b.y + b.h / 2;
+          };
+          same.sort((a, b) => other(a) - other(b));
+          const step = Math.min(12, Math.floor((ER_ROW - 4) / same.length));
+          same.forEach((p, i) => (p.dy = Math.round((i - (same.length - 1) / 2) * step)));
+        }
+      }
       l = { ...(await run(d, dir, sizes, labels, groupMin, groupTop, order, pins, pairs)), natural };
     }
     polish(d, l, { groupTitle, titleInset: GROUP_INSET, groupTop });
-    return l;
+    return toPixels(l);
   };
   // Spec order first: it keeps a diagram stable as the spec grows. Free ordering
   // wins only when it crosses fewer edges.
@@ -187,9 +204,11 @@ function nodeSizes(d: Diagram, tm: TextMeasurer, fonts: Fonts) {
     sizes.set(n.id, { w: snap(Math.max(minW, t.width + 2 * PAD_X + extra)), h: boxHeight(t.lines, fonts, shape) });
   }
   const natural = new Map([...sizes].map(([k, v]) => [k, { ...v }]));
-  // Boxes of nearly the same width read calmer at exactly the same width. Boxes
-  // much wider than the rest keep their own width rather than stretching every box.
-  const uniform = d.nodes.filter((n) => !['start', 'end', 'diamond', 'table'].includes(kindDef(d.type, n.kind).shape));
+  // Boxes of nearly the same width read calmer at exactly the same width: their
+  // edges line up down a column. Tables too, so their key rows' connectors start
+  // at one x. Boxes much wider than the rest keep their own width rather than
+  // stretching every box.
+  const uniform = d.nodes.filter((n) => !['start', 'end', 'diamond'].includes(kindDef(d.type, n.kind).shape));
   const sorted = [...uniform].sort((a, b) => sizes.get(a.id)!.w - sizes.get(b.id)!.w);
   let cluster: typeof sorted = [];
   const flush = () => {
@@ -198,8 +217,9 @@ function nodeSizes(d: Diagram, tm: TextMeasurer, fonts: Fonts) {
       const s = sizes.get(n.id)!;
       if (s.w === w) continue;
       s.w = w;
-      // A wider box may fit the text on fewer lines.
+      // A wider box may fit the text on fewer lines. A table's rows don't wrap.
       const shape = kindDef(d.type, n.kind).shape;
+      if (shape === 'table') continue;
       s.h = boxHeight(textOf(n, w - 2 * PAD_X - shapeExtra(shape, !!n.icon)).lines, fonts, shape);
     }
     cluster = [];
@@ -280,7 +300,7 @@ async function run(
         width: 0,
         height: 0,
         x: p.side === 'EAST' ? s.w : 0,
-        y: ER_HEAD + p.row * ER_ROW + ER_ROW / 2,
+        y: ER_HEAD + p.row * ER_ROW + ER_ROW / 2 + (p.dy ?? 0),
         layoutOptions: { 'elk.port.side': p.side },
       }));
     }
@@ -335,6 +355,20 @@ async function run(
 
 type Order = 'NODES_AND_EDGES' | 'NONE';
 
+/**
+ * Whole-pixel geometry. ELK centres boxes at fractions of a pixel; draw.io then
+ * rounds the boxes but not the edges, so a straight drop gets 0.1px kinks and
+ * 1px lines blur across two pixels. Sizes are whole already, so rounding every
+ * coordinate keeps each edge end on its box.
+ */
+function toPixels(l: Layout): Layout {
+  const rp = (p: Point): Point => ({ x: Math.round(p.x), y: Math.round(p.y) });
+  const rb = (b: Box): Box => ({ ...rp(b), w: Math.round(b.w), h: Math.round(b.h) });
+  for (const m of [l.nodes, l.groups]) for (const [k, b] of m) m.set(k, rb(b));
+  for (const [k, e] of l.edges) l.edges.set(k, { ...e, points: e.points.map(rp), label: e.label && rb(e.label) });
+  return { ...l, width: Math.ceil(l.width), height: Math.ceil(l.height) };
+}
+
 /** Proper crossings between edge segments: what a reader has to untangle. */
 export function crossings(l: Pick<Layout, 'edges'>): number {
   const segs: Array<[Point, Point, string]> = [];
@@ -356,7 +390,7 @@ export function edgeLength(l: Pick<Layout, 'edges'>): number {
   return n;
 }
 
-type PortPin = { edge: string; end: 'from' | 'to'; row: number; side: 'EAST' | 'WEST' };
+type PortPin = { edge: string; end: 'from' | 'to'; row: number; side: 'EAST' | 'WEST'; dy?: number };
 type RowPins = { from?: number; to?: number };
 const portId = (p: PortPin) => `${p.edge}::${p.end}`;
 const pinFor = (pins: Map<string, PortPin[]>, node: string, edge: string, end: 'from' | 'to') => {

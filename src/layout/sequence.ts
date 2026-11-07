@@ -5,7 +5,7 @@
 import type { Diagram, FrameOp, SeqItem } from '../spec/model.js';
 import { fontsFor, type Measure } from './layout.js';
 import { TextMeasurer } from './text.js';
-import { FRAME_TAB_X, LINE, PAD_X, PAD_Y, activationStyle, frameStyle, guardStyle, lifelineStyle, messageStyle, nodeLabel, noteStyle, palette, separatorStyle } from '../drawio/theme.js';
+import { FRAME_TAB_INSET, FRAME_TAB_X, FRAME_TAB_Y, LINE, PAD_X, PAD_Y, activationStyle, frameStyle, guardStyle, lifelineStyle, messageStyle, nodeLabel, noteStyle, palette, separatorStyle } from '../drawio/theme.js';
 import { autoAttr, diagramMeta, lookAttrs, type Scene, type SceneEdge, type SceneVertex } from '../drawio/write.js';
 
 const TOP = 24, BAR_W = 10, NOTE_W = 220;
@@ -235,21 +235,24 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
     const fx2 = cx(parts[hi]!.id) + Math.max(80, headW[hi]! / 2 + 16) - inset;
     const fy = rows[f.start]!.y - 4, fy2 = rows[f.end]!.y;
     vertices.push({ id: f.id, parent: '1', attrs: { label: f.op, aiviz_type: 'frame', aiviz_frame: f.op }, style: frameStyle(theme), box: { x: fx, y: fy, w: fx2 - fx, h: fy2 - fy } });
+    // The first guard shares a line with the operator tab beside it.
+    const tabMid = fy + FRAME_TAB_INSET + FRAME_TAB_Y + (fonts.group.size * LINE) / 2;
+    const guardH = Math.max(22, edgeLine + 6);
     const guard = (when: string | undefined, gy: number, k: number) => {
       if (!when) return;
       // Start right of the operator label, then step past any lifeline the text would cover.
       const gw = Math.max(80, Math.ceil(tm.width(`[${when}]`, fonts.edge)) + 16);
-      let gx = fx + 2 * FRAME_TAB_X + Math.ceil(tm.width(f.op, fonts.group)) + 10;
+      let gx = fx + FRAME_TAB_INSET + 2 * FRAME_TAB_X + Math.ceil(tm.width(f.op, fonts.group)) + 10;
       for (const c of [...parts.map((p) => cx(p.id))].sort((a, b) => a - b)) if (c + BAR_W / 2 + 4 > gx && c - BAR_W / 2 - 4 < gx + gw) gx = c + BAR_W / 2 + 6;
       vertices.push({
         id: `${f.id}_g${k}`,
         parent: '1',
         attrs: { label: `[${when}]`, aiviz_type: 'guard', aiviz_guard: `${f.id}:${k}` },
         style: guardStyle(theme),
-        box: { x: gx, y: gy, w: gw, h: Math.max(22, edgeLine + 6) },
+        box: { x: gx, y: gy, w: gw, h: guardH },
       });
     };
-    guard(f.whens[0], fy, 0);
+    guard(f.whens[0], Math.round(tabMid - guardH / 2), 0);
     f.seps.forEach((s, k) => {
       const sy = rows[s]!.y + 4;
       edges.push({
