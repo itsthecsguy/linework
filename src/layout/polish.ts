@@ -81,9 +81,15 @@ export function polish(d: Diagram, l: Layout, inp: PolishInput): void {
     );
   const clear = (a: Point, b: Point, except: string[]) => [...nodes].every(([k, r]) => except.includes(k) || !segHits(a, b, r, 6));
 
+  // Edges out of a decision wait until the decision pass below has picked the
+  // point they leave from; their start stub isn't a route to straighten toward.
+  // Two passes: a jog can be blocked by another edge's stub that the first pass removes.
+  const dejog = (fromDecisions: boolean) => {
+  for (let pass = 0; pass < 2; pass++)
   for (const e of edges) {
     // Tables keep their edges on the key rows.
     if (e.from === e.to || shapeOf(e.from) === 'table' || shapeOf(e.to) === 'table') continue;
+    if ((shapeOf(e.from) === 'diamond') !== fromDecisions) continue;
     const s = nodes.get(e.from)!, t = nodes.get(e.to)!;
     let p = simplify(e.pts);
     // Start: p0 on the box, a short leg, a jog sideways, then the real run.
@@ -93,7 +99,8 @@ export function polish(d: Diagram, l: Layout, inp: PolishInput): void {
       if (!side || !vert(p0, p1) || !horiz(p1, p2) || shapeOf(e.from) === 'diamond') break;
       const p3 = p[3]!, np = { x: p2.x, y: p0.y };
       // Only a short leg is a jog; a long one is the route itself.
-      if (!free(np, p3, e) || !vert(p2, p3)) break;
+      // The run p2-p3 is already there; only the piece added at the box is new.
+      if (!vert(p2, p3) || !free(np, p2, e)) break;
       if (p2.x < s.x + R || p2.x > s.x + s.w - R || usedAt(e.from, p2.x, e, side) || !clear(np, p3, [e.from, e.to])) break;
       p = simplify([np, ...p.slice(3)]);
     }
@@ -104,11 +111,35 @@ export function polish(d: Diagram, l: Layout, inp: PolishInput): void {
       const side = near(q0.y, t.y, 1) ? 'top' : near(q0.y, t.y + t.h, 1) ? 'bottom' : undefined;
       if (!side || !vert(q0, q1) || !horiz(q1, q2) || shapeOf(e.to) === 'diamond') break;
       const q3 = p[n - 4]!, nq = { x: q2.x, y: q0.y };
-      if (!free(q3, nq, e) || !vert(q3, q2)) break;
+      if (!vert(q3, q2) || !free(q2, nq, e)) break;
       if (q2.x < t.x + R || q2.x > t.x + t.w - R || usedAt(e.to, q2.x, e, side) || !clear(q3, nq, [e.from, e.to])) break;
       p = simplify([...p.slice(0, n - 3), nq]);
     }
     e.pts = p;
+  }
+  };
+  dejog(false);
+
+  // A Z between boxes that overlap side to side (down, across, down) can be one
+  // straight drop through the overlap.
+  for (const e of edges) {
+    if (e.from === e.to || [e.from, e.to].some((id) => ['table', 'diamond'].includes(shapeOf(id) ?? ''))) continue;
+    const p = simplify(e.pts);
+    if (p.length !== 4) continue;
+    const s = nodes.get(e.from)!, t = nodes.get(e.to)!;
+    const [a, b, c, z] = p as [Point, Point, Point, Point];
+    if (!vert(a, b) || !horiz(b, c) || !vert(c, z) || !near(a.y, s.y + s.h, 1) || !near(z.y, t.y, 1)) continue;
+    const lo = Math.max(s.x, t.x) + R, hi = Math.min(s.x + s.w, t.x + t.w) - R;
+    if (hi < lo) continue;
+    const x = Math.round(Math.min(hi, Math.max(lo, (a.x + z.x) / 2)));
+    const top = { x, y: a.y }, bot = { x, y: z.y };
+    if (usedAt(e.from, x, e, 'bottom') || usedAt(e.to, x, e, 'top') || !clear(top, bot, [e.from, e.to]) || !free(top, bot, e)) continue;
+    e.pts = [top, bot];
+    const le = l.edges.get(e.id)!;
+    if (le.label) {
+      const lb = f.boxTo(le.label);
+      le.label = f.boxFrom({ ...lb, x: x - lb.w / 2, y: (top.y + bot.y) / 2 - lb.h / 2 });
+    }
   }
 
   // Decisions: leave from the diamond's bottom or side points, enter at the top point.
@@ -167,6 +198,8 @@ export function polish(d: Diagram, l: Layout, inp: PolishInput): void {
     }
   }
 
+  dejog(true);
+
   // Self-loops: wide enough to read as a loop, label outside it.
   for (const e of edges) {
     if (e.from !== e.to) continue;
@@ -198,6 +231,12 @@ export function polish(d: Diagram, l: Layout, inp: PolishInput): void {
       return segs.some(([a, b]) => segHits(a, b, r));
     };
     if (!blocked(inp.titleInset)) continue;
+    // The other top corner reads as a choice; a title halfway along reads as an accident.
+    const right = Math.floor(g.w - tt.w - inp.titleInset);
+    if (right > inp.titleInset && !blocked(right)) {
+      (l.titleInset ??= new Map()).set(gid, right);
+      continue;
+    }
     for (let x = inp.titleInset + 8; x + tt.w + 14 <= g.w; x += 8) {
       if (!blocked(x)) {
         (l.titleInset ??= new Map()).set(gid, x);

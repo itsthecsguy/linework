@@ -7,7 +7,7 @@ import { kindDef } from '../spec/model.js';
 import type { Box, Layout, Point } from '../layout/layout.js';
 import { DOMParser, XMLSerializer, type Element } from '@xmldom/xmldom';
 import { ICON_PAD, ICON_SIZE, resolveIcon } from './icons.js';
-import { ER_HEAD, ER_ROW, edgeStyle, erEdgeStyle, fieldLabel, fieldStyle, groupLabel, groupStyle, nodeLabel, nodeStyle, paintFor, palette } from './theme.js';
+import { CYL_SIZE, ER_HEAD, ER_ROW, edgeStyle, erEdgeStyle, fieldLabel, fieldStyle, groupLabel, groupStyle, nodeLabel, nodeStyle, paintFor, palette, textMiddle, typeface } from './theme.js';
 import type { Look } from '../spec/model.js';
 
 export { ER_HEAD, ER_ROW };
@@ -123,7 +123,8 @@ export function nodeChildren(d: Diagram, n: Diagram['nodes'][number], box: Box):
         parent: n.id,
         attrs: { label: '', aiviz_type: 'icon' },
         style: r.style,
-        box: { x: (ICON_PAD - ICON_SIZE) / 2 + 2, y: Math.round((box.h - ICON_SIZE) / 2), w: ICON_SIZE, h: ICON_SIZE },
+        // Level with the text, which on a cylinder sits below the lid.
+        box: { x: (ICON_PAD - ICON_SIZE) / 2 + 2, y: Math.round(textMiddle(styleFor(d, n), box.h) - ICON_SIZE / 2), w: ICON_SIZE, h: ICON_SIZE },
       });
   }
   return out;
@@ -182,13 +183,27 @@ function diamondInset(d: Diagram, n: Diagram['nodes'][number], box: Box): string
   return `spacingLeft=${side};spacingRight=${side};`;
 }
 
+/**
+ * Where a vertical edge at `x` meets a cylinder's curved top or base, as a
+ * fraction of its height. Off centre the curve sits inside the bounding box, and
+ * an arrow stopped at the box would float short of it.
+ */
+function rimY(p: Point, b: Box): number | undefined {
+  const top = Math.abs(p.y - b.y) < 0.5, base = Math.abs(p.y - (b.y + b.h)) < 0.5;
+  if (!top && !base) return undefined;
+  const u = Math.min(1, Math.abs(p.x - (b.x + b.w / 2)) / (b.w / 2));
+  const dip = CYL_SIZE * (1 - Math.sqrt(1 - u * u));
+  return top ? dip / b.h : (b.h - dip) / b.h;
+}
+
 /** Exit/entry constraints so draw.io leaves and enters nodes where ELK did. */
-export function portStyle(points: Point[], s: Box, t: Box): string {
+export function portStyle(points: Point[], s: Box, t: Box, cyl: { from?: boolean; to?: boolean } = {}): string {
   const start = points[0]!, end = points[points.length - 1]!;
   const c01 = (v: number) => Math.min(1, Math.max(0, Math.round(v * 1000) / 1000));
+  const sr = cyl.from ? rimY(start, s) : undefined, tr = cyl.to ? rimY(end, t) : undefined;
   return (
-    `exitX=${c01((start.x - s.x) / s.w)};exitY=${c01((start.y - s.y) / s.h)};exitDx=0;exitDy=0;` +
-    `entryX=${c01((end.x - t.x) / t.w)};entryY=${c01((end.y - t.y) / t.h)};entryDx=0;entryDy=0;`
+    `exitX=${c01((start.x - s.x) / s.w)};exitY=${c01(sr ?? (start.y - s.y) / s.h)};exitDx=0;exitDy=0;${sr !== undefined ? 'exitPerimeter=0;' : ''}` +
+    `entryX=${c01((end.x - t.x) / t.w)};entryY=${c01(tr ?? (end.y - t.y) / t.h)};entryDx=0;entryDy=0;${tr !== undefined ? 'entryPerimeter=0;' : ''}`
   );
 }
 
@@ -214,8 +229,10 @@ export function sceneFromLayout(d: Diagram, l: Layout): Scene {
     vertices.push({ id: n.id, parent: n.parent ?? '1', attrs: { ...nodeAttrs(d, n), aiviz_auto: autoAttr(box) }, style: styleFor(d, n) + diamondInset(d, n, box), box });
     vertices.push(...nodeChildren(d, n, box));
   }
+  const isCyl = (id: string) => { const n = d.nodes.find((x) => x.id === id); return !!n && kindDef(d.type, n.kind).shape === 'cylinder'; };
   const edges: SceneEdge[] = d.edges.map((e) => {
     const le = l.edges.get(e.id);
+    const cyl = { from: isCyl(e.from), to: isCyl(e.to) };
     const base: SceneEdge = { id: edgeCellId(e.id), parent: '1', attrs: edgeAttrs(e), style: edgeStyleFor(d, e, labelBg(d, l, le?.label)), source: e.from, target: e.to };
     if (!le) return base;
     if (e.from === e.to && le.label && e.label && le.points.length === 4) {
@@ -224,7 +241,7 @@ export function sceneFromLayout(d: Diagram, l: Layout): Scene {
       const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
       return {
         ...base,
-        style: base.style + portStyle(le.points, abs(e.from), abs(e.to)),
+        style: base.style + portStyle(le.points, abs(e.from), abs(e.to), cyl),
         points: le.points.slice(1, -1),
         labelX: 0.001,
         labelOffset: { x: le.label.x + le.label.w / 2 - mid.x, y: le.label.y + le.label.h / 2 - mid.y },
@@ -232,12 +249,71 @@ export function sceneFromLayout(d: Diagram, l: Layout): Scene {
     }
     return {
       ...base,
-      style: base.style + portStyle(le.points, abs(e.from), abs(e.to)),
+      style: base.style + portStyle(le.points, abs(e.from), abs(e.to), cyl),
       points: le.points.slice(1, -1),
       labelX: le.label && e.label ? (labelSpot(le.points, le.label, l.direction) ?? labelFraction(le.points, { x: le.label.x + le.label.w / 2, y: le.label.y + le.label.h / 2 })) : undefined,
     };
   });
+  alignLabels(d, l, edges);
   return { name: d.title ?? 'Diagram', background: palette(d.theme).canvas, meta: diagramMeta(d), vertices, edges, raw: [] };
+}
+
+/** The point at a draw.io label fraction (-1..1) along a route, and the run it sits on. */
+function spotAt(pts: Point[], frac: number): { p: Point; a: Point; b: Point } | undefined {
+  const lens = pts.slice(1).map((b, i) => Math.hypot(b.x - pts[i]!.x, b.y - pts[i]!.y));
+  let at = ((frac + 1) / 2) * lens.reduce((x, y) => x + y, 0);
+  for (let i = 0; i < lens.length; i++) {
+    const a = pts[i]!, b = pts[i + 1]!, len = lens[i]!;
+    if (at <= len + 1e-6 || i === lens.length - 1) {
+      const t = len ? Math.min(1, at / len) : 0;
+      return { p: { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y) }, a, b };
+    }
+    at -= len;
+  }
+  return undefined;
+}
+
+/**
+ * Labels on neighbouring parallel runs (two edges dropping side by side) sit at
+ * whatever height each run's midpoint gives, often a few px apart. Put them on
+ * one line when each can move there and stay on its own run.
+ */
+function alignLabels(d: Diagram, l: Layout, edges: SceneEdge[]) {
+  const h = Math.ceil(typeface(d.theme).size.edge * 1.2) + 4;
+  const spots = edges.flatMap((se) => {
+    const e = d.edges.find((x) => edgeCellId(x.id) === se.id);
+    const le = e && l.edges.get(e.id);
+    if (!le || se.labelX === undefined || se.labelOffset || !e!.label) return [];
+    const s = spotAt(le.points, se.labelX);
+    if (!s) return [];
+    const vertical = Math.abs(s.a.x - s.b.x) < 0.5;
+    if (!vertical && Math.abs(s.a.y - s.b.y) >= 0.5) return [];
+    return [{ se, pts: le.points, ...s, vertical }];
+  });
+  for (const vertical of [true, false]) {
+    const along = (p: Point) => (vertical ? p.y : p.x), across = (p: Point) => (vertical ? p.x : p.y);
+    const group = spots.filter((s) => s.vertical === vertical).sort((a, b) => along(a.p) - along(b.p));
+    for (let i = 0; i < group.length; ) {
+      let j = i + 1;
+      while (j < group.length && along(group[j]!.p) - along(group[i]!.p) <= 8) j++;
+      const set = group.slice(i, j);
+      i = j;
+      if (set.length < 2) continue;
+      // Side by side on different runs, not one run's labels stacked.
+      const xs = set.map((s) => across(s.p));
+      if (Math.max(...xs) - Math.min(...xs) < 20) continue;
+      const target = Math.round(set.reduce((m, s) => m + along(s.p), 0) / set.length);
+      const fits = set.every((s) => {
+        const lo = Math.min(along(s.a), along(s.b)) + h / 2 + 4, hi = Math.max(along(s.a), along(s.b)) - h / 2 - 4;
+        return target >= lo && target <= hi;
+      });
+      if (!fits) continue;
+      for (const s of set) {
+        const c = vertical ? { x: s.p.x, y: target } : { x: target, y: s.p.y };
+        s.se.labelX = labelFraction(s.pts, c);
+      }
+    }
+  }
 }
 
 const attrString = (attrs: Record<string, string>) =>
