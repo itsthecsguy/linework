@@ -1,0 +1,26 @@
+type: er
+title: Storefront schema
+nodes:
+  customers:
+    fields: [id: uuid pk, email: text unique, name: text, created_at: timestamptz]
+  addresses:
+    fields: [id: uuid pk, customer_id: uuid fk, line1: text, city: text, country: char(2)]
+  orders:
+    fields: [id: uuid pk, customer_id: uuid fk, shipping_address_id: uuid fk, status: order_status, total_cents: bigint, placed_at: timestamptz null]
+  order_items:
+    fields: [order_id: uuid pk fk, product_id: uuid pk fk, quantity: int, unit_price_cents: bigint]
+  products:
+    fields: [id: uuid pk, sku: text unique, title: text, price_cents: bigint]
+  inventory:
+    fields: [product_id: uuid pk fk, warehouse: text pk, on_hand: int]
+  payments:
+    kind: external
+    fields: [id: text pk, order_id: uuid fk, provider: text]
+edges:
+  - addresses }o--|| customers: has
+  - orders }o--|| customers: placed by
+  - orders }o--|| addresses: ships to
+  - order_items }|--|| orders: contains
+  - order_items }o--|| products: of
+  - inventory }o--|| products: stocks
+  - payments |o..|| orders: pays

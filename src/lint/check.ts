@@ -165,7 +165,12 @@ export function check(cells: InspectCell[]): CheckResult {
       for (let s = 0; s < a.length - 1; s++) for (let t = 0; t < b.length - 1; t++) if (segsCross(a[s]!, a[s + 1]!, b[t]!, b[t + 1]!)) crossings++;
     }
 
-  const real = nodes.filter((n) => n.box.w > 30 || n.box.h > 30);
+  // A table's field rows are parts of one node, not nodes of their own.
+  const isRow = (n: InspectCell) => {
+    const p = n.parent ? byId.get(n.parent) : undefined;
+    return !!p && p.shape === 'swimlane';
+  };
+  const real = nodes.filter((n) => (n.box.w > 30 || n.box.h > 30) && !isRow(n));
   if (real.length > 20) findings.push({ level: 'warning', rule: 'too-big', message: `${real.length} nodes; consider splitting into two diagrams` });
   if (crossings > Math.max(3, edges.length / 3)) findings.push({ level: 'warning', rule: 'crossings', message: `${crossings} edge crossings; try direction: LR/TB, reordering nodes, or splitting` });
 

@@ -388,6 +388,9 @@ export function fieldStyle(theme: ThemeName = 'clean'): string {
   );
 }
 
+/** Left inset of a group's title. */
+export const GROUP_INSET = 14;
+
 export function groupStyle(theme: ThemeName = 'clean', look: Look = {}, depth = 0): string {
   const t = palette(theme);
   let { fill, stroke, text } = t.group;
@@ -403,7 +406,7 @@ export function groupStyle(theme: ThemeName = 'clean', look: Look = {}, depth = 
     `rounded=1;absoluteArcSize=1;arcSize=${t.radius * 2 + 4};html=1;whiteSpace=wrap;container=1;collapsible=0;` +
     `fillColor=${fill};strokeColor=${stroke};strokeWidth=${look.highlight ? 1.5 : 1};` +
     (t.group.dashed ? dashes(t) : '') +
-    'verticalAlign=top;align=left;spacingLeft=14;spacingTop=9;' +
+    `verticalAlign=top;align=left;spacingLeft=${GROUP_INSET};spacingTop=9;` +
     `${fontPart(t, t.type.size.group, text)}fontStyle=1;${t.extra}`
   );
 }
@@ -482,13 +485,18 @@ export function messageStyle(style: MessageStyle, theme: ThemeName = 'clean', se
   );
 }
 
+/** Padding of a sequence frame's operator tab. */
+export const FRAME_TAB_X = 9, FRAME_TAB_Y = 3;
+
 export function frameStyle(theme: ThemeName = 'clean'): string {
   const t = palette(theme);
   const line = t.name === 'dark' ? '#3D444D' : t.name === 'clean' || t.name === 'soft' || t.name === 'c4' ? '#DADAE0' : t.muted;
-  // The operator (alt, loop, opt) sits in the corner as a small label, not a UML tab.
+  // The operator (alt, loop, opt) sits in a small tab on the frame's corner: UML's
+  // pentagon, drawn as a chip. Its padding equals its inset, so it sits flush.
   return (
-    `rounded=1;absoluteArcSize=1;arcSize=${t.radius * 2};whiteSpace=wrap;html=1;container=0;verticalAlign=top;align=left;spacing=0;spacingLeft=10;spacingTop=4;` +
-    `fillColor=none;strokeColor=${line};strokeWidth=1;${fontPart(t, t.type.size.group, t.muted)}fontStyle=1;${t.extra}`
+    `rounded=1;absoluteArcSize=1;arcSize=${t.radius * 2};whiteSpace=wrap;html=1;container=0;verticalAlign=top;align=left;spacing=0;spacingLeft=${FRAME_TAB_X};spacingTop=${FRAME_TAB_Y};` +
+    `labelBackgroundColor=${t.well};labelPadding=${FRAME_TAB_Y} ${FRAME_TAB_X};` +
+    `fillColor=none;strokeColor=${line};strokeWidth=1;${fontPart(t, t.type.size.group, t.text)}fontStyle=1;${t.extra}`
   );
 }
 

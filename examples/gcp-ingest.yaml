@@ -1,0 +1,21 @@
+type: architecture
+title: Ingest pipeline on GCP
+groups:
+  gcp: { label: Google Cloud project }
+nodes:
+  devices: { label: Sensors, kind: client, tech: MQTT }
+  lb:      { label: Load balancer, icon: gcp.cloud_load_balancing, in: gcp }
+  run:     { label: Ingest API, icon: gcp.cloud_run, tech: Cloud Run, in: gcp }
+  ps:      { label: telemetry, kind: queue, icon: gcp.pubsub, tech: Pub/Sub, in: gcp }
+  df:      { label: Stream job, icon: gcp.dataflow, tech: Dataflow, in: gcp }
+  bq:      { label: Warehouse, kind: database, icon: gcp.bigquery, tech: BigQuery, in: gcp }
+  gcs:     { label: Raw archive, kind: storage, icon: gcp.cloud_storage, tech: GCS, in: gcp }
+  looker:  { label: Looker, kind: external, tech: Dashboards }
+edges:
+  - devices -> lb: HTTPS
+  - lb -> run
+  - run -.-> ps: publish
+  - ps -.-> df: subscribe
+  - df -> bq: stream insert
+  - df -> gcs: write Avro
+  - looker -> bq: SQL

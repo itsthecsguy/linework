@@ -2,9 +2,10 @@
 import ElkModule from 'elkjs/lib/elk.bundled.js';
 import type { ElkNode, ElkExtendedEdge, ELK as ElkApi } from 'elkjs/lib/elk-api.js';
 import { kindDef, type Diagram, type Direction, type ThemeName } from '../spec/model.js';
-import { ER_HEAD, ER_ROW, FIELD_PAD, LINE, PAD_X, PAD_Y, typeface } from '../drawio/theme.js';
+import { ER_HEAD, ER_ROW, FIELD_PAD, GROUP_INSET, LINE, PAD_X, PAD_Y, typeface } from '../drawio/theme.js';
 import { TextMeasurer, type FontSpec } from './text.js';
 import { ICON_PAD } from '../drawio/icons.js';
+import { polish } from './polish.js';
 
 export interface Box { x: number; y: number; w: number; h: number }
 export interface Point { x: number; y: number }
@@ -18,6 +19,8 @@ export interface Layout {
   edges: Map<string, LaidEdge>;
   /** Each node's own size before widths were evened out across the diagram. */
   natural: Map<string, { w: number; h: number }>;
+  /** Group titles moved right to keep an edge off them: group id -> left inset. */
+  titleInset?: Map<string, number>;
 }
 
 /** Returns text widths in px for [text, fontSize, fontWeight, fontFamily] requests. */
@@ -80,11 +83,52 @@ export async function layout(d: Diagram, measure: Measure = estimateMeasure): Pr
   const labels = d.edges.map((e) => (e.label ? { w: Math.ceil(tm.width(e.label, fonts.edge)) + 10, h: Math.ceil(fonts.edge.size * LINE) + 4 } : undefined));
   const groupMin = new Map(d.groups.map((g) => [g.id, Math.ceil(tm.width(groupText(g.label, d.theme), fonts.group)) + 40]));
   const groupTop = Math.round(8 + fonts.group.size * LINE + 20);
-  const go = (dir: Exclude<Direction, 'auto'>) => run(d, dir, sizes, labels, groupMin, groupTop);
-  if (d.direction !== 'auto') return { ...(await go(d.direction)), natural };
+  const groupTitle = new Map(d.groups.map((g) => [g.id, { w: Math.ceil(tm.width(groupText(g.label, d.theme), fonts.group)), h: Math.ceil(fonts.group.size * LINE) }]));
+  const once = async (dir: Exclude<Direction, 'auto'>, order: Order, pairs: 'reply' | 'call' = 'reply'): Promise<Layout> => {
+    let l: Layout = { ...(await run(d, dir, sizes, labels, groupMin, groupTop, order, undefined, pairs)), natural };
+    // ER: once the tables are placed, run again with each relationship pinned to
+    // its key rows, on the sides that face each other.
+    const keys = d.type === 'er' ? keyRows(d) : new Map<string, RowPins>();
+    if (keys.size) {
+      const pins = new Map<string, PortPin[]>();
+      for (const [eid, k] of keys) {
+        const e = d.edges.find((x) => x.id === eid)!;
+        const a = l.nodes.get(e.from)!, b = l.nodes.get(e.to)!;
+        const aLeft = a.x + a.w / 2 <= b.x + b.w / 2;
+        const pin = (node: string, row: number | undefined, east: boolean, end: 'from' | 'to') => {
+          if (row === undefined) return;
+          const list = pins.get(node) ?? [];
+          list.push({ edge: eid, end, row, side: east ? 'EAST' : 'WEST' });
+          pins.set(node, list);
+        };
+        pin(e.from, k.from, aLeft, 'from');
+        pin(e.to, k.to, !aLeft, 'to');
+      }
+      l = { ...(await run(d, dir, sizes, labels, groupMin, groupTop, order, pins, pairs)), natural };
+    }
+    polish(d, l, { groupTitle, titleInset: GROUP_INSET, groupTop });
+    return l;
+  };
+  // Spec order first: it keeps a diagram stable as the spec grows. Free ordering
+  // wins only when it crosses fewer edges.
+  const hasPairs = d.edges.some((e, i) => e.from !== e.to && d.edges.slice(0, i).some((x) => x.from === e.to && x.to === e.from));
+  const go = async (dir: Exclude<Direction, 'auto'>): Promise<Layout> => {
+    const tries: Array<[Order, 'reply' | 'call']> = [['NODES_AND_EDGES', 'reply'], ['NONE', 'reply']];
+    if (hasPairs) tries.push(['NODES_AND_EDGES', 'call'], ['NONE', 'call']);
+    const all = await Promise.all(tries.map(([o, p]) => once(dir, o, p)));
+    // Fewest crossings; then clearly shorter edges; ties go to the earlier try.
+    return all.reduce((best, l) => {
+      const [cb, cl] = [crossings(best), crossings(l)];
+      if (cl !== cb) return cl < cb ? l : best;
+      return edgeLength(l) < 0.9 * edgeLength(best) ? l : best;
+    });
+  };
+  if (d.direction !== 'auto') return go(d.direction);
+  // Relationships attach to rows, on a table's sides, so tables read left to right.
+  if (d.type === 'er') return go('LR');
   // Pick the direction whose result fits a document page best.
   const [tb, lr] = await Promise.all([go('TB'), go('LR')]);
-  return { ...(score(tb) <= score(lr) ? tb : lr), natural };
+  return score(tb) <= score(lr) ? tb : lr;
 }
 
 const groupText = (label: string, theme: ThemeName) => (typeface(theme).upperGroups ? label.toUpperCase() : label);
@@ -175,6 +219,9 @@ async function run(
   labels: Array<{ w: number; h: number } | undefined>,
   groupMin: Map<string, number>,
   groupTop: number,
+  order: Order,
+  pins: Map<string, PortPin[]> = new Map(),
+  pairs: 'reply' | 'call' = 'reply',
 ): Promise<Omit<Layout, 'natural'>> {
   const byId = new Map<string, ElkNode>();
   const root: ElkNode = {
@@ -186,7 +233,10 @@ async function run(
       'elk.edgeRouting': 'ORTHOGONAL',
       'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
       'elk.layered.nodePlacement.bk.fixedAlignment': 'BALANCED',
-      'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
+      'elk.layered.considerModelOrder.strategy': order,
+      // Walk from the sources in spec order, so the edge that closes a loop (a retry,
+      // a resume) is the one drawn backwards, not the main path.
+      'elk.layered.cycleBreaking.strategy': 'DEPTH_FIRST',
       'elk.layered.spacing.nodeNodeBetweenLayers': '32',
       'elk.spacing.nodeNode': '40',
       'elk.layered.spacing.edgeNodeBetweenLayers': '12',
@@ -222,15 +272,41 @@ async function run(
     const s = sizes.get(n.id)!;
     const en: ElkNode = { id: n.id, width: s.w, height: s.h };
     if (n.kind === 'start') en.layoutOptions = { 'elk.layered.layering.layerConstraint': 'FIRST' };
+    const np = pins.get(n.id);
+    if (np?.length) {
+      en.layoutOptions = { ...en.layoutOptions, 'elk.portConstraints': 'FIXED_POS' };
+      en.ports = np.map((p) => ({
+        id: portId(p),
+        width: 0,
+        height: 0,
+        x: p.side === 'EAST' ? s.w : 0,
+        y: ER_HEAD + p.row * ER_ROW + ER_ROW / 2,
+        layoutOptions: { 'elk.port.side': p.side },
+      }));
+    }
     byId.set(n.id, en);
     byId.get(n.parent ?? '__root')!.children!.push(en);
   }
-  root.edges = d.edges.map((e, i): ElkExtendedEdge => ({
-    id: e.id,
-    sources: [e.from],
-    targets: [e.to],
-    labels: labels[i] ? [{ text: e.label!, width: labels[i]!.w, height: labels[i]!.h }] : [],
-  }));
+  // A reply to an earlier edge (stripe -> api after api -> stripe) is laid out in
+  // the call's direction, so the pair runs side by side instead of one of them
+  // being drawn backwards around everything in between. Its points flip back below.
+  // Which of the two to flip is tried both ways by the caller: flipping the call
+  // puts the other end ahead of the caller, often outside its group.
+  const flipped = new Set<string>();
+  d.edges.forEach((e, i) => {
+    const call = e.from !== e.to ? d.edges.slice(0, i).find((x) => x.from === e.to && x.to === e.from) : undefined;
+    if (call) flipped.add(pairs === 'reply' ? e.id : call.id);
+  });
+  root.edges = d.edges.map((e, i): ElkExtendedEdge => {
+    const src = pinFor(pins, e.from, e.id, 'from') ?? e.from, dst = pinFor(pins, e.to, e.id, 'to') ?? e.to;
+    const flip = flipped.has(e.id);
+    return {
+      id: e.id,
+      sources: [flip ? dst : src],
+      targets: [flip ? src : dst],
+      labels: labels[i] ? [{ text: e.label!, width: labels[i]!.w, height: labels[i]!.h }] : [],
+    };
+  });
 
   const out = await elk.layout(root);
   const nodes = new Map<string, Box>();
@@ -250,9 +326,95 @@ async function run(
     if (!s) continue;
     const lab = e.labels?.[0];
     edges.set(e.id, {
-      points: [s.startPoint, ...(s.bendPoints ?? []), s.endPoint].map((p) => ({ x: p.x, y: p.y })),
+      points: (flipped.has(e.id) ? (pts: Point[]) => pts.reverse() : (pts: Point[]) => pts)([s.startPoint, ...(s.bendPoints ?? []), s.endPoint].map((p) => ({ x: p.x, y: p.y }))),
       label: lab && lab.x != null ? { x: lab.x, y: lab.y!, w: lab.width!, h: lab.height! } : undefined,
     });
   }
   return { direction: dir, width: out.width!, height: out.height!, nodes, groups, edges };
+}
+
+type Order = 'NODES_AND_EDGES' | 'NONE';
+
+/** Proper crossings between edge segments: what a reader has to untangle. */
+export function crossings(l: Pick<Layout, 'edges'>): number {
+  const segs: Array<[Point, Point, string]> = [];
+  for (const [id, e] of l.edges) for (let i = 0; i < e.points.length - 1; i++) segs.push([e.points[i]!, e.points[i + 1]!, id]);
+  let n = 0;
+  for (let i = 0; i < segs.length; i++)
+    for (let j = i + 1; j < segs.length; j++) {
+      const [a, b, ea] = segs[i]!, [c, dd, eb] = segs[j]!;
+      if (ea === eb) continue;
+      const o = (p: Point, q: Point, r: Point) => Math.sign((q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x));
+      if (o(a, b, c) * o(a, b, dd) < 0 && o(c, dd, a) * o(c, dd, b) < 0) n++;
+    }
+  return n;
+}
+
+export function edgeLength(l: Pick<Layout, 'edges'>): number {
+  let n = 0;
+  for (const e of l.edges.values()) for (let i = 1; i < e.points.length; i++) n += Math.abs(e.points[i]!.x - e.points[i - 1]!.x) + Math.abs(e.points[i]!.y - e.points[i - 1]!.y);
+  return n;
+}
+
+type PortPin = { edge: string; end: 'from' | 'to'; row: number; side: 'EAST' | 'WEST' };
+type RowPins = { from?: number; to?: number };
+const portId = (p: PortPin) => `${p.edge}::${p.end}`;
+const pinFor = (pins: Map<string, PortPin[]>, node: string, edge: string, end: 'from' | 'to') => {
+  const p = pins.get(node)?.find((x) => x.edge === edge && x.end === end);
+  return p ? portId(p) : undefined;
+};
+
+/** "addresses" -> "address", "categories" -> "category", "orgs" -> "org". */
+export function singular(word: string): string {
+  const w = word.toLowerCase();
+  if (w.endsWith('ies')) return w.slice(0, -3) + 'y';
+  if (/(ss|x|ch|sh)es$/.test(w)) return w.slice(0, -2);
+  if (w.endsWith('s') && !w.endsWith('ss')) return w.slice(0, -1);
+  return w;
+}
+
+/**
+ * For each ER relationship, the rows its ends attach to: the foreign key on one
+ * table that names the other ("customer_id" -> customers), and that table's
+ * primary key. Relationships with no matching key attach to the table as a whole.
+ */
+export function keyRows(d: Diagram): Map<string, RowPins> {
+  const out = new Map<string, RowPins>();
+  const byId = new Map(d.nodes.map((n) => [n.id, n]));
+  const pk = (id: string) => {
+    const i = byId.get(id)?.fields?.findIndex((f) => f.flags.includes('pk')) ?? -1;
+    return i >= 0 ? i : undefined;
+  };
+  const fkTo = (child: string, parent: string) => {
+    const p = byId.get(parent)!;
+    const names = [...new Set([p.id, p.label].map((x) => singular(x.replace(/[\s-]+/g, '_'))))];
+    const fields = byId.get(child)?.fields ?? [];
+    const score = (name: string) => {
+      const f = name.toLowerCase();
+      for (const n of names) {
+        if (f === `${n}_id` || f === `${n}id`) return 3;
+        if (f.endsWith(`_${n}_id`) || f.startsWith(`${n}_`)) return 2;
+        if (f.includes(n)) return 1;
+      }
+      return 0;
+    };
+    let best: { i: number; s: number } | undefined;
+    fields.forEach((f, i) => {
+      if (!f.flags.includes('fk')) return;
+      const s = score(f.name);
+      if (s && (!best || s > best.s)) best = { i, s };
+    });
+    return best?.i;
+  };
+  for (const e of d.edges) {
+    if (e.from === e.to) continue;
+    const a = fkTo(e.from, e.to);
+    if (a !== undefined) {
+      out.set(e.id, { from: a, to: pk(e.to) });
+      continue;
+    }
+    const b = fkTo(e.to, e.from);
+    if (b !== undefined) out.set(e.id, { from: pk(e.from), to: b });
+  }
+  return out;
 }

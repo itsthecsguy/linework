@@ -5,7 +5,7 @@
 import type { Diagram, FrameOp, SeqItem } from '../spec/model.js';
 import { fontsFor, type Measure } from './layout.js';
 import { TextMeasurer } from './text.js';
-import { LINE, PAD_X, PAD_Y, activationStyle, frameStyle, guardStyle, lifelineStyle, messageStyle, nodeLabel, noteStyle, palette, separatorStyle } from '../drawio/theme.js';
+import { FRAME_TAB_X, LINE, PAD_X, PAD_Y, activationStyle, frameStyle, guardStyle, lifelineStyle, messageStyle, nodeLabel, noteStyle, palette, separatorStyle } from '../drawio/theme.js';
 import { autoAttr, diagramMeta, lookAttrs, type Scene, type SceneEdge, type SceneVertex } from '../drawio/write.js';
 
 const TOP = 24, BAR_W = 10, NOTE_W = 220;
@@ -239,7 +239,7 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
       if (!when) return;
       // Start right of the operator label, then step past any lifeline the text would cover.
       const gw = Math.max(80, Math.ceil(tm.width(`[${when}]`, fonts.edge)) + 16);
-      let gx = fx + 10 + Math.ceil(tm.width(f.op, fonts.group)) + 8;
+      let gx = fx + 2 * FRAME_TAB_X + Math.ceil(tm.width(f.op, fonts.group)) + 10;
       for (const c of [...parts.map((p) => cx(p.id))].sort((a, b) => a - b)) if (c + BAR_W / 2 + 4 > gx && c - BAR_W / 2 - 4 < gx + gw) gx = c + BAR_W / 2 + 6;
       vertices.push({
         id: `${f.id}_g${k}`,

@@ -38,9 +38,17 @@ Linework handles the layout and the look. These rules are about content, which i
 - **Keep error and success kinds for real errors and successes.** They're red and green in every style.
 - **Pick the style for the medium**: `clean` for docs and READMEs, `dark` for dark-mode pages, `soft` for slides, `sketch` for early drafts, `blueprint` for technical deep dives. Use one style across all the diagrams in a doc.
 
+## Order
+
+Layout reads the spec top to bottom, so the order you write things in shows up in the picture.
+
+- **List nodes and edges in reading order**: the entry point first, then each step as the request or flow reaches it. A flow's main path then runs straight down, and an edge back to an earlier node (a retry, a resume) is drawn as the loop it is.
+- **Write a reply after its call** (`api -> stripe`, then `stripe -.-> api`). The pair is drawn side by side.
+- **In ER, name foreign keys after the table they point at**: `customer_id` for `customers`, `shipping_address_id` for `addresses`. The relationship line then attaches to that row and to the other table's primary key. A key named anything else attaches to the table as a whole.
+
 ## Direction
 
-- Leave out `direction` on the first build. `auto` tries both and keeps the one that fits a doc page, which is about 800px wide.
+- Leave out `direction` on the first build. `auto` tries both and keeps the one that fits a doc page, which is about 800px wide. ER diagrams always run left to right, since relationships attach to the sides of the key rows.
 - Set it only after looking at the result, and only if it reads wrong. A short linear pipeline of 5 or fewer steps can read better as LR.
 - Don't force LR on a diagram with more than about 6 nodes in a row. It comes out 1,500px or more wide, and embedded in a doc its text shrinks to unreadable. `check` warns about this as `too-wide`.
 

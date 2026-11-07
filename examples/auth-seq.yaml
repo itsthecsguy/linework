@@ -1,0 +1,35 @@
+type: sequence
+title: OAuth login with refresh
+participants:
+  user:  { label: User, kind: person }
+  app:   { label: SPA, kind: client }
+  bff:   { label: BFF, tech: Node.js }
+  idp:   { label: Identity provider, kind: external }
+  api:   { label: Resource API }
+  cache: { label: Token cache, kind: cache }
+messages:
+  - user -> app: Sign in
+  - app -> bff: GET /login
+  - bff --> app: 302 to /authorize
+  - app -> idp: /authorize?code_challenge=...
+  - idp -> user: Login form
+  - user -> idp: Credentials + MFA
+  - idp --> app: redirect with code
+  - app -> bff: GET /callback?code
+  - bff ==> idp: POST /token (code, verifier)
+  - idp --> bff: access + refresh tokens
+  - bff -> cache: store refresh token
+  - note right of bff: tokens never reach the browser
+  - bff --> app: Set-Cookie session
+  - loop: every API call
+    do:
+      - app -> bff: GET /orders
+      - opt: access token expired
+        do:
+          - bff -> cache: read refresh token
+          - bff -> idp: POST /token (refresh)
+          - idp --> bff: new access token
+      - bff -> api: GET /orders + Bearer
+      - api -> api: validate JWT
+      - api --> bff: 200 orders
+      - bff --> app: orders

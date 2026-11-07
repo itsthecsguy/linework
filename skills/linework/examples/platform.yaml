@@ -1,0 +1,45 @@
+type: architecture
+title: Platform
+groups:
+  edge: { label: Edge }
+  cluster: { label: Kubernetes cluster }
+  core: { label: Core services, in: cluster }
+  data: { label: Data tier }
+nodes:
+  user:    { label: Customer, kind: person }
+  admin:   { label: Support agent, kind: person }
+  mobile:  { label: Mobile app, kind: client, tech: Swift }
+  web:     { label: Web dashboard, kind: client, tech: React }
+  cdn:     { label: CDN, kind: cache, tech: CloudFront, in: edge }
+  gw:      { label: API gateway, tech: Kong, in: edge }
+  auth:    { label: Auth service, tech: Go, in: core }
+  orders:  { label: Orders service, tech: Kotlin, in: core, highlight: true }
+  search:  { label: Search service, tech: Rust, in: core }
+  notify:  { label: Notification worker, kind: function, tech: Node.js, in: cluster }
+  bus:     { label: domain-events, kind: queue, tech: Kafka, in: cluster }
+  pg:      { label: Orders DB, kind: database, tech: Postgres 16, in: data }
+  es:      { label: Search index, kind: database, tech: OpenSearch, in: data }
+  redis:   { label: Session store, kind: cache, tech: Redis, in: data }
+  s3:      { label: Media bucket, kind: storage, tech: S3, in: data }
+  twilio:  { label: Twilio, kind: external, tech: SMS }
+  idp:     { label: Okta, kind: external, tech: OIDC }
+edges:
+  - user -> mobile
+  - user -> web
+  - admin -> web
+  - mobile -> cdn: assets
+  - web -> cdn: assets
+  - mobile ==> gw: HTTPS
+  - web ==> gw: HTTPS
+  - cdn -> s3: origin fetch
+  - gw -> auth: verify token
+  - auth -> idp: OIDC
+  - auth -> redis: sessions
+  - gw ==> orders: gRPC
+  - gw -> search: gRPC
+  - orders ==> pg: SQL
+  - orders -.-> bus: OrderPlaced
+  - bus -.-> search: reindex
+  - bus -.-> notify: consume
+  - search -> es: query
+  - notify -> twilio: send SMS

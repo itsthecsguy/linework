@@ -1,0 +1,32 @@
+type: flow
+title: Deploy pipeline
+nodes:
+  push:    { label: Push to main, kind: terminal }
+  build:   { label: Build and unit test }
+  ok:      { label: Tests pass?, kind: decision }
+  fix:     { label: Notify author, kind: error }
+  stage:   { label: Deploy to staging }
+  smoke:   { label: Run smoke tests against staging }
+  smokeok: { label: Healthy?, kind: decision }
+  canary:  { label: Canary 5% of traffic }
+  metrics: { label: Error rate under 0.1%?, kind: decision }
+  roll:    { label: Roll back canary, kind: error }
+  full:    { label: Promote to 100% }
+  done:    { label: Released, kind: terminal }
+  artifact: { label: Container image, kind: data }
+edges:
+  - push -> build
+  - build -> ok
+  - ok -> fix: "no"
+  - ok -> artifact: "yes"
+  - artifact -> stage
+  - stage -> smoke
+  - smoke -> smokeok
+  - smokeok -> canary: "yes"
+  - smokeok -> roll: "no"
+  - canary -> metrics
+  - metrics -> full: "yes"
+  - metrics -> roll: "no"
+  - roll -> fix
+  - fix -> build: retry after fix
+  - full -> done

@@ -1,0 +1,25 @@
+type: state
+title: Background job
+nodes:
+  queued:    {}
+  running:   {}
+  paused:    {}
+  retrying:  { label: Waiting to retry }
+  succeeded: { kind: success }
+  failed:    { kind: error }
+  cancelled: {}
+edges:
+  - "[*] -> queued"
+  - queued -> running: worker picks up
+  - running -> succeeded: exit 0
+  - running -> retrying: error, attempts < 5
+  - retrying -> queued: backoff elapsed
+  - running -> failed: error, attempts = 5
+  - running -> paused: pause
+  - paused -> running: resume
+  - queued -> cancelled: cancel
+  - paused -> cancelled: cancel
+  - running -> running: heartbeat
+  - "succeeded -> [*]"
+  - "failed -> [*]"
+  - "cancelled -> [*]"
