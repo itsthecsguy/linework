@@ -78,7 +78,7 @@ edges:                        # "from ARROW to: label"
   - `soft`: borderless pastel cards, tinted by kind. For slides and docs that want color coding.
   - `dark`: for dark-mode docs and slides.
   - `sketch`: hand-drawn lines and handwriting. For early proposals ("this is a draft") and whiteboard-style explainers.
-  - `blueprint`: light lines on deep blue, monospace. For technical deep dives that want a distinct look.
+  - `blueprint`: blue ink on pale drafting paper, monospace. For technical deep dives that want a distinct look.
   - `c4`: C4-model conventions; labels each box with its element type.
 - Color is for meaning, so most nodes stay neutral:
   - `highlight: true` on a node, group or participant, or `==>` on an edge or message, makes it the first thing a reader sees. Highlight the one path or component the surrounding text is about: often one node and the 2 or 3 edges into and out of it. `build` warns when you highlight so much that nothing stands out.

@@ -66,7 +66,8 @@ const LIGHT_SW: Swatches = {
   pink: { tint: '#FDF2F8', line: '#F9A8D4', ink: '#9D174D', solid: '#DB2777', edge: '#DB2777' },
   red: { tint: '#FEF2F2', line: '#FCA5A5', ink: '#991B1B', solid: '#DC2626', edge: '#DC2626' },
   orange: { tint: '#FFF7ED', line: '#FDBA74', ink: '#9A3412', solid: '#C2410C', edge: '#EA580C' },
-  amber: { tint: '#FFFBEB', line: '#FCD34D', ink: '#92400E', solid: '#B45309', edge: '#D97706' },
+  // Ochre, not orange: the two read as one color at line weight otherwise
+  amber: { tint: '#FFFBEB', line: '#FCD34D', ink: '#92400E', solid: '#B45309', edge: '#A16207' },
   green: { tint: '#F0FDF4', line: '#86EFAC', ink: '#166534', solid: '#15803D', edge: '#16A34A' },
   teal: { tint: '#F0FDFA', line: '#5EEAD4', ink: '#115E59', solid: '#0F766E', edge: '#0D9488' },
   gray: { tint: '#F4F4F5', line: '#D4D4D8', ink: '#3F3F46', solid: '#52525B', edge: '#71717A' },
@@ -97,17 +98,17 @@ const DARK_SW: Swatches = {
   gray: { tint: '#27272A', line: '#52525B', ink: '#E4E4E7', solid: '#52525B', edge: '#A1A1AA' },
 };
 
-// Blueprint: light lines on deep blue. Color only changes the line.
+// Blueprint: a drafting sheet. Blue ink on pale paper; color only changes the line.
 const BP_LINE: Record<ColorName, string> = {
-  blue: '#93C5FD',
-  violet: '#C4B5FD',
-  pink: '#F9A8D4',
-  red: '#FCA5A5',
-  orange: '#FDBA74',
-  amber: '#FDE68A',
-  green: '#86EFAC',
-  teal: '#5EEAD4',
-  gray: '#CBD5E1',
+  blue: '#1D4ED8',
+  violet: '#6D28D9',
+  pink: '#BE185D',
+  red: '#B91C1C',
+  orange: '#C2410C',
+  amber: '#A16207',
+  green: '#15803D',
+  teal: '#0F766E',
+  gray: '#64748B',
 };
 
 export interface Paint {
@@ -238,7 +239,7 @@ const SKETCH: Theme = {
   edge: '#3F3F46',
   edgeText: '#3F3F46',
   edgeWidth: 1.5,
-  accent: 'red',
+  accent: 'blue',
   kindColors: true,
   radius: 8,
   group: { fill: 'none', stroke: '#71717A', dashed: true, text: '#3F3F46' },
@@ -249,43 +250,45 @@ const SKETCH: Theme = {
     const solid = 'fillStyle=solid;';
     if (color === 'ink') return { fill: SKETCH_INK, stroke: SKETCH_INK, text: '#FFFFFF', sub: '#5C5C66', strokeWidth: 1.5, extra: solid };
     if (hl) {
-      const s = LIGHT_SW[color === 'neutral' ? 'red' : color];
-      return { fill: s.line, stroke: s.solid, text: SKETCH_INK, sub: s.ink, strokeWidth: 2.5, extra: solid };
+      const c = color === 'neutral' ? 'blue' : color;
+      // A marker pass: a stronger tint than any kind's, under the accent's line
+      return { fill: c === 'blue' ? '#B9C6FF' : LIGHT_SW[c].line, stroke: LIGHT_SW[c].solid, text: SKETCH_INK, sub: LIGHT_SW[c].ink, strokeWidth: 2.5, extra: solid };
     }
     if (color === 'neutral') return { fill: '#FFFFFF', stroke: SKETCH_INK, text: SKETCH_INK, sub: '#5C5C66', strokeWidth: 1.5, extra: solid };
     return { fill: SOFT_TINT[color], stroke: SKETCH_INK, text: SKETCH_INK, sub: '#5C5C66', strokeWidth: 1.5, extra: solid };
   },
   edgePaint: (color, hl) => {
     if (!color && !hl) return { stroke: SKETCH.edge, text: SKETCH.edgeText, width: 1.5 };
-    const s = LIGHT_SW[color ?? 'red'];
+    const s = LIGHT_SW[color ?? 'blue'];
     return { stroke: s.solid, text: s.ink, width: hl ? 2.5 : 1.5 };
   },
   extra: 'sketch=1;curveFitting=1;jiggle=2;',
 };
 
-const BP_BG = '#0F3460';
-const BP_INK = '#EAF2FF';
-const BP_HI = '#FFD43B';
+const BP_PAPER = '#F6F8FC';
+const BP_INK = '#1B2F55';
+const BP_LINE_INK = '#3F5F96';
+const BP_HI = '#1D4ED8';
 const BLUEPRINT: Theme = {
   name: 'blueprint',
   type: MONO,
-  canvas: BP_BG,
+  canvas: BP_PAPER,
   text: BP_INK,
-  muted: '#9DB8DF',
-  edge: '#9DB8DF',
-  edgeText: '#C9DBF5',
+  muted: '#5A6F92',
+  edge: '#6F86AD',
+  edgeText: '#4A5F84',
   edgeWidth: 1.25,
-  accent: 'amber',
+  accent: 'blue',
   kindColors: false,
   radius: 4,
-  group: { fill: 'none', stroke: '#5B82B8', dashed: true, text: '#9DB8DF' },
-  note: { fill: '#16467E', stroke: '#5B82B8', text: BP_INK },
-  well: '#16467E',
+  group: { fill: 'none', stroke: '#9DB0D0', dashed: true, text: '#5A6F92' },
+  note: { fill: '#EAF0FA', stroke: '#9DB0D0', text: BP_INK },
+  well: '#EAF0FA',
   paint: (color, hl) => {
-    if (hl) return { fill: BP_HI, stroke: BP_HI, text: BP_BG, sub: '#3A4A63', strokeWidth: 1 };
-    if (color === 'ink') return { fill: BP_INK, stroke: BP_INK, text: BP_BG, sub: BP_BG, strokeWidth: 1 };
-    if (color === 'neutral') return { fill: BP_BG, stroke: BP_INK, text: BP_INK, sub: '#9DB8DF', strokeWidth: 1.25 };
-    return { fill: BP_BG, stroke: BP_LINE[color], text: BP_INK, sub: BP_LINE[color], strokeWidth: 1.25 };
+    if (hl) return { fill: BP_HI, stroke: BP_HI, text: '#FFFFFF', sub: 'rgba(255,255,255,0.8)', strokeWidth: 1 };
+    if (color === 'ink') return { fill: BP_INK, stroke: BP_INK, text: '#FFFFFF', sub: '#C9D5EA', strokeWidth: 1 };
+    if (color === 'neutral') return { fill: '#FFFFFF', stroke: BP_LINE_INK, text: BP_INK, sub: '#5A6F92', strokeWidth: 1.25 };
+    return { fill: '#FFFFFF', stroke: BP_LINE[color], text: BP_INK, sub: BP_LINE[color], strokeWidth: 1.25 };
   },
   edgePaint: (color, hl) => {
     if (hl) return { stroke: BP_HI, text: BP_HI, width: 2 };
@@ -294,12 +297,14 @@ const BLUEPRINT: Theme = {
   extra: '',
 };
 
-// C4-PlantUML's colours for architecture kinds; other diagram types use `clean`.
+// C4's convention (a dark person, blue containers, gray external systems) in
+// quieter tones than C4-PlantUML's, so a highlight still stands out, with white text at 4.5:1 or better on each.
+// Other diagram types use `clean`.
 const C4_KIND: Record<string, { fill: string; stroke: string; text: string; type: string }> = {
-  person: { fill: '#08427B', stroke: '#073B6F', text: '#FFFFFF', type: 'Person' },
-  external: { fill: '#999999', stroke: '#8A8A8A', text: '#FFFFFF', type: 'External system' },
+  person: { fill: '#1E3466', stroke: '#1E3466', text: '#FFFFFF', type: 'Person' },
+  external: { fill: '#6B7383', stroke: '#6B7383', text: '#FFFFFF', type: 'External system' },
 };
-const C4_CONTAINER = { fill: '#438DD5', stroke: '#3C7FC0', text: '#FFFFFF', type: 'Container' };
+const C4_CONTAINER = { fill: '#456A9E', stroke: '#456A9E', text: '#FFFFFF', type: 'Container' };
 const C4: Theme = { ...CLEAN, name: 'c4', group: { fill: 'none', stroke: '#444444', dashed: true, text: '#444444' }, edge: '#707070', edgeText: '#444444' };
 
 const THEMES_BY_NAME: Record<ThemeName, Theme> = { clean: CLEAN, soft: SOFT, dark: DARK, sketch: SKETCH, blueprint: BLUEPRINT, c4: C4 };

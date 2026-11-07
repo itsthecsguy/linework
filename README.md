@@ -1,4 +1,9 @@
-# Linework
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/logo-dark.svg">
+    <img alt="Linework" src="docs/brand/logo-light.svg" height="64">
+  </picture>
+</h1>
 
 Software diagrams your AI agent writes and you can edit by hand, in Claude Code, Codex, Cursor, Antigravity, Copilot, Grok Build or any other agent.
 
@@ -107,8 +112,8 @@ Set `theme:` in the spec.
 | `soft` | slides. Borderless pastel cards, tinted by kind. |
 | `dark` | dark-mode pages |
 | `sketch` | early drafts. Hand-drawn lines and a handwriting font. |
-| `blueprint` | technical deep dives. Light lines on deep blue, monospace. |
-| `c4` | C4-model diagrams |
+| `blueprint` | technical deep dives. Blue ink on pale drafting paper, monospace. |
+| `c4` | C4-model diagrams, in quiet blues and grays |
 
 Color is for meaning. Nodes stay neutral by default, and errors and successes are red and green in every style. Mark the part the doc is about with `highlight: true` on a node or `==>` on an edge, and it's drawn in the style's accent color. Use `color: red` (or blue, violet, pink, orange, amber, green, teal, gray) for categories.
 
