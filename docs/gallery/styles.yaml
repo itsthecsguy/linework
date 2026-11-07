@@ -1,0 +1,11 @@
+type: architecture
+direction: TB
+groups:
+  vpc: Production VPC
+nodes:
+  web: { label: Web app, kind: client, tech: Next.js }
+  api: { label: Checkout API, tech: Go, highlight: true, in: vpc }
+  db: { label: Orders, kind: database, tech: Postgres, in: vpc }
+edges:
+  - web ==> api: HTTPS
+  - api -> db: SQL
