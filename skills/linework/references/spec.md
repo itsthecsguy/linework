@@ -40,9 +40,9 @@ nodes:
 | `clean` | white boxes with hairline borders, groups drawn as gray grounds, cobalt accent. Nodes are neutral unless the kind means something (error, success). | IBM Plex Sans |
 | `soft` | borderless pastel cards, each kind its own tint | IBM Plex Sans |
 | `dark` | `clean` in GitHub's dark colors, so it sits flush on a dark README | IBM Plex Sans |
-| `sketch` | hand-drawn strokes, pastel fills, red accent | Kalam (handwriting) |
-| `blueprint` | light lines on deep blue, yellow accent, drafting capitals for group titles | IBM Plex Mono |
-| `c4` | C4-PlantUML colors; each box says its element type | IBM Plex Sans |
+| `sketch` | hand-drawn strokes, pastel fills, blue accent | Kalam (handwriting) |
+| `blueprint` | blue ink on pale drafting paper, drafting capitals for group titles | IBM Plex Mono |
+| `c4` | C4's colors (dark person, blue containers, gray external systems) in quiet tones; each box says its element type | IBM Plex Sans |
 
 The "drawn as" columns below describe `soft`. In `clean`, `dark` and `blueprint`, kinds differ by shape and dash only, and color comes from `highlight`, `color` and the error/success kinds.
 
