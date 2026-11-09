@@ -9,3 +9,8 @@ spikes/mermaid/*.png
 .claude/
 skills-lock.json
 .DS_Store
+
+# Launch video and post drafts stay local
+docs/launch/*.mp4
+docs/launch/*.png
+docs/launch/post.md
