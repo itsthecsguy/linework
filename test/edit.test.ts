@@ -13,7 +13,9 @@ import { absBox, readDrawio } from '../src/drawio/read.js';
 const run = process.env.LINEWORK_SKIP_E2E !== '1';
 
 async function launch(): Promise<Browser> {
-  for (const o of [{}, { channel: 'chrome' }, { channel: 'msedge' }]) {
+  // Same order as the tool: LINEWORK_CHROME first, then Playwright's Chromium, Chrome, Edge.
+  const own = process.env.LINEWORK_CHROME ? [{ executablePath: process.env.LINEWORK_CHROME }] : [];
+  for (const o of [...own, {}, { channel: 'chrome' }, { channel: 'msedge' }]) {
     try {
       return await chromium.launch(o);
     } catch {}

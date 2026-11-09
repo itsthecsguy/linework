@@ -24,6 +24,8 @@ beforeAll(async () => {
       command: process.execPath,
       args: ['--import', 'tsx', path.resolve('src/cli.ts'), 'mcp', '--root', tmp],
       stderr: 'inherit',
+      // The transport passes only a short list of variables by default, which drops LINEWORK_CHROME.
+      env: Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined)),
     }),
   );
 }, 60000);
