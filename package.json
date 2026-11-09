@@ -41,6 +41,7 @@
     "assets": "node scripts/copy-drawio-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepack": "npm run build",
+    "release": "node scripts/release.mjs",
     "fonts": "node scripts/copy-fonts.mjs"
   },
   "dependencies": {
