@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DrawioBrowser } from '../src/render/browser.js';
 import { build, checkFile, render, show, tidy } from '../src/api.js';
+import { readDrawio } from '../src/drawio/read.js';
 
 let browser: DrawioBrowser | undefined;
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-'));
@@ -37,6 +38,26 @@ describe.runIf(process.env.LINEWORK_SKIP_E2E !== '1')('end to end', () => {
     await render('test/fixtures/hand-edited.drawio.svg', png, browser!);
     expect(fs.statSync(png).size).toBeGreaterThan(10000);
   }, 60000);
+});
+
+describe.runIf(process.env.LINEWORK_SKIP_E2E !== '1')('flow decisions', () => {
+  it('keeps each branch label next to its decision', async () => {
+    for (const src of ['examples/refund-flow.yaml', 'examples/deploy-flow.yaml', 'test/fixtures/stress/incident-flow.yaml']) {
+      const out = path.join(tmp, 'branch-' + path.basename(src).replace('.yaml', '.drawio.svg'));
+      const res = await build(fs.readFileSync(src, 'utf8'), { out, browser: browser! });
+      expect(res.check.findings.filter((x) => x.level === 'error' || x.rule.startsWith('label-')), src).toEqual([]);
+      const cells = await browser!.inspect(readDrawio(fs.readFileSync(out, 'utf8')).xml);
+      const byId = new Map(cells.map((c) => [c.id, c]));
+      const branches = cells.filter((c) => c.edge && c.label && c.textBox && byId.get(c.source ?? '')?.shape === 'rhombus');
+      expect(branches.length, src).toBeGreaterThan(3);
+      for (const e of branches) {
+        const d = byId.get(e.source!)!.box, t = e.textBox!;
+        // Gap between the label and the diamond's box, 0 when they touch or overlap on an axis.
+        const dx = Math.max(0, d.x - (t.x + t.w), t.x - (d.x + d.w)), dy = Math.max(0, d.y - (t.y + t.h), t.y - (d.y + d.h));
+        expect(Math.hypot(dx, dy), `${src}: "${e.label}" from ${e.source}`).toBeLessThan(48);
+      }
+    }
+  }, 90000);
 });
 
 describe.runIf(process.env.LINEWORK_SKIP_E2E !== '1')('editing loop', () => {

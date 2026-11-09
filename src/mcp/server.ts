@@ -184,8 +184,8 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
   server.registerTool(
     'import_mermaid',
     {
-      title: 'Convert Mermaid to an linework spec',
-      description: 'Converts a Mermaid diagram (flowchart, stateDiagram, sequenceDiagram, erDiagram) to an linework spec. Returns the spec; review the guessed node kinds, then build it. With path, builds it straight away.',
+      title: 'Convert Mermaid to a linework spec',
+      description: 'Converts a Mermaid diagram (flowchart, stateDiagram, sequenceDiagram, erDiagram) to a linework spec. Returns the spec; review the guessed node kinds, then build it. With path, builds it straight away.',
       inputSchema: z.object({ source: z.string().describe('Mermaid source, without the ``` fence.'), path: pathArg.optional() }),
     },
     (args) =>

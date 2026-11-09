@@ -148,42 +148,99 @@ export function polish(d: Diagram, l: Layout, inp: PolishInput): void {
     const b = nodes.get(n.id)!;
     const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
     const outs = edges.filter((e) => e.from === n.id && e.to !== n.id);
-    // The run each edge settles into once it is clear of the diamond.
-    const runX = (e: E) => {
-      const p = e.pts;
-      for (let i = 1; i < p.length - 1; i++) if (vert(p[i]!, p[i + 1]!) && p[i + 1]!.y > b.y + b.h + 1) return p[i]!.x;
-      return p[p.length - 1]!.x;
+    // The run each edge settles into once it is clear of the diamond. ELK usually
+    // leaves on a short stub and turns; when it leaves straight down instead, the
+    // first segment is the run.
+    const runAt = (p: Point[]) => {
+      if (p.length >= 2 && vert(p[0]!, p[1]!) && p[1]!.y > b.y + b.h + 24) return 0;
+      for (let i = 1; i < p.length - 1; i++) if (vert(p[i]!, p[i + 1]!) && p[i + 1]!.y > b.y + b.h + 1) return i;
+      return -1;
     };
+    const runX = (e: E) => {
+      const i = runAt(e.pts);
+      return (i >= 0 ? e.pts[i]! : e.pts[e.pts.length - 1]!).x;
+    };
+    // Points from the start of that run on.
     const tail = (e: E) => {
-      // Points from the start of that run on.
-      const p = e.pts;
-      for (let i = 1; i < p.length - 1; i++) if (vert(p[i]!, p[i + 1]!) && p[i + 1]!.y > b.y + b.h + 1) return p.slice(i);
-      return p.slice(-1);
+      const i = runAt(e.pts);
+      return i >= 0 ? e.pts.slice(i) : e.pts.slice(-1);
     };
     const sorted = [...outs].sort((a, c) => runX(a) - runX(c));
     let bottomTaken = false;
+    // One branch per side point: a second one there would hide the first.
+    const taken = { left: false, right: false };
+    // A branch whose run sits under the diamond would have to fork off the bottom
+    // point next to its sibling. Move the run out past the side point instead, so
+    // each branch leaves from its own corner: side point, a short stub, then down.
+    const sideStep = (e: E, rest: Point[], left: boolean): Point[] | undefined => {
+      if (rest.length < 2) return undefined;
+      const lab = l.edges.get(e.id)?.label;
+      // Far enough out that the branch label, centred on the run, clears the diamond.
+      const out = Math.max(24, lab ? Math.ceil(f.boxTo(lab).w / 2) + 8 : 0);
+      const beside = left ? b.x - out : b.x + b.w + out;
+      const end = rest[1]!, t = nodes.get(e.to)!;
+      // A run that drops straight into the target has to stay over the target.
+      const drops = rest.length === 2;
+      if (drops ? ['diamond', 'table'].includes(shapeOf(e.to) ?? '') || !near(end.y, t.y, 1) : !horiz(end, rest[2]!) || end.y < b.y + b.h + 12) return undefined;
+      // Into the target's middle when that is already clear of the diamond, else just beside the diamond.
+      const mid = t.x + t.w / 2;
+      const tries = drops && (left ? mid <= beside : mid >= beside) ? [mid, beside] : [beside];
+      const sideP = { x: left ? b.x : b.x + b.w, y: cy };
+      for (const nx of tries) {
+        if (drops && (nx < t.x + R || nx > t.x + t.w - R || usedAt(e.to, nx, e, 'top'))) continue;
+        const a = { x: nx, y: cy }, c = { x: nx, y: end.y };
+        if (!clear(sideP, a, [n.id]) || !clear(a, c, [n.id, e.to]) || !free(a, c, e)) continue;
+        if (!drops && !clear(c, rest[2]!, [n.id, e.to])) continue;
+        return simplify([sideP, a, c, ...rest.slice(2)]);
+      }
+      return undefined;
+    };
     // The edge closest to straight down gets the bottom point.
-    const straight = sorted.reduce<E | undefined>((m, e) => (!m || Math.abs(runX(e) - cx) < Math.abs(runX(m) - cx) ? e : m), undefined);
-    for (const e of sorted) {
+    const nearest = (list: E[]) => list.reduce<E | undefined>((m, e) => (!m || Math.abs(runX(e) - cx) < Math.abs(runX(m) - cx) ? e : m), undefined);
+    // Or, failing that, the one whose target reaches under the bottom point, so it can drop straight.
+    const reaches = (e: E) => {
+      const t = nodes.get(e.to)!, rest = tail(e);
+      return rest.length === 2 && near(rest[1]!.y, t.y, 1) && !['diamond', 'table'].includes(shapeOf(e.to) ?? '') && cx >= t.x + 16 && cx <= t.x + t.w - 16;
+    };
+    const mid = nearest(sorted);
+    const straight = mid && Math.abs(runX(mid) - cx) < 12 ? mid : nearest(sorted.filter(reaches));
+    // The middle branch goes last: whether it can drop straight depends on where
+    // its siblings ended up, not on the stubs ELK gave them at the bottom point.
+    for (const e of [...sorted.filter((x) => x !== straight), ...(straight ? [straight] : [])]) {
       const x = runX(e), rest = tail(e);
       const bottom = { x: cx, y: b.y + b.h };
+      // A run that starts on the diamond itself: what follows is from its far end on.
+      const onEdge = rest[0]!.y <= b.y + b.h + 1 && rest.length > 1;
       if (e === straight && Math.abs(x - cx) < 12) {
-        e.pts = simplify([bottom, { x: cx, y: rest[0]!.y }, ...rest.slice(1)].map((pt, i) => (i === 1 ? pt : pt)));
-        if (rest.length && !near(rest[0]!.x, cx)) e.pts = simplify([bottom, { x: cx, y: rest[0]!.y }, ...rest]);
+        const run = onEdge ? rest.slice(1) : rest;
+        e.pts = simplify([bottom, { x: cx, y: run[0]!.y }, ...run.slice(1)]);
+        if (!near(run[0]!.x, cx)) e.pts = simplify([bottom, { x: cx, y: run[0]!.y }, ...run]);
+        bottomTaken = true;
+        continue;
+      }
+      const t = nodes.get(e.to)!, floor = { x: cx, y: t.y };
+      if (e === straight && reaches(e) && !usedAt(e.to, cx, e, 'top') && clear(bottom, floor, [n.id, e.to]) && free(bottom, floor, e)) {
+        e.pts = [bottom, floor];
         bottomTaken = true;
         continue;
       }
       const left = x < cx;
       const sideP = { x: left ? b.x : b.x + b.w, y: cy };
       const corner = { x, y: cy };
-      const sideOk = (left ? x < b.x - 10 : x > b.x + b.w + 10) && clear(sideP, corner, [n.id]) && clear(corner, rest[0]!, [n.id, e.to]);
-      if (sideOk) {
-        e.pts = simplify([sideP, corner, ...rest]);
-        continue;
+      const key = left ? 'left' : 'right';
+      if (!taken[key]) {
+        const sideOk = (left ? x < b.x - 10 : x > b.x + b.w + 10) && clear(sideP, corner, [n.id]) && clear(corner, rest[0]!, [n.id, e.to]);
+        const pts = sideOk ? simplify([sideP, corner, ...rest]) : sideStep(e, rest, left);
+        if (pts) {
+          e.pts = pts;
+          taken[key] = true;
+          continue;
+        }
       }
       // Branches that both head down fork from the bottom point on a short stem.
-      const y = Math.min(rest[0]!.y, b.y + b.h + 16);
-      e.pts = simplify([bottom, { x: cx, y }, { x, y }, ...rest]);
+      // Such a run turns onto the stem below the point.
+      const y = onEdge ? b.y + b.h + 16 : Math.min(rest[0]!.y, b.y + b.h + 16);
+      e.pts = simplify([bottom, { x: cx, y }, { x, y }, ...(onEdge ? rest.slice(1) : rest)]);
       bottomTaken = true;
     }
     for (const e of edges.filter((x) => x.to === n.id && x.from !== n.id)) {
@@ -193,8 +250,34 @@ export function polish(d: Diagram, l: Layout, inp: PolishInput): void {
         if (prev && vert(prev, last) && prev.y <= last.y) e.pts[m - 1] = { x: cx, y: b.y };
         continue;
       }
+      // Arriving sideways and then dropping to a port beside the top point: carry
+      // the sideways run on to the middle. Stepping down first leaves a small kink.
+      const before = p[m - 3];
+      const across = { x: cx, y: prev.y };
+      if (before && horiz(before, prev) && !near(before.x, cx) && clear(prev, across, [e.from, n.id]) && clear(across, { x: cx, y: b.y }, [e.from, n.id])) {
+        e.pts = simplify([...p.slice(0, m - 2), across, { x: cx, y: b.y }]);
+        continue;
+      }
       const y = Math.max(prev.y, b.y - 16);
       e.pts = simplify([...p.slice(0, m - 1), { x: last.x, y }, { x: cx, y }, { x: cx, y: b.y }]);
+    }
+    // Branches that join above a decision meet at one height, not a few px apart.
+    const joins = edges.flatMap((e) => {
+      const p = e.pts, m = p.length;
+      if (e.to !== n.id || e.from === n.id || m < 4) return [];
+      const [up, a, c, top] = [p[m - 4]!, p[m - 3]!, p[m - 2]!, p[m - 1]!];
+      const ok = vert(up, a) && up.y < a.y && horiz(a, c) && near(c.x, cx) && vert(c, top) && near(top.y, b.y, 1);
+      return ok ? [{ e, a, c }] : [];
+    });
+    if (joins.length > 1) {
+      const y = Math.max(...joins.map((j) => j.a.y));
+      for (const j of joins) {
+        if (near(j.a.y, y) || y - j.a.y > 24) continue;
+        const na = { x: j.a.x, y }, nc = { x: cx, y };
+        if (!clear(na, nc, [j.e.from, n.id])) continue;
+        const m = j.e.pts.length;
+        j.e.pts = simplify([...j.e.pts.slice(0, m - 3), na, nc, j.e.pts[m - 1]!]);
+      }
     }
   }
 

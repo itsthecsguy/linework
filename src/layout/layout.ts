@@ -199,7 +199,10 @@ function nodeSizes(d: Diagram, tm: TextMeasurer, fonts: Fonts) {
       let t = textOf(n, fonts.maxText * 0.7);
       if (t.lines > 2) t = textOf(n, fonts.maxText);
       const w = snap(Math.max(128, t.width * 1.5 + 40));
-      sizes.set(n.id, { w, h: snap(Math.max(72, w * 0.5, t.lines * fonts.line * 2 + 24)) });
+      // The text takes about 0.6 of the width, which leaves it 0.4 of the height.
+      // Only that tall, and no taller: a diamond at half its width for a two-line
+      // question is the biggest thing in the flow, bigger than any step.
+      sizes.set(n.id, { w, h: snap(Math.max(72, w * 0.36, t.lines * fonts.line * 2.5 + 24)) });
       continue;
     }
     const extra = shapeExtra(shape, !!n.icon);
