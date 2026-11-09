@@ -1,0 +1,49 @@
+name: Release
+
+# Pushing a version tag publishes that version to npm and opens a GitHub release.
+# Cut one with `npm run release` (see README, "Releasing").
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # create the GitHub release
+  id-token: write # npm trusted publishing: no token stored anywhere
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - name: Check the tag matches package.json
+        run: |
+          version="v$(node -p "require('./package.json').version")"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json ($version)"
+            exit 1
+          fi
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Install headless Chromium
+        run: |
+          node dist/cli.js install-browser
+          npx playwright-core install-deps chromium
+      - run: npm test
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@latest
+      - run: npm publish
+      - name: Create the GitHub release
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

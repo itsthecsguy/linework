@@ -258,7 +258,7 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 
 ## Status
 
-All four phases of [PLAN.md](PLAN.md) are built. Two paths haven't been tried yet, because they need a real account or app: the Google Docs add-on round trip, and saving from the VS Code Draw.io Integration extension. Both use the same file format and protocol that the tests cover with draw.io's own editor.
+All five phases of [PLAN.md](PLAN.md) are built. Two paths haven't been tried yet, because they need a real account or app: the Google Docs add-on round trip, and saving from the VS Code Draw.io Integration extension. Both use the same file format and protocol that the tests cover with draw.io's own editor.
 
 ## Development
 
@@ -268,5 +268,21 @@ npm test             # unit, round-trip, MCP and end-to-end tests (needs Chromiu
 npm run build        # compile to dist/
 npm run dev -- build examples/checkout.yaml -o out/checkout.drawio.svg --png out/checkout.png
 ```
+
+Every push to `main` and every pull request runs the typecheck and the tests on Node 22 and 24 in GitHub Actions. To run the suite with a browser that isn't in one of the usual places, set `LINEWORK_CHROME=/path/to/chromium`.
+
+After a change to layout or rendering, rebuild the README gallery and look at what moved:
+
+```bash
+npm run build && node docs/gallery/build.mjs
+```
+
+### Releasing
+
+```bash
+npm run release            # patch; or: npm run release -- minor | major | 1.2.3
+```
+
+That bumps the version, commits it as `Release x.y.z`, tags `vx.y.z` and pushes both. The tag starts the release workflow, which runs the tests again, publishes to npm and opens a GitHub release with generated notes. Nobody logs in to npm: the workflow publishes through npm's [trusted publishing](https://docs.npmjs.com/trusted-publishers), which is set up once in the package's settings on npmjs.com (GitHub Actions, repository `itsthecsguy/linework`, workflow `release.yml`).
 
 `assets/drawio` holds the parts of the draw.io web app that linework runs: the renderer it uses headless, and the editor behind `linework edit`. draw.io is Apache-2.0; see [NOTICE](NOTICE). To update it, check out a jgraph/drawio tag in `vendor/drawio` and run `npm run assets`.
