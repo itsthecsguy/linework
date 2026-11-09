@@ -74,9 +74,25 @@ export function check(cells: InspectCell[]): CheckResult {
       findings.push({ level: 'warning', rule: 'outside-group', message: `${name(n)} sticks out of its group ${name(p)}` });
   }
 
+  // A box drawn inside a group reads as a member of it.
+  const groups = containers.filter((g) => !scaffold(g));
+  for (const n of nodes) {
+    const mine = ancestors(n.id);
+    for (const g of groups)
+      if (!mine.has(g.id) && inter(n.box, g.box) > 0.25 * n.box.w * n.box.h)
+        findings.push({ level: 'warning', rule: 'in-other-group', message: `${name(n)} sits inside ${name(g)} but isn't in that group; move it out, or put it in the group` });
+  }
+
   for (const e of edges) {
     const pts = e.points!;
     const skip = new Set([e.source, e.target, ...ancestors(e.source), ...ancestors(e.target)]);
+    // A line through a group it has no end in looks like it connects to something there.
+    for (const g of groups) {
+      if (skip.has(g.id)) continue;
+      const r = shrink(g.box, 6);
+      if (pts.some((p, i) => i < pts.length - 1 && segHitsBox(p, pts[i + 1]!, r)))
+        findings.push({ level: 'warning', rule: 'edge-through-group', message: `edge ${edgeName(e, byId)} runs through ${name(g)}, which neither end is in` });
+    }
     for (const n of nodes) {
       if (skip.has(n.id)) continue;
       const r = shrink(n.box, 3);

@@ -1,0 +1,42 @@
+type: flow
+title: Incident response
+nodes:
+  alert: { label: Alert fires, kind: terminal }
+  ack: { label: On-call acknowledges within five minutes? , kind: decision }
+  page2: { label: Page secondary on-call and engineering manager }
+  sev: { label: Customer impact?, kind: decision }
+  low: { label: File a ticket and fix during business hours }
+  inc: { label: Open incident channel and assign an incident commander }
+  known: { label: Known failure mode?, kind: decision }
+  runbook: { label: Follow the runbook }
+  investigate: { label: "Investigate with dashboards, traces and recent deploys" }
+  rollback: { label: Recent deploy?, kind: decision }
+  revert: { label: Roll back the deploy }
+  mitigate: { label: Apply mitigation }
+  fixed: { label: Metrics recovered?, kind: decision }
+  escalate: { label: Escalate to service owners, kind: error }
+  comms: { label: Update status page, kind: data }
+  post: { label: Write postmortem }
+  done: { label: Close incident, kind: terminal }
+edges:
+  - alert -> ack
+  - ack -> sev: "yes"
+  - ack -> page2: "no"
+  - page2 -> sev
+  - sev -> low: "no"
+  - sev -> inc: "yes"
+  - inc -> comms
+  - inc -> known
+  - known -> runbook: "yes"
+  - known -> investigate: "no"
+  - investigate -> rollback
+  - rollback -> revert: "yes"
+  - rollback -> mitigate: "no"
+  - runbook -> fixed
+  - revert -> fixed
+  - mitigate -> fixed
+  - fixed -> post: "yes"
+  - fixed -> escalate: "no"
+  - escalate -> investigate: new findings
+  - post -> done
+  - low -> done

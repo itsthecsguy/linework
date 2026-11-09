@@ -21,6 +21,8 @@ export interface BuildOptions {
   force?: boolean;
   /** Throw away the existing layout, including hand edits, and lay out from scratch. */
   relayout?: boolean;
+  /** Always merge into the existing file, and never fall back to a fresh layout. */
+  keepLayout?: boolean;
   browser?: DrawioBrowser;
 }
 
@@ -31,6 +33,8 @@ export interface BuildResult {
   direction: string;
   mode: 'fresh' | 'merge';
   merge?: MergeStats;
+  /** Edge labels moved off boxes, lines and each other. */
+  labelsMoved: number;
   /** --relayout threw away a layout someone had arranged by hand. */
   discardedLayout?: boolean;
 }
@@ -56,8 +60,12 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
     }
   }
   const edits = old ? manualEdits(old) : [];
-  // Once a person has touched the layout, every later build merges into it.
-  const mode = old && !opts.relayout && (old.meta.aiviz_layout === 'manual' || edits.length > 0) ? 'merge' : 'fresh';
+  // Once a person has touched the layout, every later build merges into it. A
+  // layout nobody touched is also kept when the spec changed a little: a renamed
+  // label or one new box shouldn't move the rest.
+  const touched = !!old && (old.meta.aiviz_layout === 'manual' || edits.length > 0);
+  let mode: 'fresh' | 'merge' = 'fresh';
+  if (old && !opts.relayout) mode = touched || opts.keepLayout || smallChange(old, diagram) ? 'merge' : 'fresh';
   return withBrowser(opts.browser, async (b) => {
     const measure = (r: Array<[string, number, number, string?]>) => b.measure(r);
     for (const n of diagram.nodes) {
@@ -99,29 +107,48 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
     const l = await layout(diagram, measure);
     let xml: string;
     let stats: MergeStats | undefined;
+    let freshXml: string | undefined;
     if (mode === 'merge') {
-      const m = merge(diagram, old!, l, { specIsCurrent: specBase(specText) === fingerprint(old!) });
+      const m = merge(diagram, old!, l, { specIsCurrent: specBase(specText) === fingerprint(old!), touched });
       stats = m.stats;
       xml = serialize(m.scene);
       if (m.reroute.length) xml = await rerouteInto(b, xml, m.reroute);
       // Kept routes can already be broken, e.g. stale waypoints after someone moved a node.
-      const broken = brokenEdges(check(await b.inspect(xml)));
+      const after = check(await b.inspect(xml));
+      const broken = brokenEdges(after);
       if (broken.length) {
         xml = await rerouteInto(b, xml, broken);
         stats.rerouted += broken.filter((id) => !m.reroute.includes(id)).length;
       }
-    } else xml = await straightenDetours(b, toMxfile(diagram, l), detourEdges(diagram, l));
+      // Nobody arranged this layout, so there is nothing to protect: when the
+      // change doesn't fit into it cleanly, lay it out again.
+      if (!touched && !opts.keepLayout) {
+        const merged = check(await b.inspect(xml));
+        const bad = (c: CheckResult) => c.findings.filter((f) => f.level === 'error').length;
+        let redo = bad(merged) > 0;
+        if (!redo && (stats.placed.length || merged.stats.crossings)) {
+          freshXml = await straightenDetours(b, toMxfile(diagram, l), detourEdges(diagram, l));
+          redo = merged.stats.crossings > check(await b.inspect(freshXml)).stats.crossings + 1;
+        }
+        if (redo) {
+          mode = 'fresh';
+          stats = undefined;
+        }
+      }
+    }
+    if (mode === 'fresh') xml = freshXml ?? (await straightenDetours(b, toMxfile(diagram, l), detourEdges(diagram, l)));
+    else xml = xml!;
     const fixed = await fixLabels(b, xml);
     xml = fixed.xml;
     xml = stampEdgeRoutes(xml);
     // Stamping routes changes attributes, not geometry: the cells fixLabels read still hold.
-    return finish(b, xml, { mode, warnings, direction: mode === 'merge' ? (old!.meta.aiviz_direction ?? l.direction) : l.direction, edits, old, stats, cells: fixed.cells });
+    return finish(b, xml, { mode, warnings, direction: mode === 'merge' ? (old!.meta.aiviz_direction ?? l.direction) : l.direction, edits, old, stats, cells: fixed.cells, labelsMoved: fixed.moved });
   });
 
   async function finish(
     b: DrawioBrowser,
     xml: string,
-    r: { mode: 'fresh' | 'merge'; warnings: Issue[]; direction: string; edits: ManualEdit[]; old?: DrawioModel; stats?: MergeStats; cells?: InspectCell[] },
+    r: { mode: 'fresh' | 'merge'; warnings: Issue[]; direction: string; edits: ManualEdit[]; old?: DrawioModel; stats?: MergeStats; cells?: InspectCell[]; labelsMoved?: number },
   ): Promise<BuildResult> {
     fs.mkdirSync(path.dirname(path.resolve(opts.out)), { recursive: true });
     // Issued together: the browser renders the preview and lays out the lint pass
@@ -135,9 +162,30 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
       direction: r.direction,
       mode: r.mode,
       merge: r.stats,
+      labelsMoved: r.labelsMoved ?? 0,
       discardedLayout: !!(opts.relayout && r.old && (r.old.meta.aiviz_layout === 'manual' || r.edits.length > 0)),
     };
   }
+}
+
+/**
+ * Whether the new spec is close enough to an untouched file to keep its layout:
+ * same type, direction and theme, and only a few new boxes. Sequence diagrams
+ * always lay out again; their rows follow message order either way.
+ */
+function smallChange(old: DrawioModel, d: Diagram): boolean {
+  if (d.type === 'sequence') return false;
+  let prev: Diagram;
+  try {
+    prev = toDiagram(old).diagram;
+  } catch {
+    return false;
+  }
+  if (prev.type !== d.type || prev.direction !== d.direction || prev.theme !== d.theme) return false;
+  const had = new Set(prev.nodes.map((n) => n.id));
+  const added = d.nodes.filter((n) => !had.has(n.id)).length;
+  const kept = d.nodes.length - added;
+  return kept > 0 && added <= Math.max(2, Math.ceil(d.nodes.length / 4));
 }
 
 /**
@@ -181,16 +229,26 @@ async function rerouteInto(b: DrawioBrowser, xml: string, edgeIds: string[]): Pr
   return patchEdges(xml, await b.reroute(xml, edgeIds), edgeIds);
 }
 
-/** Reroute only the edges check flags as broken. Nothing else changes. */
-export async function tidy(file: string, browser?: DrawioBrowser): Promise<{ fixed: number; check: CheckResult }> {
+/**
+ * Repair a diagram after hand edits: reroute edges that are broken or were left
+ * behind when someone moved a box, and move labels off whatever they landed on.
+ * Boxes, groups and routes a person drew stay where they are.
+ */
+export async function tidy(file: string, browser?: DrawioBrowser): Promise<{ fixed: number; labels: number; check: CheckResult }> {
   const text = fs.readFileSync(file, 'utf8');
   const m = readDrawio(text);
+  if (m.meta.aiviz_type && m.meta.aiviz_type !== 'sequence') {
+    // The file's own spec merged into itself: positions stay, hand moves become
+    // part of the layout, and only stale routes and colliding labels change.
+    const res = await build(show(file).yaml, { out: file, keepLayout: true, browser });
+    return { fixed: res.merge?.rerouted ?? 0, labels: res.labelsMoved, check: res.check };
+  }
   return withBrowser(browser, async (b) => {
     const broken = brokenEdges(check(await b.inspect(m.xml)));
-    if (!broken.length) return { fixed: 0, check: check(await b.inspect(m.xml)) };
+    if (!broken.length) return { fixed: 0, labels: 0, check: check(await b.inspect(m.xml)) };
     const xml = stampEdgeRoutes(await rerouteInto(b, m.xml, broken));
     fs.writeFileSync(file, file.endsWith('.svg') ? await b.renderSvg(xml) : xml);
-    return { fixed: broken.length, check: check(await b.inspect(xml)) };
+    return { fixed: broken.length, labels: 0, check: check(await b.inspect(xml)) };
   });
 }
 

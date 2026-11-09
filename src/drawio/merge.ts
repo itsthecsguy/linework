@@ -24,6 +24,8 @@ export interface MergeStats {
   handMoved: number;
   placed: string[];
   grown: string[];
+  /** Groups that closed up after members left. */
+  shrunk: string[];
   removed: string[];
   rerouted: number;
   carried: number;
@@ -59,7 +61,7 @@ function ownAttrs(c: Cell): Record<string, string> {
 
 const sameLookOf = (a?: Look, b?: Look) => (a?.color ?? '') === (b?.color ?? '') && !!a?.highlight === !!b?.highlight;
 
-export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specIsCurrent?: boolean } = {}): MergeResult {
+export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specIsCurrent?: boolean; touched?: boolean } = {}): MergeResult {
   const shown = toDiagram(old);
   const cellOf = new Map<string, Cell>();
   for (const [cellId, specId] of shown.idMap) cellOf.set(specId, old.byId.get(cellId)!);
@@ -72,7 +74,7 @@ export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specI
 
   const abs = new Map<string, Box>(); // final absolute boxes for nodes
   const changed = new Set<string>(); // nodes whose box differs from the old file
-  const stats: MergeStats = { kept: 0, handMoved: 0, placed: [], grown: [], removed: [], rerouted: 0, carried: 0, keptUnknown: [] };
+  const stats: MergeStats = { kept: 0, handMoved: 0, placed: [], grown: [], shrunk: [], removed: [], rerouted: 0, carried: 0, keptUnknown: [] };
 
   // 1. Existing nodes stay put.
   for (const n of d.nodes) {
@@ -131,6 +133,7 @@ export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specI
     const boxy = !['start', 'end', 'decision'].includes(n.kind);
     return { w: boxy ? Math.max(nat.w, commonW) : nat.w, h: nat.h };
   };
+  const memberOf = (nodeId: string, gid: string) => ancestors(d.nodes.find((x) => x.id === nodeId)?.parent).has(gid);
   const pending = d.nodes.filter((n) => !abs.has(n.id));
   while (pending.length) {
     let i = pending.findIndex((n) => [...preds(n.id), ...succs(n.id)].some((m) => abs.has(m)));
@@ -145,7 +148,7 @@ export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specI
     } else {
       cand = fallbackSpot(n, f, abs, fresh, oldGroupBox(n.parent ?? ''));
     }
-    abs.set(n.id, freeSpot(cand, n, abs, d, ancestors(n.parent), oldGroupBox));
+    abs.set(n.id, freeSpot(cand, n, abs, d, ancestors(n.parent), oldGroupBox, memberOf));
     changed.add(n.id);
     stats.placed.push(n.id);
   }
@@ -159,9 +162,28 @@ export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specI
       ...d.groups.filter((x) => x.parent === g.id).map((x) => gabs.get(x.id)!),
     ].filter(Boolean);
     const need = kids.length ? padded(union(kids)) : undefined;
-    const prev = oldGroupBox(g.id);
+    let prev = oldGroupBox(g.id);
+    // A group nobody sized by hand closes up when members leave it. Each side
+    // moves in by as much as its outermost member did, so the padding stays.
+    const gc = cellOf.get(g.id);
+    if (prev && kids.length && gc && !handEdits.has(gc.id)) {
+      const was = [
+        ...shown.diagram.nodes.filter((n) => n.parent === g.id).map((n) => absBox(old, cellOf.get(n.id)!.id)),
+        ...shown.diagram.groups.filter((x) => x.parent === g.id).map((x) => oldGroupBox(x.id)),
+      ].filter((b): b is Box => !!b);
+      if (was.length) {
+        const a = union(was), z = union(kids);
+        const l = Math.max(0, z.x - a.x), t = Math.max(0, z.y - a.y);
+        const r = Math.max(0, a.x + a.w - (z.x + z.w)), bt = Math.max(0, a.y + a.h - (z.y + z.h));
+        if (l + t + r + bt > 1) {
+          prev = { x: prev.x + l, y: prev.y + t, w: prev.w - l - r, h: prev.h - t - bt };
+          stats.shrunk.push(g.id);
+        }
+      }
+    }
     const box = prev ? (need ? union([prev, need]) : prev) : need ?? { x: 0, y: 0, w: 200, h: 120 };
-    if (prev && (box.w > prev.w + 1 || box.h > prev.h + 1)) stats.grown.push(g.id);
+    const before = oldGroupBox(g.id);
+    if (before && (box.w > before.w + 1 || box.h > before.h + 1) && !stats.shrunk.includes(g.id)) stats.grown.push(g.id);
     gabs.set(g.id, box);
   }
 
@@ -216,7 +238,12 @@ export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specI
     });
     const routeUntouched = !oc?.attrs.aiviz_auto || oc.attrs.aiviz_auto === routeAttr(oc.geom?.points ?? []);
     const stale = endMovedByHand && routeUntouched;
-    const keepParent = oc?.parent && (oc.parent === '1' || outIds.has(oc.parent)) ? oc.parent : undefined;
+    let keepParent = oc?.parent && (oc.parent === '1' || outIds.has(oc.parent)) ? oc.parent : undefined;
+    // A route stored relative to a group is stale once that group's corner moves.
+    if (keepParent && keepParent !== '1') {
+      const was = oldGroupBox(keepParent), now = gabs.get(keepParent);
+      if (!was || !now || Math.abs(was.x - now.x) > 0.5 || Math.abs(was.y - now.y) > 0.5) keepParent = undefined;
+    }
     const attrs: Record<string, string> = { ...(oc ? ownAttrs(oc) : {}), ...edgeAttrs(e) };
     if (oc && (prev?.label ?? '') === (e.label ?? '') && oc.attrs.label != null) attrs.label = oc.attrs.label;
     let style: string;
@@ -271,7 +298,8 @@ export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specI
   return {
     scene: {
       name: d.title ?? old.name,
-      meta: { ...withoutTheme(oldMeta), ...diagramMeta(d, { aiviz_layout: 'manual' }) },
+      // 'manual' marks a layout a person arranged; a merge into a machine layout doesn't.
+      meta: { ...withoutTheme(oldMeta), ...diagramMeta(d, opts.touched === false ? {} : { aiviz_layout: 'manual' }) },
       background: palette(d.theme).canvas,
       vertices,
       edges,
@@ -301,7 +329,15 @@ function fallbackSpot(n: Node, f: Box, abs: Map<string, Box>, fresh: Layout, gro
 }
 
 /** Nearest spot to `cand` on a 8px grid that doesn't collide with placed nodes or foreign groups. */
-function freeSpot(cand: Box, n: Node, abs: Map<string, Box>, d: Diagram, myGroups: Set<string>, groupBox: (g: string) => Box | undefined): Box {
+function freeSpot(
+  cand: Box,
+  n: Node,
+  abs: Map<string, Box>,
+  d: Diagram,
+  myGroups: Set<string>,
+  groupBox: (g: string) => Box | undefined,
+  memberOf: (nodeId: string, gid: string) => boolean,
+): Box {
   const obstacles: Box[] = [];
   for (const [id, b] of abs) if (id !== n.id) obstacles.push(b);
   for (const g of d.groups) {
@@ -309,7 +345,17 @@ function freeSpot(cand: Box, n: Node, abs: Map<string, Box>, d: Diagram, myGroup
     const b = groupBox(g.id);
     if (b) obstacles.push(b);
   }
-  const ok = (b: Box) => obstacles.every((o) => !overlaps(b, o, GAP));
+  // Its own groups grow to hold it. That growth must not swallow a box that
+  // isn't in the group, or the picture says something the spec doesn't.
+  const mine = [...myGroups].map((g) => ({ g, box: groupBox(g) })).filter((x): x is { g: string; box: Box } => !!x.box);
+  const swallows = (b: Box) =>
+    mine.some(({ g, box }) => {
+      const grown = union([box, padded(b)]);
+      if (grown.w <= box.w + 1 && grown.h <= box.h + 1) return false;
+      for (const [id, o] of abs) if (id !== n.id && !memberOf(id, g) && overlaps(grown, o) && !overlaps(box, o)) return true;
+      return false;
+    });
+  const ok = (b: Box) => obstacles.every((o) => !overlaps(b, o, GAP)) && !swallows(b);
   const snap = (v: number) => Math.round(v / 8) * 8;
   const start = { ...cand, x: snap(cand.x), y: snap(cand.y) };
   if (ok(start)) return start;

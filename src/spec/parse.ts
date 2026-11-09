@@ -262,6 +262,7 @@ export function parseSpec(raw: unknown): ParseResult {
     for (const n of nodes.filter((n) => n.kind === 'decision')) {
       const out = edges.filter((e) => e.from === n.id);
       if (out.some((e) => !e.label)) warnings.push({ path: `nodes.${n.id}`, message: 'label every edge leaving a decision, e.g. "yes"/"no"' });
+      if (n.label.length > 40) warnings.push({ path: `nodes.${n.id}`, message: `a diamond holds little text; shorten "${n.label.slice(0, 24)}..." to a short question and put the detail in the step before it` });
     }
   }
   highlightWarning(real, edges, warnings);

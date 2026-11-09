@@ -159,6 +159,8 @@ Linework sizes every box from the real width of its text in the font it renders 
 
 Linework needs Node 20+ and a Chromium-based browser, which it uses headless to measure text and render. It tries Playwright's Chromium, then Chrome, then Edge. If none is found, run `linework install-browser`, or set `LINEWORK_CHROME` to a browser binary. If a browser is found but crashes on launch, an agent's sandbox is usually blocking it. Linework then retries Playwright's Chromium in single-process mode, which starts inside Codex's sandbox.
 
+The first drawing command starts a background process that keeps Chromium running, and later commands hand their work to it. A build of the checkout example takes about 1.0s the first time and 0.16s after that. The process listens on a Unix socket in a folder only you can open, exits after 5 idle minutes, and is off on Windows and in CI. `LINEWORK_NO_DAEMON=1` or `--no-daemon` turns it off, and `linework daemon stop` ends it.
+
 Linework keeps the font subsets it embeds in your cache folder (`~/Library/Caches/linework` on macOS, `~/.cache/linework` on Linux, `%LOCALAPPDATA%\linework` on Windows), so rebuilding a diagram doesn't compress the same fonts again. Set `LINEWORK_NO_CACHE=1` to turn that off.
 
 ## Connect over MCP
@@ -202,6 +204,20 @@ npx -y @itsthecsguy/linework skill install .claude/skills   # Claude Code
 npx -y @itsthecsguy/linework skill install .grok/skills     # Grok Build
 ```
 
+## Small changes
+
+Once a diagram exists, a change to it keeps everything else where it is. That holds whether a person arranged the layout in draw.io or nobody has touched it.
+
+```bash
+linework set docs/checkout.drawio.svg api.label="Checkout API v2" api.highlight=true
+linework add docs/checkout.drawio.svg "fraud: { label: Fraud check, in: vpc }" "api -> fraud: score"
+linework rm  docs/checkout.drawio.svg cache "api -> stripe"
+```
+
+A renamed box grows in place. A new box goes next to the one it connects to, and its group grows to hold it without covering boxes outside the group. A removed box takes its edges with it, and its group closes up. `linework build` with an edited spec follows the same rules. It lays out from scratch only for a new file, a changed direction or theme on a layout nobody arranged, or `--relayout`.
+
+After dragging boxes around in draw.io, `linework tidy <file>` reroutes the edges left behind and moves labels off whatever they landed on. Boxes stay where you put them.
+
 ## Editing by hand
 
 Any draw.io editor works on these files: draw.io desktop, VS Code with the Draw.io Integration extension, or app.diagrams.net. Or:
@@ -221,11 +237,14 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 | command | does |
 |---|---|
 | `linework build <spec\|-> -o out.drawio.svg [--png p.png] [--relayout]` | layout (or merge into an existing file), write, lint |
+| `linework set <file> id.field=value...` | change a label, kind, color, theme or title in place |
+| `linework add <file> "id: {...}" "a -> b: label"...` | add boxes, groups and edges in place |
+| `linework rm <file> id "a -> b"...` | remove boxes, groups and edges in place |
 | `linework show <file> [--geometry]` | print the spec of a diagram, including hand edits |
 | `linework edit <file> [--no-open]` | edit in the bundled draw.io, in your browser; saves write the file |
 | `linework check <file>` | lint: overlaps, edges through nodes, labels that don't fit, too wide |
 | `linework render <file> -o out.png [--scale 2]` | preview image |
-| `linework tidy <file>` | reroute edges that pass through nodes, change nothing else |
+| `linework tidy <file>` | after hand edits: reroute stale edges and move colliding labels; boxes stay |
 | `linework import <file.mmd\|doc.md> [-o out.drawio.svg]` | convert a Mermaid diagram |
 | `linework publish <file...> [--to dir] [--pull]` | copy diagrams into Google Drive for the Docs add-on |
 | `linework icons <aws\|gcp\|k8s\|azure> [filter]` | list icon names |
@@ -234,6 +253,7 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 | `linework mcp [--root dir]` | MCP server over stdio |
 | `linework kinds [type]` | node kinds per diagram type |
 | `linework schema` | JSON Schema of the spec |
+| `linework daemon [status\|stop]` | the background process that keeps the browser running between builds |
 | `linework install-browser` | download the headless Chromium build this version uses |
 
 ## Status
