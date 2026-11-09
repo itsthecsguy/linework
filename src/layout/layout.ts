@@ -194,7 +194,10 @@ function nodeSizes(d: Diagram, tm: TextMeasurer, fonts: Fonts) {
       continue;
     }
     if (shape === 'diamond') {
-      const t = textOf(n, fonts.maxText * 0.7);
+      // A diamond holds little text for its size. Past two lines, wrap wider:
+      // three lines in a wider diamond take less room than four in a tall one.
+      let t = textOf(n, fonts.maxText * 0.7);
+      if (t.lines > 2) t = textOf(n, fonts.maxText);
       const w = snap(Math.max(128, t.width * 1.5 + 40));
       sizes.set(n.id, { w, h: snap(Math.max(72, w * 0.5, t.lines * fonts.line * 2 + 24)) });
       continue;
@@ -317,6 +320,39 @@ async function run(
     const call = e.from !== e.to ? d.edges.slice(0, i).find((x) => x.from === e.to && x.to === e.from) : undefined;
     if (call) flipped.add(pairs === 'reply' ? e.id : call.id);
   });
+  // The edge that closes a loop (a retry, "new findings, investigate again")
+  // points back at a box that was declared earlier and already appears in an
+  // earlier edge. Lay it out reversed, so the main path keeps running forward
+  // whichever branch ELK happens to walk first.
+  const index = new Map(d.nodes.map((n, i) => [n.id, i]));
+  const firstUse = new Map<string, number>();
+  d.edges.forEach((e, i) => {
+    for (const id of [e.from, e.to]) if (!firstUse.has(id)) firstUse.set(id, i);
+  });
+  const back = d.edges
+    .map((e, i) => ({ e, i }))
+    .filter(({ e, i }) => e.from !== e.to && index.get(e.to)! < index.get(e.from)! && firstUse.get(e.to)! < i)
+    // Call-and-reply pairs are handled above.
+    .filter(({ e }) => !d.edges.some((x) => x.from === e.to && x.to === e.from))
+    // Last written first: once the loop's closing edge is cut, an earlier
+    // backward edge inside the same loop is no longer part of a cycle and stays.
+    .reverse()
+    .map(({ e }) => e);
+  const cut = new Set<string>();
+  const reaches = (from: string, to: string) => {
+    const seen = new Set([from]);
+    for (const q = [from]; q.length; ) {
+      const cur = q.pop()!;
+      if (cur === to) return true;
+      for (const x of d.edges) if (x.from === cur && !cut.has(x.id) && !seen.has(x.to)) (seen.add(x.to), q.push(x.to));
+    }
+    return false;
+  };
+  for (const e of back) {
+    if (!reaches(e.to, e.from)) continue;
+    cut.add(e.id);
+    flipped.add(e.id);
+  }
   root.edges = d.edges.map((e, i): ElkExtendedEdge => {
     const src = pinFor(pins, e.from, e.id, 'from') ?? e.from, dst = pinFor(pins, e.to, e.id, 'to') ?? e.to;
     const flip = flipped.has(e.id);

@@ -32,7 +32,7 @@ const PKG = (() => {
   throw new Error('linework: bundled skill not found. Reinstall linework.');
 })();
 
-const TOOL_NAMES = `In this MCP server the CLI commands in the guide are tools: build -> build_diagram, show -> show_diagram, check -> check_diagram, render -> render_diagram, tidy -> tidy_diagram, import -> import_mermaid, icons -> list_icons, edit -> edit_diagram, publish -> publish_diagram. Pass the spec text to build_diagram directly instead of writing a file.\n\n`;
+const TOOL_NAMES = `In this MCP server the CLI commands in the guide are tools: build -> build_diagram, show -> show_diagram, check -> check_diagram, render -> render_diagram, tidy -> tidy_diagram, import -> import_mermaid, icons -> list_icons, edit -> edit_diagram, publish -> publish_diagram. Pass the spec text to build_diagram directly instead of writing a file. There are no set, add or rm tools: for a small change, call show_diagram, edit its output and pass that to build_diagram, which keeps the layout the same way.\n\n`;
 
 type Content = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
 type Result = { content: Content[]; isError?: boolean };
@@ -80,14 +80,14 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
       description: 'Returns the linework guide: diagram types, the YAML spec format with examples, and the style rules. Read it before your first diagram.',
       inputSchema: z.object({
         topic: z
-          .enum(['overview', 'spec', 'style', 'google-docs'])
+          .enum(['overview', 'spec', 'style', 'google-docs', 'troubleshooting'])
           .default('overview')
-          .describe('overview: workflow and cheat sheet. spec: the full spec reference. style: what makes a good diagram. google-docs: getting diagrams into Google Docs.'),
+          .describe('overview: workflow and cheat sheet. spec: the full spec reference. style: what makes a good diagram. google-docs: getting diagrams into Google Docs. troubleshooting: what to do when a command fails.'),
       }),
       annotations: { readOnlyHint: true },
     },
     async ({ topic }) => {
-      const file = { overview: 'SKILL.md', spec: 'references/spec.md', style: 'references/style-guide.md', 'google-docs': 'references/google-docs.md' }[topic];
+      const file = { overview: 'SKILL.md', spec: 'references/spec.md', style: 'references/style-guide.md', 'google-docs': 'references/google-docs.md', troubleshooting: 'references/troubleshooting.md' }[topic];
       const body = fs.readFileSync(path.join(PKG, 'skills', 'linework', file), 'utf8').replace(/^---\n[\s\S]*?\n---\n/, '');
       return { content: [text(TOOL_NAMES + body)] };
     },

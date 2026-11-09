@@ -10,6 +10,7 @@ export function buildLines(res: BuildResult, png?: string): string[] {
     const parts = [`kept ${m.kept} positions${m.handMoved ? ` (${m.handMoved} set by hand)` : ''}`];
     if (m.placed.length) parts.push(`placed ${m.placed.join(', ')}`);
     if (m.grown.length) parts.push(`grew ${m.grown.join(', ')}`);
+    if (m.shrunk.length) parts.push(`closed up ${m.shrunk.join(', ')}`);
     if (m.removed.length) parts.push(`removed ${m.removed.join(', ')}`);
     if (m.rerouted) parts.push(`rerouted ${m.rerouted} edges`);
     if (m.carried) parts.push(`kept ${m.carried} notes/annotations`);

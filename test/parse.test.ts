@@ -26,6 +26,10 @@ describe('parse', () => {
     for (const f of shipped) expect(fs.readFileSync(`skills/linework/examples/${f}`, 'utf8'), f).toBe(fs.readFileSync(`examples/${f}`, 'utf8'));
   });
 
+  it('keeps the guide an agent loads on every diagram small', () => {
+    expect(fs.statSync('skills/linework/SKILL.md').size).toBeLessThan(8000);
+  });
+
   it('keeps the skill header within the Agent Skills limits', () => {
     const fm = fs.readFileSync('skills/linework/SKILL.md', 'utf8').split('---\n')[1]!;
     expect(fm).toMatch(/^name: linework$/m);
@@ -33,8 +37,8 @@ describe('parse', () => {
     expect(fm.match(/^compatibility: (.*)$/m)![1]!.length).toBeLessThanOrEqual(500);
   });
 
-  it('parses the snippets in SKILL.md', () => {
-    const md = fs.readFileSync('skills/linework/SKILL.md', 'utf8');
+  it('parses the snippets in the skill guide and its spec reference', () => {
+    const md = fs.readFileSync('skills/linework/SKILL.md', 'utf8') + fs.readFileSync('skills/linework/references/spec.md', 'utf8');
     const blocks = [...md.matchAll(/```yaml\n(type:[\s\S]*?)```/g)].map((m) => m[1]!);
     expect(blocks.length).toBeGreaterThanOrEqual(3);
     for (const b of blocks) parseSpecText(b);

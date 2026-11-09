@@ -1,0 +1,38 @@
+type: sequence
+title: Checkout with 3DS
+participants:
+  u: { label: Shopper, kind: person }
+  web: { label: Web app, kind: client }
+  api: { label: Checkout API, highlight: true }
+  risk: { label: Risk engine }
+  psp: { label: Payment service provider, kind: external }
+  bank: { label: Issuing bank, kind: external }
+  db: { label: Orders, kind: database }
+  q: { label: order-events, kind: queue }
+messages:
+  - u -> web: Click pay
+  - web ==> api: POST /checkout with cart id and an idempotency key
+  - api -> db: insert order (pending)
+  - api -> risk: score(order)
+  - risk --> api: score 0.82, challenge required
+  - api -> psp: create PaymentIntent
+  - psp --> api: requires_action
+  - api --> web: 3DS challenge URL
+  - web -> bank: open challenge
+  - note over u, bank: shopper approves in their banking app
+  - bank --> web: challenge result
+  - web -> api: confirm
+  - api -> psp: confirm PaymentIntent
+  - alt:
+      - when: authorized
+        do:
+          - psp --> api: succeeded
+          - api -> db: mark paid
+          - api -.-> q: OrderPlaced
+          - api --> web: 200 OK
+      - when: declined
+        do:
+          - psp --> api: card_declined
+          - api -> db: mark failed
+          - api --> web: 402 Payment Required
+  - web --> u: result page

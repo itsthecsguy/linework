@@ -1,0 +1,60 @@
+type: architecture
+title: Ride sharing platform
+groups:
+  edge: { label: Edge }
+  core: { label: Core services }
+  data: { label: Data }
+  async: { label: Async processing }
+  ml: { label: ML platform, in: async }
+nodes:
+  rider: { label: Rider app, kind: client, tech: iOS / Android }
+  driver: { label: Driver app, kind: client, tech: iOS / Android }
+  ops: { label: Operations console, kind: client, tech: React }
+  cdn: { label: CDN, in: edge, tech: CloudFront }
+  gw: { label: API gateway, in: edge, tech: Envoy }
+  auth: { label: Auth, in: edge, tech: OIDC }
+  trips: { label: Trip service, in: core, tech: Go, highlight: true }
+  match: { label: Matching and dispatch service, in: core, tech: Rust }
+  price: { label: Pricing, in: core, tech: Python }
+  pay: { label: Payments, in: core, tech: Java }
+  notif: { label: Notifications, in: core, tech: Node }
+  users: { label: User profile service, in: core, tech: Go }
+  geo: { label: Geo index, kind: cache, in: data, tech: Redis }
+  tripdb: { label: Trips, kind: database, in: data, tech: Postgres }
+  userdb: { label: Users, kind: database, in: data, tech: Postgres }
+  ledger: { label: Ledger, kind: database, in: data, tech: Spanner }
+  bus: { label: trip-events, kind: queue, in: async, tech: Kafka }
+  surge: { label: Surge model, in: ml, tech: PyTorch }
+  eta: { label: ETA model, in: ml, tech: XGBoost }
+  lake: { label: Data lake, kind: storage, in: async, tech: S3 }
+  stripe: { kind: external, tech: Payments }
+  twilio: { kind: external, tech: SMS }
+  maps: { label: Google Maps, kind: external, tech: Routing }
+  apns: { label: APNs / FCM, kind: external, tech: Push }
+edges:
+  - rider -> cdn
+  - driver -> cdn
+  - ops -> gw
+  - cdn -> gw
+  - gw -> auth: verify token
+  - gw ==> trips: request ride
+  - gw -> users
+  - trips ==> match: find driver
+  - trips -> price: quote
+  - trips -> pay: charge
+  - trips -> tripdb
+  - trips -.-> bus: TripRequested
+  - match -> geo: nearby drivers
+  - match -> eta: predict
+  - match -> maps: route
+  - price -> surge: multiplier
+  - pay -> stripe
+  - pay -> ledger
+  - users -> userdb
+  - bus -.-> notif
+  - bus -.-> lake
+  - notif -> twilio
+  - notif -> apns
+  - lake -.-> surge: train
+  - lake -.-> eta: train
+  - driver -.-> geo: location pings every 4 seconds

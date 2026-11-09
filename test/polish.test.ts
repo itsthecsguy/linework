@@ -107,3 +107,34 @@ describe('ER key rows', () => {
     expect(crossings(l)).toBe(0);
   });
 });
+
+describe('harder specs', () => {
+  const stress = (name: string) => parseSpecText(fs.readFileSync(`test/fixtures/stress/${name}`, 'utf8')).diagram;
+
+  it('draws only the loop edge backwards in a flow with a late merge', async () => {
+    const d = stress('incident-flow.yaml');
+    const l = await layout(d);
+    const y = (id: string) => l.nodes.get(id)!.y;
+    // Both fixes lead down into the check; "new findings" is the one edge going back up.
+    expect(y('revert')).toBeLessThan(y('fixed'));
+    expect(y('mitigate')).toBeLessThan(y('fixed'));
+    expect(y('investigate')).toBeLessThan(y('rollback'));
+    expect(y('fixed')).toBeLessThan(y('escalate'));
+    expect(crossings(l)).toBeLessThanOrEqual(3);
+  }, 30000);
+
+  it('wraps a long decision wider instead of taller', async () => {
+    const d = stress('incident-flow.yaml');
+    const l = await layout(d);
+    const ack = l.nodes.get('ack')!, step = l.nodes.get('page2')!;
+    expect(ack.h).toBeLessThan(2.5 * step.h);
+  }, 30000);
+
+  it('keeps a 24-node architecture orthogonal with few crossings', async () => {
+    const d = stress('platform-24.yaml');
+    const l = await layout(d);
+    expect(crossings(l)).toBeLessThanOrEqual(10);
+    for (const [id, e] of l.edges)
+      for (let i = 1; i < e.points.length; i++) expect(vert(e.points[i - 1]!, e.points[i]!) || horiz(e.points[i - 1]!, e.points[i]!), id).toBe(true);
+  }, 30000);
+});
