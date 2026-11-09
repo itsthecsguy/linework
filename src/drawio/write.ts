@@ -230,6 +230,21 @@ export function sceneFromLayout(d: Diagram, l: Layout): Scene {
     vertices.push(...nodeChildren(d, n, box));
   }
   const isCyl = (id: string) => { const n = d.nodes.find((x) => x.id === id); return !!n && kindDef(d.type, n.kind).shape === 'cylinder'; };
+  const isDecision = (id: string) => { const n = d.nodes.find((x) => x.id === id); return !!n && kindDef(d.type, n.kind).shape === 'diamond'; };
+  // How far an edge shares its first run with a sibling leaving the same point.
+  const sharedStem = (id: string, from: string) => {
+    const mine = l.edges.get(id)!.points;
+    let shared = 0;
+    for (const o of d.edges) {
+      const pts = o.id !== id && o.from === from && o.to !== from ? l.edges.get(o.id)?.points : undefined;
+      if (!pts || pts.length < 2 || mine.length < 2 || Math.hypot(pts[0]!.x - mine[0]!.x, pts[0]!.y - mine[0]!.y) > 1) continue;
+      const dir = (p: Point[]) => [Math.sign(Math.round(p[1]!.x - p[0]!.x)), Math.sign(Math.round(p[1]!.y - p[0]!.y))].join();
+      if (dir(pts) !== dir(mine)) continue;
+      const len = (p: Point[]) => Math.hypot(p[1]!.x - p[0]!.x, p[1]!.y - p[0]!.y);
+      shared = Math.max(shared, Math.min(len(pts), len(mine)));
+    }
+    return shared;
+  };
   const edges: SceneEdge[] = d.edges.map((e) => {
     const le = l.edges.get(e.id);
     const cyl = { from: isCyl(e.from), to: isCyl(e.to) };
@@ -251,7 +266,7 @@ export function sceneFromLayout(d: Diagram, l: Layout): Scene {
       ...base,
       style: base.style + portStyle(le.points, abs(e.from), abs(e.to), cyl),
       points: le.points.slice(1, -1),
-      labelX: le.label && e.label ? (labelSpot(le.points, le.label, l.direction) ?? labelFraction(le.points, { x: le.label.x + le.label.w / 2, y: le.label.y + le.label.h / 2 })) : undefined,
+      labelX: le.label && e.label ? ((isDecision(e.from) ? branchSpot(le.points, le.label, l.direction, sharedStem(e.id, e.from)) : undefined) ?? labelSpot(le.points, le.label, l.direction, [...l.nodes].filter(([id]) => id !== e.from && id !== e.to).map(([, b]) => b)) ?? labelFraction(le.points, { x: le.label.x + le.label.w / 2, y: le.label.y + le.label.h / 2 })) : undefined,
     };
   });
   alignLabels(d, l, edges);
@@ -393,9 +408,9 @@ export function toMxfile(d: Diagram, l: Layout): string {
  * source node, which reads as a caption of that node. Returns draw.io's -1..1
  * fraction, or undefined when no run is long enough.
  */
-function labelSpot(pts: Point[], label: { w: number; h: number }, dir?: Layout['direction']): number | undefined {
+export function labelSpot(pts: Point[], label: { w: number; h: number }, dir?: Layout['direction'], avoid: Box[] = []): number | undefined {
   let total = 0;
-  let best: { room: number; at: number; along: boolean } | undefined;
+  let best: { room: number; at: number; along: boolean; a: Point; b: Point; start: number; len: number } | undefined;
   // Runs along the flow belong to one edge; runs across it are often shared
   // corridors where several edges' labels would stack up. Prefer the former.
   const flowVertical = dir === 'TB' || dir === 'BT';
@@ -406,10 +421,54 @@ function labelSpot(pts: Point[], label: { w: number; h: number }, dir?: Layout['
     const room = len - (vertical ? label.h : label.w) - 20;
     const along = dir ? vertical === flowVertical : true;
     const better = !best || (along && !best.along) || (along === best.along && room > best.room);
-    if (room >= 0 && better) best = { room, at: total + len / 2, along };
+    if (room >= 0 && better) best = { room, at: total + len / 2, along, a, b, start: total, len };
     total += len;
   }
-  return best && total ? (best.at / total) * 2 - 1 : undefined;
+  if (!best || !total) return undefined;
+  // Halfway along a long run can be right beside a box the edge only passes, where
+  // the label reads as that box's caption. Slide along the run to the nearest
+  // spot past the box, with a little air; stay in the middle when there is none.
+  const { a, b, start, len } = best;
+  const vertical = Math.abs(b.x - a.x) < Math.abs(b.y - a.y);
+  const half = (vertical ? label.h : label.w) / 2 + 10;
+  // Beside: level with the box along the run, and within 12px of it across the run.
+  const beside = (at: number, air: number) => {
+    const t = (at - start) / len, cx = a.x + t * (b.x - a.x), cy = a.y + t * (b.y - a.y);
+    const px = vertical ? 12 : air, py = vertical ? air : 12;
+    const r = { x: cx - label.w / 2 - px, y: cy - label.h / 2 - py, w: label.w + 2 * px, h: label.h + 2 * py };
+    return avoid.some((o) => r.x < o.x + o.w && r.x + r.w > o.x && r.y < o.y + o.h && r.y + r.h > o.y);
+  };
+  // Level by a few px or more: a label that only grazes the box's end is fine where it is.
+  if (beside(best.at, -4))
+    for (let step = 4; step <= len / 2 - half; step += 4)
+      for (const at of [best.at - step, best.at + step]) if (!beside(at, 4)) return (at / total) * 2 - 1;
+  return (best.at / total) * 2 - 1;
+}
+
+/**
+ * A branch label ("yes", "no") belongs to its decision, so it sits where the
+ * branch leaves the diamond, not halfway to the next step: on the run out of the
+ * diamond's point when that has room, otherwise at the start of the first run
+ * along the flow, or of a long arm that forks off a short stem. `stem` is how much of the first run a sibling branch shares;
+ * the label starts past it, so it doesn't cover the place where they part.
+ */
+export function branchSpot(pts: Point[], label: { w: number; h: number }, dir: Layout['direction'], stem = 0): number | undefined {
+  const flowVertical = dir === 'TB' || dir === 'BT';
+  const lens = pts.slice(1).map((b, i) => Math.hypot(b.x - pts[i]!.x, b.y - pts[i]!.y));
+  const total = lens.reduce((x, y) => x + y, 0);
+  let before = 0;
+  for (let i = 0; i < lens.length; i++) {
+    const a = pts[i]!, b = pts[i + 1]!, len = lens[i]!;
+    const vertical = Math.abs(b.x - a.x) < Math.abs(b.y - a.y);
+    const size = vertical ? label.h : label.w;
+    const lead = i === 0 && stem > 0 ? stem + 6 : 10;
+    // A long arm across the flow, straight after the stem out of the point, is
+    // nearer the diamond than the drop at its far end.
+    const arm = i === 1 && len >= 96 && lens[0]! <= 24;
+    if ((i === 0 || arm || vertical === flowVertical) && len >= lead + size + 10) return ((before + lead + size / 2) / total) * 2 - 1;
+    before += len;
+  }
+  return undefined;
 }
 
 // draw.io positions edge labels by fraction along the path, -1..1.

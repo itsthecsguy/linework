@@ -20,7 +20,7 @@ Linework handles the layout and the look. These rules are about content, which i
 - **Label edges in architecture diagrams with the protocol or the verb**: `HTTPS`, `gRPC`, `SQL`, `publishes OrderPlaced`, `reads session`. An unlabeled arrow makes the reader guess.
 - **Use `-.->` for async**: events, queues, webhooks, fire-and-forget. Readers rely on the solid/dashed distinction to see where latency and failure modes change.
 - **Point the arrow the way the request goes**, not the way data comes back. Only show a return edge when the reply is interesting.
-- **Label every edge out of a decision** in a flow (`yes`/`no`, or the condition).
+- **Label every edge out of a decision** in a flow (`yes`/`no`, or the condition). Keep those labels to a word or two: each one sits right beside its diamond, where the branch leaves it.
 - In state diagrams, label transitions with the event that triggers them (`payment_succeeded`), not the resulting state.
 
 ## Groups

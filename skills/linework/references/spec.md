@@ -307,6 +307,6 @@ The middle is `--` for an identifying relationship (solid line) or `..` for a no
 
 ## Importing Mermaid
 
-`linework import file.mmd` prints an linework spec. `-o out.drawio.svg` builds it straight away. A Markdown file works too; use `--block N` when it has several Mermaid blocks. Supported: `flowchart`/`graph`, `stateDiagram`, `sequenceDiagram`, `erDiagram`.
+`linework import file.mmd` prints a linework spec. `-o out.drawio.svg` builds it straight away. A Markdown file works too; use `--block N` when it has several Mermaid blocks. Supported: `flowchart`/`graph`, `stateDiagram`, `sequenceDiagram`, `erDiagram`.
 
 A flowchart with diamonds becomes a `flow`. One with subgraphs or cylinders becomes an `architecture` diagram. In that case a `<br>` second line becomes `tech`, and kinds are guessed from shapes and names: a cylinder becomes a database, "Kafka" becomes a queue, "Stripe" becomes external. Mermaid styling (`classDef`, `style`, `click`) is dropped. Review the printed spec before building, and fix any kinds it guessed wrong.

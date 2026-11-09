@@ -38,7 +38,7 @@ Usage:
       Open the diagram in draw.io (bundled, offline) in your browser. Saving in
       the editor writes the file. Stops when you exit the editor or close the tab.
   linework import <file.mmd|doc.md|-> [--block N] [-o out.drawio.svg] [--png p.png]
-      Convert a Mermaid diagram (flowchart, state, sequence, ER) to an linework spec.
+      Convert a Mermaid diagram (flowchart, state, sequence, ER) to a linework spec.
       Prints the spec, or builds it straight away with -o.
   linework icons <aws|gcp|k8s|azure> [filter]
       List icon names, for "icon: aws.lambda" on architecture nodes.
