@@ -10,7 +10,8 @@ import { manualEdits, toDiagram, toYaml, type ManualEdit } from './drawio/show.j
 import { merge, type MergeStats } from './drawio/merge.js';
 import { sequenceScene } from './layout/sequence.js';
 import { resolveIcon, stencilSets, type Provider } from './drawio/icons.js';
-import { toExcalidraw } from './excalidraw/export.js';
+import { toExcalidraw, type ExcalidrawFile } from './excalidraw/export.js';
+import { embeddedSpec, readEdits, setBoxes, type Box } from './excalidraw/import.js';
 import { DrawioBrowser, type InspectCell } from './render/browser.js';
 import { brokenEdges, check, type CheckResult } from './lint/check.js';
 import { fixLabels } from './lint/fixlabels.js';
@@ -24,6 +25,8 @@ export interface BuildOptions {
   relayout?: boolean;
   /** Always merge into the existing file, and never fall back to a fresh layout. */
   keepLayout?: boolean;
+  /** Merge into this draw.io file text, not whatever is at `out`. */
+  base?: string;
   browser?: DrawioBrowser;
 }
 
@@ -53,7 +56,8 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
   const { diagram, warnings } = parseSpecText(specText);
   const kind = outputKind(opts.out);
   let old: DrawioModel | undefined;
-  if (fs.existsSync(opts.out)) {
+  if (opts.base != null) old = readDrawio(opts.base);
+  else if (fs.existsSync(opts.out)) {
     try {
       old = readDrawio(fs.readFileSync(opts.out, 'utf8'));
     } catch {
@@ -276,6 +280,81 @@ export async function render(file: string, out: string, browser?: DrawioBrowser)
     else if (out.endsWith('.svg')) fs.writeFileSync(out, await b.renderSvg(m.xml));
     else if (out.endsWith('.excalidraw')) fs.writeFileSync(out, JSON.stringify(await toExcalidraw(m, b), null, 2) + '\n');
     else throw new Error('render output must end in .png, .svg or .excalidraw');
+  });
+}
+
+export interface ImportResult {
+  out: string;
+  /** What the Excalidraw file changed, one line each. Empty when it matches the diagram. */
+  changes: string[];
+  /** Things in the file that were not brought across. */
+  notes: string[];
+  check: CheckResult;
+  /** The diagram did not exist yet and was built from the spec the Excalidraw file carries. */
+  created: boolean;
+}
+
+/**
+ * Bring edits made in Excalidraw back into a diagram. `file` is an .excalidraw
+ * that `render` wrote; `out` is the .drawio.svg it came from (or, when that is
+ * gone, where to rebuild it from the spec the file carries).
+ *
+ * The spec changes first (text, boxes and arrows added or removed), built as any
+ * edited spec is. Then every box is put where it sits in Excalidraw, and the
+ * arrows on the ones that moved are routed again.
+ */
+export async function importExcalidraw(file: string, out: string, opts: { browser?: DrawioBrowser; png?: string } = {}): Promise<ImportResult> {
+  let data: ExcalidrawFile;
+  try {
+    data = JSON.parse(fs.readFileSync(file, 'utf8')) as ExcalidrawFile;
+  } catch (e) {
+    throw new Error(`${file} isn't an Excalidraw file: ${(e as Error).message}`);
+  }
+  outputKind(out);
+  return withBrowser(opts.browser, async (b) => {
+    let created = false;
+    if (!fs.existsSync(out)) {
+      const spec = embeddedSpec(data);
+      if (!spec) throw new Error(`${out} doesn't exist, and ${file} doesn't carry the diagram's spec to rebuild it from. Point -o at the .drawio.svg this was exported from.`);
+      await build(spec, { out, browser: b });
+      created = true;
+    }
+    const base = readDrawio(fs.readFileSync(out, 'utf8'));
+    const edits = readEdits(data, base, await b.inspect(base.xml));
+    // Nothing to bring across: leave the diagram exactly as it is.
+    if (!edits.changes.length) return { out, changes: [], notes: edits.notes, check: check(await b.inspect(base.xml)), created };
+    const specOf = (m: DrawioModel, d = toDiagram(m).diagram) => toYaml(d, `linework-base: ${fingerprint(m)}`);
+    const edited = readDrawio(edits.xml);
+    let res = await build(specOf(edited, edits.diagram), { out, base: edits.xml, keepLayout: true, browser: b, png: opts.png });
+
+    if (edits.boxes.size) {
+      // Excalidraw has the last word on where things are. That covers boxes the
+      // person moved, boxes they drew, and any the build above shifted to make room.
+      const built = readDrawio(fs.readFileSync(out, 'utf8'));
+      const cells = await b.inspect(built.xml);
+      const now = new Map(cells.map((c) => [c.id, c.box as Box]));
+      const cellOf = new Map([...toDiagram(built).idMap].map(([cell, spec]) => [spec, cell]));
+      const want = new Map<string, Box>();
+      for (const [specId, box] of edits.boxes) {
+        const cellId = cellOf.get(specId);
+        const at = cellId ? now.get(cellId) : undefined;
+        if (!cellId || !at) continue;
+        if (Math.abs(at.x - box.x) > 0.75 || Math.abs(at.y - box.y) > 0.75 || Math.abs(at.w - box.w) > 0.75 || Math.abs(at.h - box.h) > 0.75) want.set(cellId, box);
+      }
+      if (want.size) {
+        let xml = setBoxes(built.xml, want, now);
+        const after = new Map((await b.inspect(xml)).map((c) => [c.id, c.box]));
+        const shifted = (id?: string) => {
+          const p = id ? now.get(id) : undefined, q = id ? after.get(id) : undefined;
+          return !!p && !!q && (Math.abs(p.x - q.x) > 0.75 || Math.abs(p.y - q.y) > 0.75 || Math.abs(p.w - q.w) > 0.75 || Math.abs(p.h - q.h) > 0.75);
+        };
+        const stale = built.cells.filter((c) => c.edge && (shifted(c.source) || shifted(c.target))).map((c) => c.id);
+        if (stale.length) xml = await rerouteInto(b, xml, stale);
+        const moved = readDrawio(xml);
+        res = await build(specOf(moved), { out, base: xml, keepLayout: true, browser: b, png: opts.png });
+      }
+    }
+    return { out, changes: edits.changes, notes: edits.notes, check: res.check, created };
   });
 }
 

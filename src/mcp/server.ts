@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import * as z from 'zod';
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
-import { build, checkFile, listIcons, render, show, tidy } from '../api.js';
+import { build, checkFile, importExcalidraw, listIcons, render, show, tidy } from '../api.js';
 import { readDrawio } from '../drawio/read.js';
 import { DrawioBrowser } from '../render/browser.js';
 import { SpecError } from '../spec/parse.js';
@@ -32,7 +32,7 @@ const PKG = (() => {
   throw new Error('linework: bundled skill not found. Reinstall linework.');
 })();
 
-const TOOL_NAMES = `In this MCP server the CLI commands in the guide are tools: build -> build_diagram, show -> show_diagram, check -> check_diagram, render -> render_diagram, tidy -> tidy_diagram, import -> import_mermaid, icons -> list_icons, edit -> edit_diagram, publish -> publish_diagram. Pass the spec text to build_diagram directly instead of writing a file. There are no set, add or rm tools: for a small change, call show_diagram, edit its output and pass that to build_diagram, which keeps the layout the same way.\n\n`;
+const TOOL_NAMES = `In this MCP server the CLI commands in the guide are tools: build -> build_diagram, show -> show_diagram, check -> check_diagram, render -> render_diagram, tidy -> tidy_diagram, import -> import_mermaid (or import_excalidraw for an .excalidraw file), icons -> list_icons, edit -> edit_diagram, publish -> publish_diagram. Pass the spec text to build_diagram directly instead of writing a file. There are no set, add or rm tools: for a small change, call show_diagram, edit its output and pass that to build_diagram, which keeps the layout the same way.\n\n`;
 
 type Content = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
 type Result = { content: Content[]; isError?: boolean };
@@ -150,7 +150,7 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
     {
       title: 'Render a diagram to PNG',
       description: 'Returns a PNG of a .drawio.svg so you can look at it. Optionally also writes the PNG to a file, e.g. for Google Docs or slides, or an .excalidraw copy for someone who works in Excalidraw.',
-      inputSchema: z.object({ path: pathArg, out: z.string().optional().describe('Also write the PNG here. A path ending in .excalidraw writes an Excalidraw copy of the diagram instead.') }),
+      inputSchema: z.object({ path: pathArg, out: z.string().optional().describe('Also write the PNG here. A path ending in .excalidraw writes an Excalidraw copy of the diagram instead; import_excalidraw brings edits to it back.') }),
       annotations: { readOnlyHint: false },
     },
     (args) =>
@@ -204,6 +204,23 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
           content.push(text(lines.join('\n')), await preview(out));
         } else content.push(text(lines.join('\n')));
         return { content };
+      })(),
+  );
+
+  server.registerTool(
+    'import_excalidraw',
+    {
+      title: 'Bring Excalidraw edits back into a diagram',
+      description: 'Merges edits made in Excalidraw into a .drawio.svg. `source` is an .excalidraw file that render_diagram wrote and someone then edited; `path` is the diagram it was exported from. Reads new text, boxes and arrows added or deleted, arrows moved to other boxes, and positions. Returns what changed and a preview. Colors and hand-drawn arrow paths are not read.',
+      inputSchema: z.object({ source: z.string().describe('The edited .excalidraw file.'), path: pathArg }),
+      annotations: { readOnlyHint: false },
+    },
+    (args) =>
+      wrap(async () => {
+        const out = resolvePath(args.path);
+        const res = await importExcalidraw(resolvePath(args.source), out, { browser: await getBrowser() });
+        const lines = [res.changes.length ? `${res.changes.length} change${res.changes.length === 1 ? '' : 's'} from Excalidraw:` : 'The diagram already matches the Excalidraw file.', ...res.changes.map((c) => `  ${c}`), ...res.notes.map((n) => `note: ${n}`)];
+        return { content: [text(lines.join('\n')), await preview(out)] };
       })(),
   );
 
