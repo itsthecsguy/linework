@@ -131,19 +131,36 @@ ER
 
 ## Excalidraw
 
-To work on a diagram in Excalidraw, write a copy in its format:
+Linework goes both ways with Excalidraw. Write a copy of a diagram in its format, edit it there, and bring the edits back:
 
 ```bash
-linework render docs/arch.drawio.svg -o arch.excalidraw
+linework render docs/arch.drawio.svg -o arch.excalidraw   # out to Excalidraw
+linework import arch.excalidraw -o docs/arch.drawio.svg   # and back
 ```
 
-Open the file at excalidraw.com, or with an Excalidraw extension in your editor. Boxes, arrows, labels and cloud icons come across where linework put them, hand edits included. Arrows are attached to their boxes, each label is editable text, and the parts of a node (shape, icon, label) are grouped so they move together.
+Open the `.excalidraw` file at excalidraw.com, or with an Excalidraw extension in your editor. Boxes, arrows, labels and cloud icons are where linework put them, hand edits included. Arrows are Excalidraw's own right-angle arrows, attached to their boxes, so they follow when you drag one. The parts of a node (shape, icon, label) are grouped and move together.
 
-The copy is one way. Linework keeps reading and merging into the `.drawio.svg`, so changes made in Excalidraw stay in Excalidraw; change the spec and render again for a fresh copy. Excalidraw also draws some things its own way:
+`import` reads what changed and merges it into the `.drawio.svg`, the same way a spec edit is merged:
 
-- Text is in Excalidraw's fonts, at one weight. A node's second line is the same size as its name.
-- A database, a table and a lifeline are each built from several grouped shapes, since Excalidraw has no shape for them.
-- Queues have rounded corners, not fully round ends, and arrow corners are square.
+| in Excalidraw | in the diagram |
+|---|---|
+| retype a name, a second line, a group title or an arrow label | the label changes |
+| draw a box and type in it | a new node; a diamond in a flow is a decision |
+| duplicate a box | a new node of the same kind, icon and color |
+| draw an arrow between two boxes | a new edge, dashed if you made it dashed |
+| drag an arrow's end to another box | the edge connects there |
+| delete a box, an arrow or a group | it's removed; a group's boxes stay |
+| move or resize boxes, or drag one into or out of a group | they sit where you put them, and their arrows are routed again |
+
+It prints each change it found. Then `linework show` gives you the updated spec, and `render` writes a fresh Excalidraw copy for the next round. If the `.drawio.svg` is gone, `import` rebuilds it: the Excalidraw file carries the spec.
+
+What doesn't come back:
+
+- **Looks.** Colors, fonts and line styles you change in Excalidraw stay there. The diagram keeps its linework style; set `color:` or `highlight:` in the spec.
+- **Arrow paths.** Linework routes arrows itself, around boxes, so a path you drew by hand isn't kept. Which boxes an arrow joins is.
+- **Structure of sequence and ER diagrams.** Text edits come back for both, and ER tables can be moved and get new relationships. Adding or removing participants, messages, tables or columns is a spec edit.
+
+Excalidraw also draws a few things its own way. It has one text weight, so names aren't bold. It has no database, table or lifeline shape, so each is built from grouped parts. And once it reroutes an arrow (when you drag a box), that arrow gets Excalidraw's larger arrowhead and a path that may cross other boxes; importing routes it cleanly again.
 
 ## Styles
 
@@ -226,7 +243,7 @@ Everything else takes the same JSON block in its MCP config file:
 | Claude Desktop | `claude_desktop_config.json` (Settings > Developer > Edit Config) |
 | VS Code | `.vscode/mcp.json`, with `"servers"` in place of `"mcpServers"` and `"type": "stdio"` added |
 
-Relative paths in tool calls resolve against the folder the server starts in. Add `"--root", "/path/to/docs"` to the args to pin it. The tools are `build_diagram`, `show_diagram`, `check_diagram`, `render_diagram`, `tidy_diagram`, `import_mermaid`, `list_icons`, `edit_diagram`, `publish_diagram`, and `linework_guide`, which hands the model the spec format and style rules. `build_diagram` returns a PNG preview, so a model that can see images checks its own work.
+Relative paths in tool calls resolve against the folder the server starts in. Add `"--root", "/path/to/docs"` to the args to pin it. The tools are `build_diagram`, `show_diagram`, `check_diagram`, `render_diagram`, `tidy_diagram`, `import_mermaid`, `import_excalidraw`, `list_icons`, `edit_diagram`, `publish_diagram`, and `linework_guide`, which hands the model the spec format and style rules. `build_diagram` returns a PNG preview, so a model that can see images checks its own work.
 
 ### Installing the skill by hand
 
@@ -279,6 +296,7 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 | `linework check <file>` | lint: overlaps, edges through nodes, labels that don't fit, too wide |
 | `linework render <file> -o out.png [--scale 2]` | preview image |
 | `linework render <file> -o out.excalidraw` | a copy to open and edit in Excalidraw |
+| `linework import <file.excalidraw> -o <file.drawio.svg>` | bring edits made in Excalidraw back into the diagram |
 | `linework tidy <file>` | after hand edits: reroute stale edges and move colliding labels; boxes stay |
 | `linework import <file.mmd\|doc.md> [-o out.drawio.svg]` | convert a Mermaid diagram |
 | `linework publish <file...> [--to dir] [--pull]` | copy diagrams into Google Drive for the Docs add-on |

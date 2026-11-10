@@ -117,7 +117,7 @@ The theme:
 - Neutral surfaces with one hue per kind family. Labels meet WCAG AA contrast. Light and dark variants.
 - Groups get a light tint, a label in the top-left corner and 24px padding.
 - Edges are 1.5px, orthogonal with rounded bends, small arrowheads, labels on a background halo. Async edges are dashed.
-- **Excalidraw.** `render -o x.excalidraw` writes a one-way copy from draw.io's rendered geometry. Reading Excalidraw edits back would need a second merge path and is not planned.
+- **Excalidraw.** `render -o x.excalidraw` writes a copy from draw.io's rendered geometry, and `import x.excalidraw -o x.drawio.svg` reads the edits back. Every exported element records the cell it draws, so an edited file is matched to the diagram again; the edits become a changed spec plus box positions, and the ordinary merge does the rest. The `.drawio.svg` stays the source of truth.
 - Three themes to start: clean as the default, c4, and sketch. There are ten now (soft, paper, dark, midnight, mono, bold and blueprint came later), and `accent:` swaps the highlight color for a brand's.
 
 Layout per diagram type:

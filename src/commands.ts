@@ -29,7 +29,7 @@ Usage:
       --geometry appends node positions as comments.
   linework render <file.drawio.svg> -o <out.png|out.svg|out.excalidraw> [--scale 2]
       Render a preview image, or write a copy to open and edit in Excalidraw.
-      The copy is one way: linework keeps reading the .drawio.svg.
+      Bring Excalidraw edits back with: linework import <file.excalidraw> -o <file.drawio.svg>
   linework check <file.drawio.svg>
       Lint layout: overlaps, edges through nodes, labels that don't fit.
   linework tidy <file.drawio.svg>
@@ -41,6 +41,10 @@ Usage:
   linework import <file.mmd|doc.md|-> [--block N] [-o out.drawio.svg] [--png p.png]
       Convert a Mermaid diagram (flowchart, state, sequence, ER) to a linework spec.
       Prints the spec, or builds it straight away with -o.
+  linework import <file.excalidraw> -o <file.drawio.svg> [--png p.png]
+      Merge edits made in Excalidraw into the diagram the file was exported from:
+      new text, boxes and arrows added or deleted, arrows moved to other boxes,
+      and where everything sits. Prints what changed.
   linework icons <aws|gcp|k8s|azure> [filter]
       List icon names, for "icon: aws.lambda" on architecture nodes.
   linework publish <file.drawio.svg...> [--to DIR] [--pull] [--force]
@@ -248,7 +252,18 @@ export async function run(cmd: string, values: Values, positionals: string[], la
       return;
     }
     case 'import': {
-      const src = positionals[0] ?? fail('usage: linework import <file.mmd|doc.md|-> [-o out.drawio.svg]');
+      const src = positionals[0] ?? fail('usage: linework import <file.mmd|doc.md|file.excalidraw|-> [-o out.drawio.svg]');
+      if (/\.excalidraw$/i.test(src)) {
+        if (!values.out) fail('usage: linework import <file.excalidraw> -o <file.drawio.svg>\n  -o is the diagram the Excalidraw file was exported from; the edits are merged into it.');
+        const { importExcalidraw } = await import('./api.js');
+        const res = await importExcalidraw(src, values.out, { png: values.png, browser: await browser() });
+        if (res.created) console.log(`${values.out} didn't exist: rebuilt it from the spec in ${src}`);
+        for (const c of res.changes) console.log(`  ${c}`);
+        console.log(res.changes.length ? `wrote ${res.out} (${res.changes.length} change${res.changes.length === 1 ? '' : 's'} from Excalidraw)` : `${res.out} already matches ${src}`);
+        for (const n of res.notes) console.error(`note: ${n}`);
+        await printCheck(res.check);
+        return;
+      }
       const { importMermaid, mermaidBlocks } = await import('./import/mermaid.js');
       const { toYaml } = await import('./drawio/show.js');
       let text = src === '-' ? io.stdin() : fs.readFileSync(src, 'utf8');
