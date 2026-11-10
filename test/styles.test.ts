@@ -17,7 +17,10 @@ import { embedFonts, familiesIn, forgetSubsets } from '../src/render/fonts.js';
 import { build } from '../src/api.js';
 import { DrawioBrowser } from '../src/render/browser.js';
 import { THEMES } from '../src/spec/model.js';
-import { contrast } from '../src/drawio/icons.js';
+import { contrast, resolveIcon } from '../src/drawio/icons.js';
+import { edgeStyle, groupStyle, paintFor, palette } from '../src/drawio/theme.js';
+import { COLORS, normalAccent } from '../src/spec/model.js';
+import { patchSpec } from '../src/patch.js';
 import { runSpots } from '../src/lint/fixlabels.js';
 
 const errs = (y: string) => {
@@ -112,12 +115,163 @@ describe('icons on dark fills', () => {
     return [m.byId.get('u')!.style.fillColor!, m.byId.get('u__icon')!.style.fillColor!, m.byId.get('l__icon')!.style.fillColor!];
   };
   it('switches a glyph icon to a color that shows against its node', async () => {
-    for (const [theme, extra] of [['clean', ''], ['dark', ''], ['blueprint', ''], ['c4', ''], ['clean', ', highlight: true']]) {
+    for (const [theme, extra] of [['clean', ''], ['dark', ''], ['midnight', ''], ['paper', ''], ['mono', ''], ['bold', ''], ['blueprint', ''], ['c4', ''], ['clean', ', highlight: true'], ['mono', ', highlight: true']]) {
       const [node, glyph, tile] = await iconFill(theme!, extra);
       expect(contrast(node, glyph), `${theme}${extra}`).toBeGreaterThanOrEqual(3);
       expect(tile).toBe('#ED7100'); // tiled service icons keep their category color
     }
     expect((await iconFill('clean'))[1]).toBe('#232F3E');
+  });
+});
+
+const hex = (c: string) => /^#[0-9a-f]{6}$/i.test(c);
+const styleOf = (s: string, key: string) => new RegExp(`(?:^|;)${key}=([^;]*)`).exec(s)?.[1];
+
+describe('every style is legible', () => {
+  it('keeps node text at 4.5:1 or better on its fill, in every color and when highlighted', () => {
+    for (const theme of THEMES)
+      for (const color of [undefined, ...COLORS])
+        for (const highlight of [false, true]) {
+          const t = palette(theme);
+          const p = paintFor('architecture', 'service', theme, { color, highlight });
+          const fill = hex(p.fill) ? p.fill : t.canvas;
+          expect(contrast(p.text, fill), `${theme} ${color ?? 'plain'}${highlight ? ' highlighted' : ''}: ${p.text} on ${fill}`).toBeGreaterThanOrEqual(4.5);
+        }
+  });
+
+  it('keeps edge lines at 3:1 and edge labels at 4.5:1 against the canvas', () => {
+    for (const theme of THEMES)
+      for (const color of [undefined, ...COLORS])
+        for (const highlight of [false, true]) {
+          const t = palette(theme);
+          const p = t.edgePaint(color, highlight);
+          expect(contrast(p.stroke, t.canvas), `${theme} ${color ?? 'plain'} line`).toBeGreaterThanOrEqual(3);
+          expect(contrast(p.text, t.canvas), `${theme} ${color ?? 'plain'} label`).toBeGreaterThanOrEqual(4.5);
+        }
+  });
+});
+
+describe('the new styles', () => {
+  const grayOnly = (c: string) => !hex(c) || (c.slice(1, 3) === c.slice(3, 5) && c.slice(3, 5) === c.slice(5, 7));
+  it('mono uses no color at all, whatever the spec asks for', () => {
+    for (const color of [undefined, ...COLORS])
+      for (const highlight of [false, true]) {
+        const p = paintFor('architecture', 'service', 'mono', { color, highlight });
+        const e = palette('mono').edgePaint(color, highlight);
+        for (const c of [p.fill, p.stroke, p.text, e.stroke, e.text]) expect(grayOnly(c), `${color} ${c}`).toBe(true);
+      }
+    // A highlight still stands out: solid black, and a heavier line.
+    expect(paintFor('architecture', 'service', 'mono', { highlight: true }).fill).toBe('#111111');
+    expect(palette('mono').edgePaint(undefined, true).width).toBeGreaterThan(palette('mono').edgePaint(undefined, false).width);
+  });
+
+  it('bold gives nodes a hard shadow and a heavy outline, and leaves edges and groups without one', () => {
+    const node = paintFor('architecture', 'service', 'bold');
+    expect(node.extra).toContain('shadow=1');
+    expect(node.extra).toContain('shadowBlur=0');
+    expect(node.strokeWidth).toBeGreaterThanOrEqual(2);
+    expect(edgeStyle('sync', 'bold')).not.toContain('shadow=1');
+    expect(groupStyle('bold')).not.toContain('shadow=1');
+  });
+
+  it('midnight and paper are their own grounds, not dark and clean recolored', () => {
+    expect(palette('midnight').canvas).not.toBe(palette('dark').canvas);
+    expect(contrast(palette('midnight').canvas, '#FFFFFF')).toBeGreaterThan(12);
+    expect(palette('paper').canvas).not.toBe('#FFFFFF');
+    expect(contrast(palette('paper').canvas, '#FFFFFF')).toBeLessThan(1.15);
+  });
+
+  it('colors a group in an outlined style by its line, never a fill', () => {
+    for (const theme of ['mono', 'bold', 'sketch', 'blueprint'] as const) expect(styleOf(groupStyle(theme, { color: 'teal' }), 'fillColor'), theme).toBe('none');
+    expect(styleOf(groupStyle('paper', { color: 'teal' }), 'fillColor')).not.toBe('none');
+  });
+});
+
+describe('accent', () => {
+  it('reads a color name or a hex color, and normalizes the hex', () => {
+    expect(normalAccent('Teal')).toBe('teal');
+    expect(normalAccent('#e11d48')).toBe('#E11D48');
+    expect(normalAccent('e11d48')).toBe('#E11D48');
+    expect(normalAccent('#f0a')).toBe('#FF00AA');
+    expect(normalAccent('chartreuse')).toBeUndefined();
+    expect(normalAccent('#12345')).toBeUndefined();
+    expect(parseSpecText('type: flow\naccent: "#e11d48"\nnodes: { a: {} }').diagram.accent).toBe('#E11D48');
+    expect(parseSpecText('type: sequence\naccent: green\nparticipants: { a: {}, b: {} }\nmessages:\n  - a -> b: go').diagram.accent).toBe('green');
+    expect(parseSpecText('type: flow\nnodes: { a: {} }').diagram.accent).toBeUndefined();
+  });
+
+  it('explains a bad accent, and an unquoted hex that YAML ate as a comment', () => {
+    expect(errs('type: flow\naccent: chartreuse\nnodes: { a: {} }')).toMatch(/accent is a color name.*got "chartreuse"/);
+    expect(errs('type: flow\naccent: #E11D48\nnodes: { a: {} }')).toMatch(/quote it/);
+  });
+
+  it('draws highlights in the accent and leaves everything else alone', () => {
+    for (const theme of THEMES) {
+      const d = { theme, accent: '#E11D48' };
+      // An unhighlighted node, and a highlight with its own color, don't change.
+      expect(paintFor('architecture', 'service', d), theme).toEqual(paintFor('architecture', 'service', theme));
+      expect(paintFor('architecture', 'service', d, { highlight: true, color: 'green' }), theme).toEqual(paintFor('architecture', 'service', theme, { highlight: true, color: 'green' }));
+      expect(palette(d).edgePaint('green', true), theme).toEqual(palette(theme).edgePaint('green', true));
+      expect(palette(d).edgePaint(undefined, false), theme).toEqual(palette(theme).edgePaint(undefined, false));
+      const hi = paintFor('architecture', 'service', d, { highlight: true });
+      expect(hi, theme).not.toEqual(paintFor('architecture', 'service', theme, { highlight: true }));
+      expect(contrast(hi.text, hi.fill), `${theme} text on ${hi.fill}`).toBeGreaterThanOrEqual(4.5);
+      const edge = palette(d).edgePaint(undefined, true);
+      expect(contrast(edge.stroke, palette(theme).canvas), `${theme} edge`).toBeGreaterThanOrEqual(3);
+      expect(contrast(edge.text, palette(theme).canvas), `${theme} edge label`).toBeGreaterThanOrEqual(4.5);
+    }
+    expect(paintFor('architecture', 'service', { theme: 'clean', accent: '#E11D48' }, { highlight: true }).fill).toBe('#E11D48');
+  });
+
+  it('keeps a pale brand color readable: dark text on it, and a darker line on a light canvas', () => {
+    const d = { theme: 'clean' as const, accent: '#FFD400' };
+    const hi = paintFor('architecture', 'service', d, { highlight: true });
+    expect(hi.fill).toBe('#FFD400');
+    expect(contrast(hi.text, hi.fill)).toBeGreaterThanOrEqual(4.5);
+    expect(palette(d).edgePaint(undefined, true).stroke).not.toBe('#FFD400');
+  });
+
+  it('a named accent uses the style\'s own version of that color', () => {
+    expect(paintFor('architecture', 'service', { theme: 'paper', accent: 'teal' }, { highlight: true })).toEqual(paintFor('architecture', 'service', 'paper', { highlight: true, color: 'teal' }));
+    expect(palette({ theme: 'dark', accent: 'green' }).edgePaint(undefined, true)).toEqual(palette('dark').edgePaint('green', true));
+  });
+
+  it('round-trips through the file, and set changes or clears it', async () => {
+    const { diagram } = parseSpecText(`accent: "#E11D48"\n${SPEC}`);
+    const m = readDrawio(toMxfile(diagram, await layout(diagram)));
+    expect(m.byId.get('api')!.style.fillColor).toBe('#E11D48');
+    const shown = toDiagram(m).diagram;
+    expect(shown.accent).toBe('#E11D48');
+    const yaml = toYaml(shown);
+    expect(yaml).toContain('accent: "#E11D48"');
+    expect(parseSpecText(yaml).diagram.accent).toBe('#E11D48');
+    expect(parseSpecText(patchSpec(yaml, [{ op: 'set', args: ['accent=teal'] }])).diagram.accent).toBe('teal');
+    expect(parseSpecText(patchSpec(yaml, [{ op: 'set', args: ['accent='] }])).diagram.accent).toBeUndefined();
+  });
+
+  it('restyles a built diagram when only the accent changes, without moving it', async () => {
+    const before = parseSpecText(SPEC).diagram;
+    const old = readDrawio(toMxfile(before, await layout(before)));
+    const after = parseSpecText(`accent: "#E11D48"\n${SPEC}`).diagram;
+    const out = readDrawio(serialize(merge(after, old, await layout(after)).scene));
+    expect(out.byId.get('api')!.style.fillColor).toBe('#E11D48');
+    expect(out.byId.get('api')!.geom).toEqual(old.byId.get('api')!.geom);
+    expect(out.meta.aiviz_accent).toBe('#E11D48');
+    const back = readDrawio(serialize(merge(before, out, await layout(before)).scene));
+    expect(back.byId.get('api')!.style.fillColor).toBe(old.byId.get('api')!.style.fillColor);
+    expect(back.meta.aiviz_accent).toBeUndefined();
+  });
+});
+
+describe('Azure icons', () => {
+  it('draws from both sets: the newer one for services the older lacks, and where both have one', () => {
+    const stencil = (i: string) => (resolveIcon(i) as { stencil: string }).stencil;
+    expect(stencil('azure.functions')).toBe('mxgraph.mscae.cloud.functions');
+    expect(stencil('azure.cosmos')).toBe('mxgraph.mscae.cloud.cosmos_db');
+    expect(stencil('azure.keyvault')).toBe('mxgraph.mscae.cloud.key_vault');
+    expect(stencil('azure.service_bus')).toBe('mxgraph.mscae.cloud.service_bus');
+    expect(stencil('azure.vm')).toBe('mxgraph.azure.virtual_machine');
+    expect(stencil('azure.sql_database')).toBe('mxgraph.azure.sql_database');
   });
 });
 

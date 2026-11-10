@@ -8,6 +8,7 @@ import {
   KINDS,
   THEMES,
   kindDef,
+  normalAccent,
   type Card,
   type Diagram,
   type DiagramType,
@@ -63,7 +64,8 @@ export function toDiagram(m: DrawioModel): ShowResult {
   const direction: Direction = dirRaw && DIRECTIONS.includes(dirRaw) ? dirRaw : 'auto';
   const themeRaw = m.meta.aiviz_theme as ThemeName | undefined;
   const theme: ThemeName = themeRaw && THEMES.includes(themeRaw) ? themeRaw : 'clean';
-  if (type === 'sequence') return sequenceDiagram(m, theme, notes);
+  const accent = normalAccent(m.meta.aiviz_accent);
+  if (type === 'sequence') return sequenceDiagram(m, theme, accent, notes);
 
   const isEntity = (c: Cell) => type === 'er' && ((!!c.attrs.aiviz_kind && kindDef('er', c.attrs.aiviz_kind).shape === 'table') || isEntityStyle(c));
   const entityIds = new Set(vertices.filter(isEntity).map((c) => c.id));
@@ -159,7 +161,7 @@ export function toDiagram(m: DrawioModel): ShowResult {
     edges.push(edge);
   }
 
-  return { diagram: { type, title: m.meta.aiviz_title, direction, theme, groups, nodes, edges }, notes, idMap, edgeCells, skipped };
+  return { diagram: { type, title: m.meta.aiviz_title, direction, theme, ...(accent ? { accent } : {}), groups, nodes, edges }, notes, idMap, edgeCells, skipped };
 }
 
 function look(c: Cell): Look {
@@ -182,7 +184,7 @@ function parseFieldRow(c: Cell): Field | null {
 
 // ---------- sequence ----------
 
-function sequenceDiagram(m: DrawioModel, theme: ThemeName, notes: string[]): ShowResult {
+function sequenceDiagram(m: DrawioModel, theme: ThemeName, accent: string | undefined, notes: string[]): ShowResult {
   const idMap = new Map<string, string>();
   const used = new Set<string>();
   const lifelines = m.cells.filter((c) => c.vertex && isLifeline(c)).sort((a, b) => (absBox(m, a.id)?.x ?? 0) - (absBox(m, b.id)?.x ?? 0));
@@ -303,7 +305,7 @@ function sequenceDiagram(m: DrawioModel, theme: ThemeName, notes: string[]): Sho
     }
   }
   return {
-    diagram: { type: 'sequence', title: m.meta.aiviz_title, direction: 'auto', theme, groups: [], nodes, edges: [], seq: root },
+    diagram: { type: 'sequence', title: m.meta.aiviz_title, direction: 'auto', theme, ...(accent ? { accent } : {}), groups: [], nodes, edges: [], seq: root },
     notes,
     idMap,
     edgeCells: new Map(),
@@ -381,6 +383,7 @@ export function toYaml(d: Diagram, header?: string): string {
   if (d.title) out.push(`title: ${q(d.title)}`);
   if (d.type !== 'sequence') out.push(`direction: ${d.direction}`);
   if (d.theme !== 'clean') out.push(`theme: ${d.theme}`);
+  if (d.accent) out.push(`accent: ${q(d.accent)}`);
   if (d.type === 'sequence') {
     out.push('participants:');
     for (const n of d.nodes) out.push(`  ${n.id}: { ${nodeParts(d, n).join(', ')} }`.replace('{  }', '{}'));

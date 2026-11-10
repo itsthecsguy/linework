@@ -63,6 +63,7 @@ export function diagramMeta(d: Diagram, extra: Record<string, string> = {}): Rec
     aiviz_type: d.type,
     aiviz_direction: d.direction,
     ...(d.theme !== 'clean' ? { aiviz_theme: d.theme } : {}),
+    ...(d.accent ? { aiviz_accent: d.accent } : {}),
     ...(d.title ? { aiviz_title: d.title } : {}),
     ...extra,
   };
@@ -71,7 +72,7 @@ export function diagramMeta(d: Diagram, extra: Record<string, string> = {}): Rec
 export function nodeAttrs(d: Diagram, n: Diagram['nodes'][number]): Record<string, string> {
   const shape = kindDef(d.type, n.kind).shape;
   const label =
-    shape === 'start' || shape === 'end' ? '' : shape === 'table' ? n.label : nodeLabel(n.label, n.tech, { theme: d.theme, type: d.type, kind: n.kind, color: n.color, highlight: n.highlight });
+    shape === 'start' || shape === 'end' ? '' : shape === 'table' ? n.label : nodeLabel(n.label, n.tech, { theme: d, type: d.type, kind: n.kind, color: n.color, highlight: n.highlight });
   return {
     label,
     aiviz_kind: n.kind,
@@ -100,12 +101,12 @@ export function fieldRows(d: Diagram, n: Diagram['nodes'][number], width: number
     id: `${n.id}__${f.name}`,
     parent: n.id,
     attrs: {
-      label: fieldLabel(f.name, f.type, f.flags, d.theme),
+      label: fieldLabel(f.name, f.type, f.flags, d),
       aiviz_field: f.name,
       ...(f.type ? { aiviz_ftype: f.type } : {}),
       ...(f.flags.length ? { aiviz_flags: f.flags.join(' ') } : {}),
     },
-    style: fieldStyle(d.theme),
+    style: fieldStyle(d),
     box: { x: 0, y: ER_HEAD + i * ER_ROW, w: width, h: ER_ROW },
   }));
 }
@@ -114,8 +115,8 @@ export function fieldRows(d: Diagram, n: Diagram['nodes'][number], width: number
 export function nodeChildren(d: Diagram, n: Diagram['nodes'][number], box: Box): SceneVertex[] {
   const out = fieldRows(d, n, box.w);
   if (n.icon) {
-    const paint = paintFor(d.type, n.kind, d.theme, n);
-    const fill = /^#[0-9a-f]{6}$/i.test(paint.fill) ? paint.fill : palette(d.theme).canvas;
+    const paint = paintFor(d.type, n.kind, d, n);
+    const fill = /^#[0-9a-f]{6}$/i.test(paint.fill) ? paint.fill : palette(d).canvas;
     const r = resolveIcon(n.icon, { fill, ink: paint.text });
     if (!('error' in r))
       out.push({
@@ -132,7 +133,7 @@ export function nodeChildren(d: Diagram, n: Diagram['nodes'][number], box: Box):
 
 /** Node style, with room on the left when it has an icon. */
 export function styleFor(d: Diagram, n: Diagram['nodes'][number]): string {
-  const st = nodeStyle(d.type, n.kind, d.theme, n);
+  const st = nodeStyle(d.type, n.kind, d, n);
   return n.icon ? `${st}align=left;spacingLeft=${ICON_PAD};` : st;
 }
 
@@ -151,7 +152,7 @@ function labelBg(d: Diagram, l: Layout, label?: Box): string | undefined {
 }
 
 export function edgeStyleFor(d: Diagram, e: Diagram['edges'][number], bg?: string): string {
-  return d.type === 'er' && e.card ? erEdgeStyle(e.card, d.theme, e) : edgeStyle(e.style, d.theme, e, bg);
+  return d.type === 'er' && e.card ? erEdgeStyle(e.card, d, e) : edgeStyle(e.style, d, e, bg);
 }
 
 export function edgeAttrs(e: Diagram['edges'][number]): Record<string, string> {
@@ -165,7 +166,7 @@ export function groupDepth(d: Diagram, g: Diagram['groups'][number]): number {
   return n;
 }
 
-export const groupStyleFor = (d: Diagram, g: Diagram['groups'][number]) => groupStyle(d.theme, g, groupDepth(d, g));
+export const groupStyleFor = (d: Diagram, g: Diagram['groups'][number]) => groupStyle(d, g, groupDepth(d, g));
 
 export function groupAttrs(g: Diagram['groups'][number], theme: Diagram['theme'] = 'clean'): Record<string, string> {
   return { label: groupLabel(g.label, theme), aiviz_type: 'group', aiviz_label: g.label, ...lookAttrs(g) };
@@ -270,7 +271,7 @@ export function sceneFromLayout(d: Diagram, l: Layout): Scene {
     };
   });
   alignLabels(d, l, edges);
-  return { name: d.title ?? 'Diagram', background: palette(d.theme).canvas, meta: diagramMeta(d), vertices, edges, raw: [] };
+  return { name: d.title ?? 'Diagram', background: palette(d).canvas, meta: diagramMeta(d), vertices, edges, raw: [] };
 }
 
 /** The point at a draw.io label fraction (-1..1) along a route, and the run it sits on. */

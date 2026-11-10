@@ -9,7 +9,8 @@
 | `type` | yes | `architecture`, `flow`, `state`, `sequence` or `er` |
 | `title` | no | stored in the file and used as the page name in draw.io |
 | `direction` | no | `auto` (default), `TB`, `LR`, `BT` or `RL`. Not for sequence. |
-| `theme` | no | the style: `clean` (default), `soft`, `dark`, `sketch`, `blueprint` or `c4` |
+| `theme` | no | the style: `clean` (default), `soft`, `paper`, `dark`, `midnight`, `mono`, `bold`, `sketch`, `blueprint` or `c4` |
+| `accent` | no | the color highlights are drawn in: a color name, or a hex color in quotes (`"#E11D48"`). Default: the style's own. |
 | `groups` | no | map of id to `{ label, in, color, highlight }`, or to a label string |
 | `nodes` | yes | map of id to `{ label, kind, tech, in, icon, color, highlight }`, or to a label string |
 | `edges` | no | list of edge strings, or `{ from, to, label, style, color, highlight }` objects |
@@ -39,12 +40,16 @@ nodes:
 |---|---|---|
 | `clean` | white boxes with hairline borders, groups drawn as gray grounds, cobalt accent. Nodes are neutral unless the kind means something (error, success). | IBM Plex Sans |
 | `soft` | borderless pastel cards, each kind its own tint | IBM Plex Sans |
+| `paper` | warm cream ground, brown ink, earth-toned colors, terracotta accent | IBM Plex Sans |
 | `dark` | `clean` in GitHub's dark colors, so it sits flush on a dark README | IBM Plex Sans |
+| `midnight` | a navy dark style with softer contrast than `dark` | IBM Plex Sans |
+| `mono` | black ink only. A `color` becomes a gray ground and a highlight is solid black, so it prints and photocopies. | IBM Plex Sans |
+| `bold` | thick black outlines, bright flat fills by kind, hard drop shadows | IBM Plex Sans |
 | `sketch` | hand-drawn strokes, pastel fills, blue accent | Kalam (handwriting) |
 | `blueprint` | blue ink on pale drafting paper, drafting capitals for group titles | IBM Plex Mono |
 | `c4` | C4's colors (dark person, blue containers, gray external systems) in quiet tones; each box says its element type | IBM Plex Sans |
 
-The "drawn as" columns below describe `soft`. In `clean`, `dark` and `blueprint`, kinds differ by shape and dash only, and color comes from `highlight`, `color` and the error/success kinds.
+The "drawn as" columns below describe `soft`. `bold` and `sketch` tint by kind too. In `clean`, `paper`, `dark`, `midnight`, `mono` and `blueprint`, kinds differ by shape and dash only, and color comes from `highlight`, `color` and the error/success kinds.
 
 Linework embeds the font, subset to the characters the diagram uses (about 10 to 15KB), so the SVG looks the same on GitHub, in a browser and in docs.
 
@@ -218,7 +223,7 @@ nodes:
   pod: { label: Worker pods, icon: k8s.deploy }
 ```
 
-`linework icons aws` lists every AWS name (about 1,000); add a filter word to search. Common short names work too: `aws.s3`, `aws.sqs`, `aws.kms`, `aws.msk`, `gcp.pubsub`, `gcp.gke`, `k8s.service`, `k8s.ingress`. An unknown name is a warning, and the node is drawn without an icon.
+`linework icons aws` lists every AWS name (about 1,000); `gcp` has about 300, `azure` about 200 and `k8s` about 40. Add a filter word to search. Common short names work too: `aws.s3`, `aws.sqs`, `aws.kms`, `aws.msk`, `gcp.pubsub`, `gcp.gke`, `azure.functions`, `azure.cosmos`, `azure.aks`, `azure.keyvault`, `k8s.service`, `k8s.ingress`. An unknown name is a warning, and the node is drawn without an icon.
 
 ## Sequence
 

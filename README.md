@@ -98,7 +98,7 @@ edges:
 npx -y @itsthecsguy/linework build spec.yaml -o docs/checkout.drawio.svg --png /tmp/preview.png
 ```
 
-Linework lays it out with ELK and draws it with draw.io's own renderer. It draws architecture, flow, state, sequence and ER diagrams, with AWS, GCP, Kubernetes and Azure icons, and it converts Mermaid.
+Linework lays it out with ELK and draws it with draw.io's own renderer. It draws architecture, flow, state, sequence and ER diagrams, with AWS, Google Cloud, Azure and Kubernetes icons, and it converts Mermaid.
 
 To change a diagram, the agent runs `linework show` to get the spec back, hand edits included, edits it and rebuilds. The rebuild merges into your layout. Your boxes stay where you put them, new ones go next to their neighbours, and only the edges that need it get rerouted (with draw.io's libavoid router).
 
@@ -110,6 +110,10 @@ These are first builds of the specs in [`examples/`](examples), with no hand edi
 <tr>
 <td width="50%" valign="top">Architecture, with AWS icons<br><br><a href="examples/serverless-aws.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/serverless-aws-dark.drawio.svg"><img alt="Architecture diagram: an uploader posts to an API Gateway, a Lambda presigns an S3 upload, and S3 events queue resize jobs for a second Lambda." src="docs/gallery/serverless-aws-light.drawio.svg" width="100%"></picture></a></td>
 <td width="50%" valign="top">Flow<br><br><a href="examples/refund-flow.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/refund-flow-dark.drawio.svg"><img alt="Flowchart of a refund: look up the order, check the 30-day window and the amount, then auto-approve, queue for review or deny, and email the customer." src="docs/gallery/refund-flow-light.drawio.svg" width="100%"></picture></a></td>
+</tr>
+<tr>
+<td width="50%" valign="top">Architecture, with Google Cloud icons<br><br><a href="examples/gcp-ingest.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/gcp-ingest-dark.drawio.svg"><img alt="Architecture diagram: sensors send telemetry through a load balancer to a Cloud Run API, which publishes to Pub/Sub; a Dataflow job streams it into BigQuery and archives it to Cloud Storage." src="docs/gallery/gcp-ingest-light.drawio.svg" width="100%"></picture></a></td>
+<td width="50%" valign="top">Architecture, with Azure icons<br><br><a href="examples/orders-azure.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/orders-azure-dark.drawio.svg"><img alt="Architecture diagram: customers reach an Azure Functions API through an application gateway; it writes to Cosmos DB, reads Key Vault and publishes to Service Bus for a legacy VM and its SQL ledger." src="docs/gallery/orders-azure-light.drawio.svg" width="100%"></picture></a></td>
 </tr>
 </table>
 
@@ -133,7 +137,11 @@ Set `theme:` in the spec.
 |---|---|
 | `clean` (default) | docs and READMEs. White boxes with hairline borders on gray group grounds, IBM Plex Sans. |
 | `soft` | slides. Borderless pastel cards, tinted by kind. |
+| `paper` | long reads and blogs. Warm cream ground, brown ink, earth-toned colors. |
 | `dark` | dark-mode pages |
+| `midnight` | dark slides and dashboards. Navy ground, softer contrast than `dark`. |
+| `mono` | print, papers and RFCs. Black ink only: a color becomes a gray ground, a highlight solid black. |
+| `bold` | slides and social posts. Thick outlines, bright flat fills, hard shadows. |
 | `sketch` | early drafts. Hand-drawn lines and a handwriting font. |
 | `blueprint` | technical deep dives. Blue ink on pale drafting paper, monospace. |
 | `c4` | C4-model diagrams, in quiet blues and grays |
@@ -144,16 +152,26 @@ The same spec in each style:
 <tr>
 <td width="33%" align="center" valign="top"><code>clean</code><br><br><img alt="A web app, checkout API and orders database in the clean style" src="docs/gallery/style-clean.drawio.svg"></td>
 <td width="33%" align="center" valign="top"><code>soft</code><br><br><img alt="A web app, checkout API and orders database in the soft style" src="docs/gallery/style-soft.drawio.svg"></td>
-<td width="33%" align="center" valign="top"><code>dark</code><br><br><img alt="A web app, checkout API and orders database in the dark style" src="docs/gallery/style-dark.drawio.svg"></td>
+<td width="33%" align="center" valign="top"><code>paper</code><br><br><img alt="A web app, checkout API and orders database in the paper style" src="docs/gallery/style-paper.drawio.svg"></td>
 </tr>
 <tr>
+<td width="33%" align="center" valign="top"><code>dark</code><br><br><img alt="A web app, checkout API and orders database in the dark style" src="docs/gallery/style-dark.drawio.svg"></td>
+<td width="33%" align="center" valign="top"><code>midnight</code><br><br><img alt="A web app, checkout API and orders database in the midnight style" src="docs/gallery/style-midnight.drawio.svg"></td>
+<td width="33%" align="center" valign="top"><code>mono</code><br><br><img alt="A web app, checkout API and orders database in the mono style" src="docs/gallery/style-mono.drawio.svg"></td>
+</tr>
+<tr>
+<td width="33%" align="center" valign="top"><code>bold</code><br><br><img alt="A web app, checkout API and orders database in the bold style" src="docs/gallery/style-bold.drawio.svg"></td>
 <td width="33%" align="center" valign="top"><code>sketch</code><br><br><img alt="A web app, checkout API and orders database in the sketch style" src="docs/gallery/style-sketch.drawio.svg"></td>
 <td width="33%" align="center" valign="top"><code>blueprint</code><br><br><img alt="A web app, checkout API and orders database in the blueprint style" src="docs/gallery/style-blueprint.drawio.svg"></td>
+</tr>
+<tr>
 <td width="33%" align="center" valign="top"><code>c4</code><br><br><img alt="A web app, checkout API and orders database in the c4 style" src="docs/gallery/style-c4.drawio.svg"></td>
 </tr>
 </table>
 
 Color is for meaning. Nodes stay neutral by default, and errors and successes are red and green in every style. Mark the part the doc is about with `highlight: true` on a node or `==>` on an edge, and it's drawn in the style's accent color. Use `color: red` (or blue, violet, pink, orange, amber, green, teal, gray) for categories.
+
+To match a brand, set `accent:` beside `theme:`. It takes one of those color names or a hex color in quotes, such as `accent: "#E11D48"`, and every highlight in the diagram is drawn in it. Text on the color and lines against the page are adjusted to stay readable, so a pale brand color works too.
 
 Linework sizes every box from the real width of its text in the font it renders with, wrapping long labels instead of widening boxes. Each SVG carries a subset of that font (about 10 to 15KB), so text fits the same way on GitHub, in a browser or in a doc. `check` flags labels that overflow, overlap a box, another label, another edge or a group border, and `build` moves edge labels until they're clear.
 
@@ -237,7 +255,7 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 | command | does |
 |---|---|
 | `linework build <spec\|-> -o out.drawio.svg [--png p.png] [--relayout]` | layout (or merge into an existing file), write, lint |
-| `linework set <file> id.field=value...` | change a label, kind, color, theme or title in place |
+| `linework set <file> id.field=value...` | change a label, kind, color, theme, accent or title in place |
 | `linework add <file> "id: {...}" "a -> b: label"...` | add boxes, groups and edges in place |
 | `linework rm <file> id "a -> b"...` | remove boxes, groups and edges in place |
 | `linework show <file> [--geometry]` | print the spec of a diagram, including hand edits |

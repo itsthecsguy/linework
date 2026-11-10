@@ -9,6 +9,19 @@ export const PROVIDERS = {
 } as const;
 export type Provider = keyof typeof PROVIDERS;
 
+// Azure comes in two draw.io sets. The older one (PROVIDERS.azure) has the basics:
+// virtual machines, SQL, storage. This one has the services added since: Functions,
+// Cosmos DB, Key Vault, Event Hubs. Where both draw a service, this one wins.
+export const AZURE_CLOUD = { set: 'mscae/cloud.xml', prefix: 'mxgraph.mscae.cloud.' } as const;
+const AZURE_CLOUD_NAMES = new Set(
+  'active_directory active_directory_b2b active_directory_b2c active_directory_domain_services active_directory_health_monitoring advisor analysis_service api_app api_management application_gateway application_insights app_service azure azure_automatic_load_balancer azure_batch azure_dns azure_files_service azure_load_balancer_feature azure_logo azure_rights_management_rms azure_search azure_storage batch blockchain bot_services building_block central cloud_office_365 cloud_service cognitive_services container_registry container_service content_delivery_network content_delivery_network2 cortona_management_suite cosmos_db customer_insights c_series data_bricks data_catalog data_factory data_lake data_lake_analytics data_lake_store data_warehouse devtest_labs docdb_account docdb_collections document documentdb dps event_grid event_hubs expressroute functions gateway hdinsight health_monitoring hockeyapp hybrid_connections hybrid_connection_manager iot iot_edge key_vault logic_app logic_apps machine_learning machine_learning2 machine_learning_service_plans machine_learning_web_services machine_learning_work_spaces managed_applications managed_discs management_portal microsoft_account microsoft_azure mobile_app mobile_engagement monitor network_watcher nsg office_365 office_365_subscription oms_log_analytics operational_insights power_bi_embedded recovery_vault remoteapp resource_group route_filters runbooks security_center service_bus service_bus2 service_bus_queues service_bus_relay service_bus_relay2 service_bus_topics service_endpoint service_endpoint2 service_fabric service_package site_recovery snapshot sql_database_premium sql_datawarehouse sql_elastic_database_pools sql_stretch_database stack storage storage_cs storage_files storage_sync_services stream_analytics tags time_series_insights vhd virtual_machines_availability_set virtual_machine_container vm_scale_set vpn_gateway vpn_gateway2 webhooks webjobs worker_pools work_account'.split(' '),
+);
+
+/** The stencil sets a provider's icons come from. */
+export function stencilSets(provider: Provider): Array<{ set: string; prefix: string }> {
+  return provider === 'azure' ? [PROVIDERS.azure, AZURE_CLOUD] : [PROVIDERS[provider]];
+}
+
 const ALIASES: Record<Provider, Record<string, string>> = {
   aws: {
     efs: 'elastic_file_system',
@@ -54,7 +67,39 @@ const ALIASES: Record<Provider, Record<string, string>> = {
     replicaset: 'rs',
     serviceaccount: 'sa',
   },
-  azure: {},
+  azure: {
+    cosmos: 'cosmos_db',
+    cosmosdb: 'cosmos_db',
+    aks: 'container_service',
+    kubernetes_service: 'container_service',
+    acr: 'container_registry',
+    keyvault: 'key_vault',
+    apim: 'api_management',
+    eventhub: 'event_hubs',
+    eventhubs: 'event_hubs',
+    eventgrid: 'event_grid',
+    servicebus: 'service_bus',
+    appservice: 'app_service',
+    app_gateway: 'application_gateway',
+    aad: 'active_directory',
+    entra: 'active_directory',
+    entra_id: 'active_directory',
+    function: 'functions',
+    function_app: 'functions',
+    databricks: 'data_bricks',
+    synapse: 'sql_datawarehouse',
+    vm: 'virtual_machine',
+    vmss: 'vm_scale_set',
+    vnet: 'virtual_network',
+    sql: 'sql_database',
+    blob: 'storage_blob',
+    blob_storage: 'storage_blob',
+    cdn: 'content_delivery_network',
+    load_balancer: 'azure_load_balancer',
+    redis: 'azure_cache',
+    app_insights: 'application_insights',
+    log_analytics: 'oms_log_analytics',
+  },
 };
 
 // AWS colours icons by service category.
@@ -96,7 +141,7 @@ export function resolveIcon(icon: string, on?: { fill: string; ink: string }): R
   const p = parseIcon(icon);
   if ('error' in p) return p;
   const { provider, name } = p;
-  const stencil = PROVIDERS[provider].prefix + name;
+  const stencil = (provider === 'azure' && AZURE_CLOUD_NAMES.has(name) ? AZURE_CLOUD.prefix : PROVIDERS[provider].prefix) + name;
   const base = 'outlineConnect=0;aspect=fixed;html=1;sketch=0;';
   const glyph = (brand: string) => (on && contrast(brand, on.fill) < 3 ? on.ink : brand);
   let style: string;

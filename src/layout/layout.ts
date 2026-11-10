@@ -2,7 +2,7 @@
 import ElkModule from 'elkjs/lib/elk.bundled.js';
 import type { ElkNode, ElkExtendedEdge, ELK as ElkApi } from 'elkjs/lib/elk-api.js';
 import { kindDef, type Diagram, type Direction, type ThemeName } from '../spec/model.js';
-import { ER_HEAD, ER_ROW, FIELD_PAD, GROUP_INSET, LINE, PAD_X, PAD_Y, typeface } from '../drawio/theme.js';
+import { type ThemeArg, ER_HEAD, ER_ROW, FIELD_PAD, GROUP_INSET, LINE, PAD_X, PAD_Y, typeface } from '../drawio/theme.js';
 import { TextMeasurer, type FontSpec } from './text.js';
 import { ICON_PAD } from '../drawio/icons.js';
 import { polish } from './polish.js';
@@ -49,7 +49,7 @@ export interface Fonts {
   maxText: number;
 }
 
-export function fontsFor(theme: ThemeName): Fonts {
+export function fontsFor(theme: ThemeArg): Fonts {
   const t = typeface(theme);
   const f = (size: number, weight = 400, tracking?: number): FontSpec => ({ size, weight, family: t.family, tracking });
   return {

@@ -9,7 +9,7 @@ import { absBox, fingerprint, readDrawio, specBase, type DrawioModel } from './d
 import { manualEdits, toDiagram, toYaml, type ManualEdit } from './drawio/show.js';
 import { merge, type MergeStats } from './drawio/merge.js';
 import { sequenceScene } from './layout/sequence.js';
-import { resolveIcon, PROVIDERS, type Provider } from './drawio/icons.js';
+import { resolveIcon, stencilSets, type Provider } from './drawio/icons.js';
 import { DrawioBrowser, type InspectCell } from './render/browser.js';
 import { brokenEdges, check, type CheckResult } from './lint/check.js';
 import { fixLabels } from './lint/fixlabels.js';
@@ -89,7 +89,7 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
           if (box) keepX.set(specId, { x: box.x, w: box.w });
           const prev = shown.diagram.nodes.find((n) => n.id === specId);
           const now = diagram.nodes.find((n) => n.id === specId);
-          if (!prev || !now || shown.diagram.theme !== diagram.theme) continue;
+          if (!prev || !now || shown.diagram.theme !== diagram.theme || (shown.diagram.accent ?? '') !== (diagram.accent ?? '')) continue;
           const { id: _i, value: _v, aiviz_auto: _a, ...attrs } = c.attrs;
           const sameLook = (prev.color ?? '') === (now.color ?? '') && !!prev.highlight === !!now.highlight;
           const { aiviz_color: _c, aiviz_highlight: _h, ...rest } = attrs;
@@ -291,8 +291,8 @@ function outputKind(out: string): 'svg' | 'xml' {
 /** Icon names for a provider, optionally filtered. */
 export async function listIcons(provider: Provider, filter?: string, browser?: DrawioBrowser): Promise<string[]> {
   return withBrowser(browser, async (b) => {
-    const p = PROVIDERS[provider];
-    const names = (await b.stencilNames(p.set)).map((n) => n.slice(p.prefix.length));
-    return names.filter((n) => !filter || n.includes(filter.toLowerCase())).sort();
+    const names = new Set<string>();
+    for (const p of stencilSets(provider)) for (const n of await b.stencilNames(p.set)) names.add(n.slice(p.prefix.length));
+    return [...names].filter((n) => !filter || n.includes(filter.toLowerCase())).sort();
   });
 }

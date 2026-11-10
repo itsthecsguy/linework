@@ -11,6 +11,7 @@ import {
   KINDS,
   THEMES,
   COLORS,
+  normalAccent,
   type ColorName,
   type Card,
   type Diagram,
@@ -82,6 +83,7 @@ export const SpecInput = z.strictObject({
   title: scalar.optional(),
   direction: z.enum(DIRECTIONS).optional(),
   theme: z.enum(THEMES).optional(),
+  accent: z.union([scalar, z.null()]).optional(),
   groups: z.record(z.string(), GroupInput).optional(),
   nodes: z.record(z.string(), NodeInput).optional(),
   edges: z.array(EdgeInput).optional(),
@@ -128,6 +130,15 @@ export function parseSpecText(text: string): ParseResult {
     throw new SpecError([{ path: '', message: `invalid YAML: ${(e as Error).message}` }]);
   }
   return parseSpec(raw);
+}
+
+/** The spec's accent, checked. Unquoted, `accent: #E11D48` is a YAML comment and arrives as null. */
+function accentOf(raw: string | null | undefined): { accent?: string } {
+  if (raw === undefined) return {};
+  const accent = normalAccent(raw ?? undefined);
+  if (accent) return { accent };
+  const hint = raw === null ? 'YAML reads an unquoted # as a comment, so quote it' : `got "${raw}"`;
+  throw new SpecError([{ path: 'accent', message: `accent is a color name (${COLORS.join(', ')}) or a hex color in quotes, like accent: "#E11D48" (${hint}).` }]);
 }
 
 export function parseSpec(raw: unknown): ParseResult {
@@ -270,7 +281,7 @@ export function parseSpec(raw: unknown): ParseResult {
   for (const n of real) if (edges.length && !linked.has(n.id)) warnings.push({ path: `nodes.${n.id}`, message: 'not connected to anything' });
 
   return {
-    diagram: { type, title: spec.title, direction: spec.direction ?? 'auto', theme: spec.theme ?? 'clean', groups, nodes, edges },
+    diagram: { type, title: spec.title, direction: spec.direction ?? 'auto', theme: spec.theme ?? 'clean', ...accentOf(spec.accent), groups, nodes, edges },
     warnings,
   };
 }
@@ -411,7 +422,7 @@ function parseSequence(spec: z.infer<typeof SpecInput>): ParseResult {
   flat(seq);
   highlightWarning(nodes, msgs, warnings);
   if (nodes.length > 8) warnings.push({ path: 'participants', message: `${nodes.length} participants is wide; 6 or fewer fits a doc page` });
-  return { diagram: { type: 'sequence', title: spec.title, direction: 'auto', theme: spec.theme ?? 'clean', groups: [], nodes, edges: [], seq }, warnings };
+  return { diagram: { type: 'sequence', title: spec.title, direction: 'auto', theme: spec.theme ?? 'clean', ...accentOf(spec.accent), groups: [], nodes, edges: [], seq }, warnings };
 }
 
 function parseEdgeString(s: string, path: string, issues: Issue[]) {
@@ -451,7 +462,7 @@ function zodIssue(i: z.core.$ZodIssue): Issue {
   const path = i.path.map((p) => (typeof p === 'number' ? `[${p}]` : `.${String(p)}`)).join('').replace(/^\./, '');
   if (i.code === 'unrecognized_keys') {
     const known: Record<string, string> = {
-      '': 'type, title, direction, theme, groups, nodes, edges (or participants, messages for sequence)',
+      '': 'type, title, direction, theme, accent, groups, nodes, edges (or participants, messages for sequence)',
     };
     const where =
       path.startsWith('nodes') || path.startsWith('participants')

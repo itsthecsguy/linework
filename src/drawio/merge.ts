@@ -69,7 +69,7 @@ export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specI
   const oldGroups = new Map(shown.diagram.groups.map((g) => [g.id, g]));
   const handEdits = new Map(manualEdits(old).map((e) => [e.id, e.what]));
   // A theme change restyles everything; positions still stay.
-  const themeChanged = shown.diagram.theme !== d.theme;
+  const themeChanged = shown.diagram.theme !== d.theme || (shown.diagram.accent ?? '') !== (d.accent ?? '');
   const isTable = (n: Node) => kindDef(d.type, n.kind).shape === 'table';
 
   const abs = new Map<string, Box>(); // final absolute boxes for nodes
@@ -374,6 +374,6 @@ function freeSpot(
 
 
 function withoutTheme(meta: Record<string, string>) {
-  const { aiviz_theme: _t, ...rest } = meta;
+  const { aiviz_theme: _t, aiviz_accent: _a, ...rest } = meta;
   return rest;
 }
