@@ -7,11 +7,22 @@ export type DiagramType = (typeof DIAGRAM_TYPES)[number];
 export const DIRECTIONS = ['auto', 'TB', 'LR', 'BT', 'RL'] as const;
 export type Direction = (typeof DIRECTIONS)[number];
 
-export const THEMES = ['clean', 'soft', 'dark', 'sketch', 'blueprint', 'c4'] as const;
+export const THEMES = ['clean', 'soft', 'dark', 'midnight', 'paper', 'mono', 'bold', 'sketch', 'blueprint', 'c4'] as const;
 export type ThemeName = (typeof THEMES)[number];
 
 export const COLORS = ['blue', 'violet', 'pink', 'red', 'orange', 'amber', 'green', 'teal', 'gray'] as const;
 export type ColorName = (typeof COLORS)[number];
+
+/** An accent as the spec may write it: a color name, #RGB, #RRGGBB or bare RRGGBB. Undefined when it is none of those. */
+export function normalAccent(raw: string | undefined): string | undefined {
+  const s = raw?.trim().toLowerCase();
+  if (!s) return undefined;
+  if ((COLORS as readonly string[]).includes(s)) return s;
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/.exec(s);
+  if (!m) return undefined;
+  const h = m[1]!.length === 3 ? [...m[1]!].map((c) => c + c).join('') : m[1]!;
+  return `#${h.toUpperCase()}`;
+}
 
 export type Shape = 'box' | 'cylinder' | 'pill' | 'diamond' | 'parallelogram' | 'start' | 'end' | 'table';
 
@@ -133,6 +144,8 @@ export interface Diagram {
   title?: string;
   direction: Direction;
   theme: ThemeName;
+  /** What a highlight is drawn in: a color name, or a brand color as #RRGGBB. Default: the style's own. */
+  accent?: string;
   /** Sequence only: messages, notes and frames in order. Participants are `nodes`. */
   seq?: SeqItem[];
   groups: Group[];

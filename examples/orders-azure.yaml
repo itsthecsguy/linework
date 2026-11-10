@@ -1,0 +1,21 @@
+type: architecture
+title: Orders on Azure
+groups:
+  rg: { label: Resource group }
+nodes:
+  users: { label: Customers, kind: client }
+  gw:    { label: Gateway, icon: azure.app_gateway, in: rg }
+  fn:    { label: Orders API, icon: azure.functions, tech: Functions, in: rg }
+  bus:   { label: order events, kind: queue, icon: azure.servicebus, in: rg }
+  db:    { label: Orders, kind: database, icon: azure.cosmos, tech: Cosmos DB, in: rg }
+  kv:    { label: Secrets, icon: azure.keyvault, in: rg }
+  vm:    { label: Legacy ERP, icon: azure.vm, in: rg }
+  sql:   { label: Ledger, kind: database, icon: azure.sql, in: rg }
+edges:
+  - users -> gw: HTTPS
+  - gw -> fn
+  - fn -> db: write
+  - fn -.-> bus: publish
+  - fn -> kv
+  - bus -.-> vm
+  - vm -> sql

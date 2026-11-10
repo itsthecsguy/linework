@@ -19,7 +19,7 @@ You describe the diagram as a small YAML spec. Linework does the layout, styling
    - `state`: the lifecycle of one thing.
    - `sequence`: who calls whom, in order, for one scenario.
    - `er`: tables, columns and relationships.
-3. **Write the spec**, starting from the closest file in `examples/` next to this guide: `checkout.yaml` and `platform.yaml` (architecture), `serverless-aws.yaml` and `gcp-ingest.yaml` (cloud icons), `refund-flow.yaml` and `deploy-flow.yaml` (flow), `payment-state.yaml` and `job-state.yaml` (state), `pay-sequence.yaml` and `auth-seq.yaml` (sequence), `billing-er.yaml` and `shop-er.yaml` (ER). A Mermaid block converts directly: `linework import doc.md --block 1 -o out.drawio.svg`.
+3. **Write the spec**, starting from the closest file in `examples/` next to this guide: `checkout.yaml` and `platform.yaml` (architecture), `serverless-aws.yaml`, `orders-azure.yaml` and `gcp-ingest.yaml` (cloud icons), `refund-flow.yaml` and `deploy-flow.yaml` (flow), `payment-state.yaml` and `job-state.yaml` (state), `pay-sequence.yaml` and `auth-seq.yaml` (sequence), `billing-er.yaml` and `shop-er.yaml` (ER). A Mermaid block converts directly: `linework import doc.md --block 1 -o out.drawio.svg`.
 4. **Build:** `linework build /tmp/spec.yaml -o docs/diagrams/checkout.drawio.svg --png /tmp/checkout.png`
 5. **Read the output.** `spec error` lines say exactly what to fix. `check:` lists layout problems. Fix every error and the warnings that matter, then rebuild. Look at the PNG if you can view images.
 6. **Embed the `.drawio.svg`**, never the PNG: `![Checkout API charges cards through Stripe and writes orders to Postgres](diagrams/checkout.drawio.svg)`. Write alt text that says what the diagram shows in one sentence.
@@ -32,7 +32,7 @@ The `.drawio.svg` is the source of truth. Every command below keeps what is alre
 For one or two changes, edit the file directly:
 
 ```bash
-linework set d.drawio.svg api.label="Checkout API v2" api.highlight=true   # id.field=value; empty value clears; also theme= title= direction=
+linework set d.drawio.svg api.label="Checkout API v2" api.highlight=true   # id.field=value; empty value clears; also theme= accent= title= direction=
 linework add d.drawio.svg "fraud: { label: Fraud check, in: vpc }" "api -> fraud: score"
 linework rm  d.drawio.svg cache "api -> stripe"                              # a box goes with its edges
 ```
@@ -56,7 +56,8 @@ linework build /tmp/spec.yaml -o d.drawio.svg --png /tmp/d.png
 type: architecture            # architecture | flow | state | sequence | er
 title: Checkout               # optional
 direction: auto               # auto (default) | TB | LR | BT | RL
-theme: clean                  # clean (default) | soft | dark | sketch | blueprint | c4
+theme: clean                  # clean (default) | soft | paper | dark | midnight | mono | bold | sketch | blueprint | c4
+accent: "#E11D48"             # optional: the highlight color, a name or a quoted hex
 groups:                       # optional boxes around nodes; nest with `in`
   vpc: { label: Production VPC }
 nodes:                        # id: { label, kind, tech, in }, all optional
@@ -76,7 +77,7 @@ edges:                        # "from ARROW to: label"
 - List nodes and edges in reading order. Layout follows it, and an edge that points back at an earlier node is drawn as the loop.
 - `tech` is the quiet second line: the technology, not a description.
 - Color is for meaning. `highlight: true` or `==>` marks the one path the text is about. `color: red|green|blue|...` marks a category; say what it means in the doc.
-- Cloud icons on architecture nodes: `icon: aws.lambda`, `gcp.cloud_run`, `k8s.pod`, `azure.<name>`. Search with `linework icons aws lambda`.
+- Cloud icons on architecture nodes: `icon: aws.lambda`, `gcp.cloud_run`, `azure.functions`, `k8s.pod`. Search with `linework icons aws lambda`.
 
 | type | kinds (default first) |
 |---|---|
