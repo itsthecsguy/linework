@@ -1,6 +1,6 @@
 {
   "name": "@itsthecsguy/linework",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Software diagrams an AI can write and a person can edit. YAML spec in, .drawio.svg out, editable in draw.io.",
   "keywords": [
     "diagram",
