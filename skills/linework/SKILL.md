@@ -95,4 +95,5 @@ In a flow, keep decision text to a short question and label every edge leaving i
 - `references/style-guide.md`: what makes a diagram read well. Read it before anything non-trivial.
 - `references/troubleshooting.md`: download, browser and sandbox failures.
 - `references/google-docs.md`: putting a diagram in Google Docs with `linework publish`.
+- For someone who works in Excalidraw: `linework render d.drawio.svg -o d.excalidraw` writes a copy they can open and edit there. It is one way; the `.drawio.svg` stays the source.
 - `linework help` lists every command, including `check`, `render`, `kinds`, `schema` and `git-setup` (readable `git diff` for diagrams).

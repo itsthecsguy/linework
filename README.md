@@ -129,6 +129,22 @@ ER
 
 <a href="examples/shop-er.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/shop-er-dark.drawio.svg"><img alt="Entity relationship diagram of a shop: customers, addresses, orders, order items, products, inventory and payments, with keys and crow's-foot cardinality." src="docs/gallery/shop-er-light.drawio.svg"></picture></a>
 
+## Excalidraw
+
+To work on a diagram in Excalidraw, write a copy in its format:
+
+```bash
+linework render docs/arch.drawio.svg -o arch.excalidraw
+```
+
+Open the file at excalidraw.com, or with an Excalidraw extension in your editor. Boxes, arrows, labels and cloud icons come across where linework put them, hand edits included. Arrows are attached to their boxes, each label is editable text, and the parts of a node (shape, icon, label) are grouped so they move together.
+
+The copy is one way. Linework keeps reading and merging into the `.drawio.svg`, so changes made in Excalidraw stay in Excalidraw; change the spec and render again for a fresh copy. Excalidraw also draws some things its own way:
+
+- Text is in Excalidraw's fonts, at one weight. A node's second line is the same size as its name.
+- A database, a table and a lifeline are each built from several grouped shapes, since Excalidraw has no shape for them.
+- Queues have rounded corners, not fully round ends, and arrow corners are square.
+
 ## Styles
 
 Set `theme:` in the spec.
@@ -262,6 +278,7 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 | `linework edit <file> [--no-open]` | edit in the bundled draw.io, in your browser; saves write the file |
 | `linework check <file>` | lint: overlaps, edges through nodes, labels that don't fit, too wide |
 | `linework render <file> -o out.png [--scale 2]` | preview image |
+| `linework render <file> -o out.excalidraw` | a copy to open and edit in Excalidraw |
 | `linework tidy <file>` | after hand edits: reroute stale edges and move colliding labels; boxes stay |
 | `linework import <file.mmd\|doc.md> [-o out.drawio.svg]` | convert a Mermaid diagram |
 | `linework publish <file...> [--to dir] [--pull]` | copy diagrams into Google Drive for the Docs add-on |

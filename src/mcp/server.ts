@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import * as z from 'zod';
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
-import { build, checkFile, listIcons, show, tidy } from '../api.js';
+import { build, checkFile, listIcons, render, show, tidy } from '../api.js';
 import { readDrawio } from '../drawio/read.js';
 import { DrawioBrowser } from '../render/browser.js';
 import { SpecError } from '../spec/parse.js';
@@ -149,8 +149,8 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
     'render_diagram',
     {
       title: 'Render a diagram to PNG',
-      description: 'Returns a PNG of a .drawio.svg so you can look at it. Optionally also writes the PNG to a file, e.g. for Google Docs or slides.',
-      inputSchema: z.object({ path: pathArg, out: z.string().optional().describe('Also write the PNG here.') }),
+      description: 'Returns a PNG of a .drawio.svg so you can look at it. Optionally also writes the PNG to a file, e.g. for Google Docs or slides, or an .excalidraw copy for someone who works in Excalidraw.',
+      inputSchema: z.object({ path: pathArg, out: z.string().optional().describe('Also write the PNG here. A path ending in .excalidraw writes an Excalidraw copy of the diagram instead.') }),
       annotations: { readOnlyHint: false },
     },
     (args) =>
@@ -159,7 +159,8 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
         if (args.out) {
           const out = resolvePath(args.out);
           fs.mkdirSync(path.dirname(out), { recursive: true });
-          fs.writeFileSync(out, Buffer.from((img as { data: string }).data, 'base64'));
+          if (out.endsWith('.excalidraw')) await render(resolvePath(args.path), out, await getBrowser());
+          else fs.writeFileSync(out, Buffer.from((img as { data: string }).data, 'base64'));
         }
         return { content: [img, ...(args.out ? [text(`wrote ${resolvePath(args.out)}`)] : [])] };
       })(),
