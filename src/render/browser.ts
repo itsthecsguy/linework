@@ -89,6 +89,28 @@ window.aiviz = {
     mxStencilRegistry.loadStencilSet(STENCIL_PATH + '/' + set, null, null, false);
     return Object.keys(mxStencilRegistry.stencils).filter(function (k) { return before.indexOf(k) < 0; });
   },
+  // Each cell drawn alone, as SVG text: how an icon leaves draw.io for another tool.
+  cellSvgs: function (xml, ids) {
+    return withGraph(xml, function (graph) {
+      return ids.map(function (id) {
+        var cell = graph.getModel().getCell(id);
+        if (!cell) return null;
+        var c = document.createElement('div');
+        c.style.cssText = 'position:absolute;left:-99999px;top:0;width:400px;height:400px';
+        document.body.appendChild(c);
+        var alone = new Graph(c);
+        alone.setEnabled(false);
+        try {
+          var copy = cell.clone();
+          copy.geometry = cell.geometry.clone();
+          copy.geometry.x = 0;
+          copy.geometry.y = 0;
+          alone.addCell(copy, alone.getDefaultParent());
+          return mxUtils.getXml(alone.getSvg(null, 1, 0, false, null, true, null, null, null, false, false));
+        } finally { alone.destroy(); c.remove(); }
+      });
+    });
+  },
   hasStencil: function (name) {
     return mxStencilRegistry.getStencil(name) != null;
   },
@@ -212,6 +234,11 @@ export class DrawioBrowser {
 
   stencilNames(set: string): Promise<string[]> {
     return this.page.evaluate((s) => (window as any).aiviz.stencilNames(s), set);
+  }
+
+  /** Each of the cells drawn alone, as SVG text; null for a cell the file doesn't have. */
+  cellSvgs(xml: string, ids: string[]): Promise<Array<string | null>> {
+    return this.page.evaluate(([x, i]) => (window as any).aiviz.cellSvgs(x, i), [xml, ids] as const);
   }
 
   hasStencil(name: string): Promise<boolean> {

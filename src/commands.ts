@@ -27,8 +27,9 @@ Usage:
   linework show <file.drawio.svg> [--geometry]
       Print the spec of an existing diagram (including hand edits) as YAML.
       --geometry appends node positions as comments.
-  linework render <file.drawio.svg> -o <out.png|out.svg> [--scale 2]
-      Render a preview image.
+  linework render <file.drawio.svg> -o <out.png|out.svg|out.excalidraw> [--scale 2]
+      Render a preview image, or write a copy to open and edit in Excalidraw.
+      The copy is one way: linework keeps reading the .drawio.svg.
   linework check <file.drawio.svg>
       Lint layout: overlaps, edges through nodes, labels that don't fit.
   linework tidy <file.drawio.svg>
@@ -210,7 +211,7 @@ export async function run(cmd: string, values: Values, positionals: string[], la
     }
     case 'render': {
       const file = positionals[0];
-      if (!file || !values.out) fail('usage: linework render <file.drawio.svg> -o <out.png>');
+      if (!file || !values.out) fail('usage: linework render <file.drawio.svg> -o <out.png|out.svg|out.excalidraw>');
       const { render } = await import('./api.js');
       await render(file, values.out, await browser());
       console.log(`wrote ${values.out}`);

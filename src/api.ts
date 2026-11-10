@@ -10,6 +10,7 @@ import { manualEdits, toDiagram, toYaml, type ManualEdit } from './drawio/show.j
 import { merge, type MergeStats } from './drawio/merge.js';
 import { sequenceScene } from './layout/sequence.js';
 import { resolveIcon, stencilSets, type Provider } from './drawio/icons.js';
+import { toExcalidraw } from './excalidraw/export.js';
 import { DrawioBrowser, type InspectCell } from './render/browser.js';
 import { brokenEdges, check, type CheckResult } from './lint/check.js';
 import { fixLabels } from './lint/fixlabels.js';
@@ -273,7 +274,8 @@ export async function render(file: string, out: string, browser?: DrawioBrowser)
   await withBrowser(browser, async (b) => {
     if (out.endsWith('.png')) await b.renderPng(m.xml, out);
     else if (out.endsWith('.svg')) fs.writeFileSync(out, await b.renderSvg(m.xml));
-    else throw new Error('render output must end in .png or .svg');
+    else if (out.endsWith('.excalidraw')) fs.writeFileSync(out, JSON.stringify(await toExcalidraw(m, b), null, 2) + '\n');
+    else throw new Error('render output must end in .png, .svg or .excalidraw');
   });
 }
 
