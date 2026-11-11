@@ -197,7 +197,7 @@ describe('mermaid import', () => {
   });
 
   it('rejects diagram types it does not support', () => {
-    expect(() => importMermaid('gantt\ntitle x')).toThrow(/unsupported Mermaid diagram "gantt"/);
+    expect(() => importMermaid('pie\ntitle x')).toThrow(/unsupported Mermaid diagram "pie"/);
   });
 });
 

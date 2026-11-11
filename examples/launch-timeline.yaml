@@ -1,0 +1,14 @@
+type: timeline
+title: Checkout v2 rollout
+groups:
+  build: Build
+  rollout: Rollout
+nodes:
+  design:   { label: Design review, kind: done, start: 2026-01-05, end: 2026-01-16 }
+  api:      { label: Payments API, start: 2026-01-12, end: 2026-02-13, in: build }
+  web:      { label: Checkout UI, start: 2026-01-26, end: 2026-02-27, in: build, highlight: true }
+  migrate:  { label: Migrate saved cards, kind: risk, start: 2026-02-16, end: 2026-03-06, in: build }
+  freeze:   { label: Code freeze, at: 2026-03-06, in: build }
+  beta:     { label: Beta (5% of traffic), start: 2026-03-09, end: 2026-03-20, in: rollout }
+  ga:       { label: General availability, at: 2026-03-23, in: rollout }
+  cleanup:  { label: Remove old flow, start: 2026-03-23, end: 2026-04-03, in: rollout }

@@ -29,6 +29,8 @@ Usage:
       --geometry appends node positions as comments.
   linework render <file.drawio.svg> -o <out.png|out.svg|out.excalidraw> [--scale 2]
       Render a preview image, or write a copy to open and edit in Excalidraw.
+      out.excalidraw.svg and out.excalidraw.png are pictures that also open in
+      Excalidraw: one file to show in a README and to edit.
       Bring Excalidraw edits back with: linework import <file.excalidraw> -o <file.drawio.svg>
   linework check <file.drawio.svg>
       Lint layout: overlaps, edges through nodes, labels that don't fit.
@@ -39,12 +41,28 @@ Usage:
       Open the diagram in draw.io (bundled, offline) in your browser. Saving in
       the editor writes the file. Stops when you exit the editor or close the tab.
   linework import <file.mmd|doc.md|-> [--block N] [-o out.drawio.svg] [--png p.png]
-      Convert a Mermaid diagram (flowchart, state, sequence, ER) to a linework spec.
+      Convert a Mermaid diagram (flowchart, state, sequence, ER, class, gantt) to a
+      linework spec.
       Prints the spec, or builds it straight away with -o.
-  linework import <file.excalidraw> -o <file.drawio.svg> [--png p.png]
+  linework import <file.excalidraw> -o <file.drawio.svg> [--spec s.yaml] [--watch] [--png p.png]
       Merge edits made in Excalidraw into the diagram the file was exported from:
-      new text, boxes and arrows added or deleted, arrows moved to other boxes,
-      and where everything sits. Prints what changed.
+      text, colors, boxes and arrows added or deleted, arrows moved or reshaped,
+      messages and table columns, and where everything sits. Prints what changed.
+      Reads .excalidraw, .excalidraw.svg and .excalidraw.png.
+      --spec also writes the diagram's spec to a YAML file.
+      --watch keeps running and imports again every time the file is saved.
+  linework share <file.drawio.svg|file.excalidraw>
+      Print a link that opens the diagram at excalidraw.com. The drawing is
+      encrypted here and stored on excalidraw.com; anyone with the link can read it.
+  linework library <shapes|aws|gcp|azure|k8s> [filter...] -o <file.excalidrawlib> [--style NAME]
+      Write an Excalidraw library: linework's node shapes, or a cloud provider's
+      icons as ready-made nodes. Dropped into a drawing, import reads them back
+      as the right kind of node, with its icon. Filters pick icons by name
+      ("library aws lambda s3 sqs"); a provider has hundreds, so name the ones you use.
+  linework sync [files or folders...] [--check]
+      Rebuild every diagram whose YAML spec changed: docs/arch.yaml builds
+      docs/arch.drawio.svg, keeping its layout. --check changes nothing and
+      exits 1 if any diagram is out of date, for CI and pre-commit hooks.
   linework icons <aws|gcp|k8s|azure> [filter]
       List icon names, for "icon: aws.lambda" on architecture nodes.
   linework publish <file.drawio.svg...> [--to DIR] [--pull] [--force]
@@ -59,7 +77,7 @@ Usage:
       Relative paths resolve against --root (default: the current folder).
   linework git-setup
       Make git diff show .drawio.svg changes as spec changes (this repo only).
-  linework kinds [architecture|flow|state]
+  linework kinds [architecture|flow|state|sequence|er|class|timeline]
       List node kinds for each diagram type.
   linework schema
       Print the spec's JSON Schema.
@@ -127,7 +145,7 @@ export function report(e: unknown, io: IO = processIO): number {
 
 /** Commands that draw, and so need Chromium. */
 export function needsBrowser(cmd: string, values: Values): boolean {
-  return ['build', 'set', 'add', 'rm', 'render', 'check', 'tidy', 'icons'].includes(cmd) || (cmd === 'import' && !!values.out);
+  return ['build', 'set', 'add', 'rm', 'render', 'check', 'tidy', 'icons', 'library', 'sync'].includes(cmd) || (cmd === 'import' && !!values.out) || cmd === 'share';
 }
 
 /** A small spec with a group, labels and a cycle: enough to exercise ELK's main paths. */
@@ -155,6 +173,10 @@ export const OPTIONS = {
   root: { type: 'string' },
   to: { type: 'string' },
   pull: { type: 'boolean', default: false },
+  watch: { type: 'boolean', default: false },
+  check: { type: 'boolean', default: false },
+  spec: { type: 'string' },
+  style: { type: 'string' },
   help: { type: 'boolean', short: 'h' },
 } as const;
 
@@ -253,15 +275,37 @@ export async function run(cmd: string, values: Values, positionals: string[], la
     }
     case 'import': {
       const src = positionals[0] ?? fail('usage: linework import <file.mmd|doc.md|file.excalidraw|-> [-o out.drawio.svg]');
-      if (/\.excalidraw$/i.test(src)) {
+      if (/\.excalidraw(\.svg|\.png|\.json)?$/i.test(src)) {
         if (!values.out) fail('usage: linework import <file.excalidraw> -o <file.drawio.svg>\n  -o is the diagram the Excalidraw file was exported from; the edits are merged into it.');
-        const { importExcalidraw } = await import('./api.js');
-        const res = await importExcalidraw(src, values.out, { png: values.png, browser: await browser() });
-        if (res.created) console.log(`${values.out} didn't exist: rebuilt it from the spec in ${src}`);
-        for (const c of res.changes) console.log(`  ${c}`);
-        console.log(res.changes.length ? `wrote ${res.out} (${res.changes.length} change${res.changes.length === 1 ? '' : 's'} from Excalidraw)` : `${res.out} already matches ${src}`);
-        for (const n of res.notes) console.error(`note: ${n}`);
-        await printCheck(res.check);
+        const { importExcalidraw, show } = await import('./api.js');
+        const b = await browser();
+        const out = values.out;
+        const once = async () => {
+          const res = await importExcalidraw(src, out, { png: values.png, browser: b });
+          if (res.created) console.log(`${out} didn't exist: rebuilt it from the spec in ${src}`);
+          for (const c of res.changes) console.log(`  ${c}`);
+          console.log(res.changes.length ? `wrote ${res.out} (${res.changes.length} change${res.changes.length === 1 ? '' : 's'} from Excalidraw)` : `${res.out} already matches ${src}`);
+          if (values.spec && (res.changes.length || res.created || !fs.existsSync(values.spec))) {
+            fs.writeFileSync(values.spec, show(out).yaml);
+            console.log(`wrote ${values.spec}`);
+          }
+          for (const n of res.notes) console.error(`note: ${n}`);
+          await printCheck(res.check);
+        };
+        if (!values.watch) return once();
+        const { watchFile } = await import('./watch.js');
+        await once();
+        console.log(`watching ${src}. Save it in Excalidraw to update ${out}. Ctrl+C to stop.`);
+        const w = watchFile(src, async () => {
+          try {
+            await once();
+          } catch (e) {
+            // A half-written save, or an edit import can't read: say so and keep watching.
+            report(e, io);
+          }
+        });
+        process.once('SIGINT', () => w.stop());
+        await w.done;
         return;
       }
       const { importMermaid, mermaidBlocks } = await import('./import/mermaid.js');
@@ -285,6 +329,42 @@ export async function run(cmd: string, values: Values, positionals: string[], la
       const built = await build(yaml, { out: values.out, png: values.png, relayout: values.relayout, force: values.force, browser: await browser() });
       console.log(`wrote ${built.out} (${built.check.stats.nodes} nodes, ${built.check.stats.edges} edges, ${built.direction})`);
       await printCheck(built.check);
+      return;
+    }
+    case 'sync': {
+      const { sync } = await import('./sync.js');
+      const items = await sync(positionals, { check: values.check, browser: values.check ? undefined : await browser() });
+      const rel = (p: string) => path.relative(process.cwd(), p) || p;
+      for (const i of items) {
+        if (i.state === 'fresh') {
+          if (!values.quiet) console.log(`up to date  ${rel(i.out)}`);
+        } else if (i.state === 'built') {
+          console.log(`${i.missing ? 'built      ' : 'rebuilt    '} ${rel(i.out)}  (from ${rel(i.spec)})`);
+          for (const f of i.result!.check.findings.filter((x) => x.level === 'error')) console.log(`  error: ${f.message}`);
+        } else if (i.state === 'stale') console.log(i.missing ? `missing     ${rel(i.out)}  (not built yet from ${rel(i.spec)})` : `out of date ${rel(i.out)}  (${rel(i.spec)} changed)`);
+        else console.error(`failed      ${rel(i.spec)}: ${i.error}`);
+      }
+      const stale = items.filter((i) => i.state === 'stale').length, failed = items.filter((i) => i.state === 'failed').length;
+      if (!items.length) console.log('no specs found. A spec is a .yaml file with "type: architecture" (or flow, state, ...) at the top.');
+      else if (stale) console.log(`\n${stale} diagram${stale === 1 ? ' is' : 's are'} out of date. Run "linework sync" and commit the result.`);
+      if (stale || failed) io.code = 1;
+      return;
+    }
+    case 'share': {
+      const file = positionals[0] ?? fail('usage: linework share <file.drawio.svg|file.excalidraw>');
+      const { share } = await import('./api.js');
+      const res = await share(file, await browser());
+      console.log(res.url);
+      console.error('The drawing is stored encrypted on excalidraw.com. Anyone with this link can open it; there is no way to take it back.');
+      if (res.images) console.error(`note: ${res.images} image${res.images === 1 ? ' was' : 's were'} left out. An excalidraw.com link carries no images.`);
+      return;
+    }
+    case 'library': {
+      const set = positionals[0];
+      if (!set || !values.out) fail('usage: linework library <shapes|aws|gcp|azure|k8s> [filter] -o <file.excalidrawlib> [--style NAME]');
+      const { library } = await import('./api.js');
+      const res = await library(set, values.out, { filter: positionals.slice(1), theme: values.style, browser: await browser() });
+      console.log(`wrote ${res.out} (${res.items} item${res.items === 1 ? '' : 's'}). In Excalidraw: open the library panel, then "Open" and pick the file.`);
       return;
     }
     case 'icons': {

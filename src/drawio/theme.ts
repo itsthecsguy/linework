@@ -7,7 +7,7 @@
 // - `accent:` in the spec swaps the color highlights are drawn in. Nothing else moves.
 // - `color: <name>` tints a node, group or edge. `highlight: true` makes it the
 //   strongest thing on the page: a solid fill for nodes, a thick colored line for edges.
-import { kindDef, type Card, type ColorName, type DiagramType, type EdgeStyle, type Look, type MessageStyle, type ThemeName } from '../spec/model.js';
+import { kindDef, type Card, type ClassRel, type ColorName, type DiagramType, type EdgeStyle, type Look, type MessageStyle, type ThemeName } from '../spec/model.js';
 import { contrast } from './icons.js';
 
 /** A style by name, or anything that carries one and maybe an accent: a Diagram does. */
@@ -700,6 +700,42 @@ export function erEdgeStyle(card: { from: Card; to: Card; identifying: boolean }
     (card.identifying ? '' : dashes(t)) +
     `${fontPart(t, t.type.size.edge, p.text)}labelBackgroundColor=${t.canvas};labelPadding=1 5;${t.extra}`
   );
+}
+
+/** A class relationship: UML's hollow triangle, diamonds and open arrows. The first four carry their mark at the start. */
+export function classEdgeStyle(rel: ClassRel, theme: ThemeArg = 'clean', look: Look = {}, labelBg?: string): string {
+  const t = palette(theme);
+  const p = t.edgePaint(look.color, !!look.highlight);
+  const ends: Record<ClassRel, string> = {
+    inherits: 'startArrow=block;startFill=0;startSize=10;endArrow=none;',
+    implements: 'startArrow=block;startFill=0;startSize=10;endArrow=none;',
+    composition: 'startArrow=diamondThin;startFill=1;startSize=14;endArrow=none;',
+    aggregation: 'startArrow=diamondThin;startFill=0;startSize=14;endArrow=none;',
+    association: 'endArrow=open;endFill=0;endSize=8;startArrow=none;',
+    dependency: 'endArrow=open;endFill=0;endSize=8;startArrow=none;',
+  };
+  return (
+    'edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=16;html=1;' +
+    `strokeColor=${p.stroke};strokeWidth=${p.width};${ends[rel]}` +
+    (rel === 'implements' || rel === 'dependency' ? dashes(t) : '') +
+    `${fontPart(t, t.type.size.edge, p.text)}${look.highlight ? 'fontStyle=1;' : ''}labelBackgroundColor=${labelBg ?? t.canvas};labelPadding=1 5;${t.extra}`
+  );
+}
+
+/** The relationship an edge's arrows draw, for a file with no linework metadata on it. */
+export function relFromArrows(s: Record<string, string>): ClassRel | undefined {
+  const dashed = s.dashed === '1';
+  if (s.startArrow === 'block' && s.startFill === '0') return dashed ? 'implements' : 'inherits';
+  if (s.startArrow === 'diamondThin' || s.startArrow === 'diamond') return s.startFill === '0' ? 'aggregation' : 'composition';
+  if (s.endArrow === 'open') return dashed ? 'dependency' : 'association';
+  return undefined;
+}
+
+/** A table's heading: its name, after «interface» or the like when the kind has one. */
+export function tableLabel(label: string, mark: string | undefined, theme: ThemeArg = 'clean'): string {
+  if (!mark) return label;
+  const t = palette(theme);
+  return `<span style="font-weight:400;font-size:${t.type.size.sub}px;color:${t.muted}">«${mark}»</span> ${esc(label)}`;
 }
 
 export function cardFromArrow(arrow: string | undefined): Card | undefined {

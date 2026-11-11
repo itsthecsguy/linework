@@ -248,7 +248,7 @@ export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specI
     if (oc && (prev?.label ?? '') === (e.label ?? '') && oc.attrs.label != null) attrs.label = oc.attrs.label;
     let style: string;
     const unstyledEdge = oc && !oc.attrs.aiviz_edge && !oc.style.strokeColor;
-    const sameLook = prev?.style === e.style && JSON.stringify(prev?.card) === JSON.stringify(e.card) && sameLookOf(prev, e);
+    const sameLook = prev?.style === e.style && prev?.rel === e.rel && JSON.stringify(prev?.card) === JSON.stringify(e.card) && sameLookOf(prev, e);
     if (oc && sameLook && !unstyledEdge && !themeChanged) style = oc.styleRaw;
     else {
       // Arrow style or theme changed: take the theme style, keep where the edge attaches.

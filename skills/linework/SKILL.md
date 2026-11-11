@@ -1,6 +1,6 @@
 ---
 name: linework
-description: Draw software diagrams (architecture, system design, data flow, flowcharts, state machines, sequence diagrams, ER and database schemas) as .drawio.svg files that render in Markdown, HTML and GitHub and that people can edit by hand in draw.io. Use whenever a design doc, README, ADR, wiki page or PR needs a diagram, when asked to draw, visualize or diagram a system, when converting a Mermaid diagram, or when changing an existing .drawio.svg. Use it instead of writing Mermaid, PlantUML or ASCII art unless the user asks for one of those.
+description: Draw software diagrams (architecture, system design, data flow, flowcharts, state machines, sequence diagrams, ER and database schemas, class diagrams, timelines) as .drawio.svg files that render in Markdown, HTML and GitHub and that people can edit by hand in draw.io. Use whenever a design doc, README, ADR, wiki page or PR needs a diagram, when asked to draw, visualize or diagram a system, when converting a Mermaid diagram, or when changing an existing .drawio.svg. Use it instead of writing Mermaid, PlantUML or ASCII art unless the user asks for one of those.
 compatibility: Needs Node 20+, a Chromium-based browser (Chrome, Edge, or Playwright's Chromium via `linework install-browser`) and network access to fetch the package with npx.
 ---
 
@@ -19,7 +19,7 @@ You describe the diagram as a small YAML spec. Linework does the layout, styling
    - `state`: the lifecycle of one thing.
    - `sequence`: who calls whom, in order, for one scenario.
    - `er`: tables, columns and relationships.
-3. **Write the spec**, starting from the closest file in `examples/` next to this guide: `checkout.yaml` and `platform.yaml` (architecture), `serverless-aws.yaml`, `orders-azure.yaml` and `gcp-ingest.yaml` (cloud icons), `refund-flow.yaml` and `deploy-flow.yaml` (flow), `payment-state.yaml` and `job-state.yaml` (state), `pay-sequence.yaml` and `auth-seq.yaml` (sequence), `billing-er.yaml` and `shop-er.yaml` (ER). A Mermaid block converts directly: `linework import doc.md --block 1 -o out.drawio.svg`.
+3. **Write the spec**, starting from the closest file in `examples/` next to this guide: `checkout.yaml` and `platform.yaml` (architecture), `serverless-aws.yaml`, `orders-azure.yaml` and `gcp-ingest.yaml` (cloud icons), `refund-flow.yaml` and `deploy-flow.yaml` (flow), `payment-state.yaml` and `job-state.yaml` (state), `pay-sequence.yaml` and `auth-seq.yaml` (sequence), `billing-er.yaml` and `shop-er.yaml` (ER), `billing-class.yaml` (class), `launch-timeline.yaml` (timeline). A Mermaid block converts directly: `linework import doc.md --block 1 -o out.drawio.svg`.
 4. **Build:** `linework build /tmp/spec.yaml -o docs/diagrams/checkout.drawio.svg --png /tmp/checkout.png`
 5. **Read the output.** `spec error` lines say exactly what to fix. `check:` lists layout problems. Fix every error and the warnings that matter, then rebuild. Look at the PNG if you can view images.
 6. **Embed the `.drawio.svg`**, never the PNG: `![Checkout API charges cards through Stripe and writes orders to Postgres](diagrams/checkout.drawio.svg)`. Write alt text that says what the diagram shows in one sentence.
@@ -53,7 +53,7 @@ linework build /tmp/spec.yaml -o d.drawio.svg --png /tmp/d.png
 ## Spec
 
 ```yaml
-type: architecture            # architecture | flow | state | sequence | er
+type: architecture            # architecture | flow | state | sequence | er | class | timeline
 title: Checkout               # optional
 direction: auto               # auto (default) | TB | LR | BT | RL
 theme: clean                  # clean (default) | soft | paper | dark | midnight | mono | bold | sketch | blueprint | c4
@@ -86,14 +86,16 @@ edges:                        # "from ARROW to: label"
 | state | `state`, `success`, `error`; start and end are `"[*] -> first"` and `"last -> [*]"`, quoted |
 | sequence | `participants:` and `messages:` instead of nodes and edges; `-->` is a reply |
 | er | `fields:` on nodes (`- id: uuid pk`), crow's-foot edges (`users }o--|| orgs: belongs to`) |
+| class | `members:` (`- "+ total(): Money"`), UML edges (`Animal <|-- Duck`, `Order *-- Line`) |
+| timeline | `start:`/`end:` dates, `at:` on a `milestone`; groups are lanes; no edges |
 
 In a flow, keep decision text to a short question and label every edge leaving it (`window -> refund: "yes"`).
 
 ## More
 
-- `references/spec.md`: every option, sequence blocks (`alt`, `loop`, notes), ER fields and cardinalities, themes, colors.
+- `references/spec.md`: every option, sequence blocks (`alt`, `loop`, notes), ER, class, timeline, themes, colors.
 - `references/style-guide.md`: what makes a diagram read well. Read it before anything non-trivial.
 - `references/troubleshooting.md`: download, browser and sandbox failures.
 - `references/google-docs.md`: putting a diagram in Google Docs with `linework publish`.
-- For someone who works in Excalidraw: `linework render d.drawio.svg -o d.excalidraw` writes a copy they can open and edit there, and `linework import d.excalidraw -o d.drawio.svg` merges their edits back (text, boxes and arrows added or removed, positions) and prints what changed. Run `show` afterwards for the updated spec. Colors and hand-drawn arrow paths don't come back.
-- `linework help` lists every command, including `check`, `render`, `kinds`, `schema` and `git-setup` (readable `git diff` for diagrams).
+- Excalidraw: `linework render d.drawio.svg -o d.excalidraw` writes an editable copy; `linework import d.excalidraw -o d.drawio.svg` merges edits. `linework share` uploads it: only if asked.
+- `linework help` lists every command, including `check`, `sync` (rebuild diagrams whose YAML changed), `kinds`, `schema` and `git-setup` (readable `git diff` for diagrams).

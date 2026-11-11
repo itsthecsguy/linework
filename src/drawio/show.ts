@@ -1,15 +1,18 @@
 // draw.io model -> Diagram -> YAML spec. Works on files linework wrote, files a
 // person edited, and plain draw.io files with no linework metadata at all.
 import {
+  CLASS_RELS,
   DEFAULT_KIND,
   DIAGRAM_TYPES,
   DIRECTIONS,
+  isoOf,
   FRAME_OPS,
   KINDS,
   THEMES,
   kindDef,
   normalAccent,
   type Card,
+  type ClassRel,
   type Diagram,
   type DiagramType,
   type Direction,
@@ -22,9 +25,9 @@ import {
   type SeqItem,
   type ThemeName,
 } from '../spec/model.js';
-import { humanize } from '../spec/parse.js';
+import { humanize, parseMember } from '../spec/parse.js';
 import { absBox, labelLines, type Cell, type DrawioModel } from './read.js';
-import { cardFromArrow } from './theme.js';
+import { cardFromArrow, relFromArrows } from './theme.js';
 import { lookOf } from './write.js';
 import { COLORS, type Look } from '../spec/model.js';
 
@@ -66,8 +69,10 @@ export function toDiagram(m: DrawioModel): ShowResult {
   const theme: ThemeName = themeRaw && THEMES.includes(themeRaw) ? themeRaw : 'clean';
   const accent = normalAccent(m.meta.aiviz_accent);
   if (type === 'sequence') return sequenceDiagram(m, theme, accent, notes);
+  if (type === 'timeline') return timelineDiagram(m, theme, accent, notes);
 
-  const isEntity = (c: Cell) => type === 'er' && ((!!c.attrs.aiviz_kind && kindDef('er', c.attrs.aiviz_kind).shape === 'table') || isEntityStyle(c));
+  const tabular = type === 'er' || type === 'class';
+  const isEntity = (c: Cell) => tabular && ((!!c.attrs.aiviz_kind && kindDef(type!, c.attrs.aiviz_kind).shape === 'table') || isEntityStyle(c));
   const entityIds = new Set(vertices.filter(isEntity).map((c) => c.id));
   const isRow = (c: Cell) => !!c.parent && entityIds.has(c.parent);
   const hasChildren = new Set(vertices.filter((v) => !isRow(v)).map((v) => v.parent).filter(Boolean) as string[]);
@@ -106,13 +111,13 @@ export function toDiagram(m: DrawioModel): ShowResult {
       groups.push({ id, label: lines.join(' ') || c.attrs.aiviz_label || humanize(id), parent, ...look(c) });
       continue;
     }
-    const kind = c.attrs.aiviz_kind && KINDS[type][c.attrs.aiviz_kind] ? c.attrs.aiviz_kind : isEntity(c) ? 'entity' : inferKind(type, c);
+    const kind = c.attrs.aiviz_kind && KINDS[type][c.attrs.aiviz_kind] ? c.attrs.aiviz_kind : isEntity(c) ? DEFAULT_KIND[type] : inferKind(type, c);
     if (c.attrs.aiviz_kind && !KINDS[type][c.attrs.aiviz_kind]) notes.push(`${id}: kind "${c.attrs.aiviz_kind}" isn't valid for ${type}; using ${kind}`);
     const node: Node = { id, kind, label: lines[0] ?? c.attrs.aiviz_label ?? '', parent, ...look(c) };
     if (isEntity(c)) {
-      node.label = lines.join(' ') || c.attrs.aiviz_label || humanize(id);
+      node.label = stripMark(lines.join(' ')) || c.attrs.aiviz_label || humanize(id);
       const rows = vertices.filter((r) => r.parent === c.id).sort((a, b) => (a.geom?.y ?? 0) - (b.geom?.y ?? 0));
-      const fields = rows.map(parseFieldRow).filter((f): f is Field => !!f);
+      const fields = rows.map((r) => (type === 'class' ? parseMemberRow(r) : parseFieldRow(r))).filter((f): f is Field => !!f);
       if (fields.length) node.fields = fields;
     } else if (lines.length > 1) node.tech = lines.slice(1).join(' ');
     if (c.attrs.aiviz_icon) node.icon = c.attrs.aiviz_icon;
@@ -150,6 +155,13 @@ export function toDiagram(m: DrawioModel): ShowResult {
     const eid = n === 1 ? base : `${base}#${n}`;
     edgeCells.set(eid, c.id);
     const edge: Diagram['edges'][number] = { id: eid, from, to, label, style: edgeStyleOf(c), ...look(c) };
+    if (type === 'class') {
+      const rel = (c.attrs.aiviz_rel as ClassRel | undefined) ?? relFromArrows(c.style);
+      if (rel && CLASS_RELS.includes(rel)) {
+        edge.rel = rel;
+        edge.style = 'sync';
+      }
+    }
     if (type === 'er') {
       edge.style = 'line';
       edge.card = {
@@ -170,16 +182,105 @@ function look(c: Cell): Look {
   return l;
 }
 
+/** A table heading without the «interface» a class diagram draws before the name. */
+export const stripMark = (s: string) => s.replace(/^\s*«[^»]*»\s*/, '');
+
+/** A class member row: the name in its left cell, the type in its right. */
+function parseMemberRow(c: Cell): Field | null {
+  if (c.attrs.aiviz_field && !c.label) return { name: c.attrs.aiviz_field, type: c.attrs.aiviz_ftype, flags: [] };
+  const cells = [...c.label.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map((x) => labelLines(x[1]!).join(' '));
+  if (cells.length >= 2 && cells[0]) return { name: cells[0].replace(/^([+\-#~])\s+/, '$1'), type: cells[1] || undefined, flags: [] };
+  return parseMember(labelLines(c.label).join(' '));
+}
+
 function parseFieldRow(c: Cell): Field | null {
   if (c.attrs.aiviz_field && !c.label) return { name: c.attrs.aiviz_field, type: c.attrs.aiviz_ftype, flags: (c.attrs.aiviz_flags ?? '').split(' ').filter(Boolean) };
-  const text = labelLines(c.label).join(' ').replace(/\s+/g, ' ').trim();
-  if (!text) return null;
-  // "name: type flags" (draw.io's own ER rows) or "name type flags" (ours)
-  const m = /^([^\s:]+):?\s*(.*)$/.exec(text)!;
+  return parseFieldText(labelLines(c.label).join(' '));
+}
+
+/** The type and key markers a field row shows on its right ("uuid PK") as a type and flags. */
+export function parseFieldRight(text: string): Pick<Field, 'type' | 'flags'> {
   const flags: string[] = [];
   const type: string[] = [];
-  for (const tok of m[2]!.split(' ').filter(Boolean)) (FIELD_FLAGS.has(tok.toLowerCase()) ? flags : type).push(FIELD_FLAGS.has(tok.toLowerCase()) ? tok.toLowerCase() : tok);
-  return { name: m[1]!, type: type.join(' ') || undefined, flags };
+  for (const tok of text.split(/\s+/).filter(Boolean)) (FIELD_FLAGS.has(tok.toLowerCase()) ? flags : type).push(FIELD_FLAGS.has(tok.toLowerCase()) ? tok.toLowerCase() : tok);
+  return { type: type.join(' ') || undefined, flags };
+}
+
+/** A field written on one line: "name: type flags" (draw.io's own ER rows) or "name type flags" (ours). */
+export function parseFieldText(raw: string): Field | null {
+  const text = raw.replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  const m = /^([^\s:]+):?\s*(.*)$/.exec(text)!;
+  return { name: m[1]!, ...parseFieldRight(m[2]!) };
+}
+
+// ---------- timeline ----------
+
+/** The axis a timeline was drawn on, and the dates a box on it stands for. Mirrors layout/timeline.ts. */
+const TIMELINE_X0 = 40;
+function datesOn(meta: Record<string, string>, box: { x: number; w: number }, milestone: boolean): { start: string; end: string } | undefined {
+  const t0 = Number(meta.aiviz_t0), ppd = Number(meta.aiviz_ppd);
+  if (!Number.isFinite(t0) || !(ppd > 0)) return undefined;
+  if (milestone) {
+    const day = isoOf(t0 + Math.floor((box.x + box.w / 2 - TIMELINE_X0) / ppd));
+    return { start: day, end: day };
+  }
+  const start = t0 + Math.round((box.x - TIMELINE_X0) / ppd);
+  return { start: isoOf(start), end: isoOf(start + Math.max(1, Math.round(box.w / ppd)) - 1) };
+}
+export { datesOn };
+
+/**
+ * A timeline says when with where: a bar somebody dragged or stretched has new
+ * dates, one dropped in another lane belongs to it, and top to bottom is the order.
+ */
+function timelineDiagram(m: DrawioModel, theme: ThemeName, accent: string | undefined, notes: string[]): ShowResult {
+  const idMap = new Map<string, string>();
+  const skipped: string[] = [];
+  const groups: Group[] = [];
+  const lanes: Array<{ id: string; y: number; h: number }> = [];
+  const rows: Array<{ y: number; node: Node }> = [];
+  const used = new Set<string>();
+  const claim = (want: string) => {
+    let id = want || 'task', n = 2;
+    while (used.has(id)) id = `${want || 'task'}_${n++}`;
+    used.add(id);
+    return id;
+  };
+  for (const c of m.cells) {
+    if (!c.vertex || (c.attrs.aiviz_type !== 'lane' && c.attrs.aiviz_type !== 'group')) continue;
+    const b = absBox(m, c.id)!;
+    const id = claim(ID_RE.test(c.id) ? c.id : slug(labelLines(c.label)[0] ?? ''));
+    idMap.set(c.id, id);
+    groups.push({ id, label: labelLines(c.label).join(' ') || c.attrs.aiviz_label || humanize(id), ...look(c) });
+    lanes.push({ id, y: b.y, h: b.h });
+  }
+  for (const c of m.cells) {
+    if (!c.vertex || idMap.has(c.id)) continue;
+    if (c.attrs.aiviz_type || 'text' in c.style) {
+      if (!['tick', 'grid'].includes(c.attrs.aiviz_type ?? '')) skipped.push(c.id);
+      continue;
+    }
+    const b = absBox(m, c.id);
+    if (!b) continue;
+    const milestone = c.attrs.aiviz_kind ? kindDef('timeline', c.attrs.aiviz_kind).shape === 'diamond' : 'rhombus' in c.style;
+    const kind = c.attrs.aiviz_kind && KINDS.timeline[c.attrs.aiviz_kind] ? c.attrs.aiviz_kind : milestone ? 'milestone' : 'task';
+    // Untouched, it has the dates it was built with. Moved or stretched, the ones it now covers.
+    const moved = !c.attrs.aiviz_auto || c.attrs.aiviz_auto.split(',').slice(0, 3).filter((_, i) => i !== 1).join() !== [Math.round(b.x), Math.round(b.w)].join();
+    const dates = (!moved && c.attrs.aiviz_start ? { start: c.attrs.aiviz_start, end: c.attrs.aiviz_end ?? c.attrs.aiviz_start } : datesOn(m.meta, b, milestone)) ?? { start: c.attrs.aiviz_start, end: c.attrs.aiviz_end };
+    if (!dates.start) {
+      notes.push(`skipped "${labelLines(c.label).join(' ')}": this file has no date axis to place it on`);
+      skipped.push(c.id);
+      continue;
+    }
+    const id = claim(c.attrs.aiviz_kind && ID_RE.test(c.id) ? c.id : slug(labelLines(c.label)[0] ?? ''));
+    idMap.set(c.id, id);
+    const mid = b.y + b.h / 2;
+    const lane = lanes.filter((l) => mid >= l.y && mid <= l.y + l.h).sort((p, q) => p.h - q.h)[0]?.id;
+    rows.push({ y: b.y, node: { id, kind, label: labelLines(c.label).join(' ') || c.attrs.aiviz_label || humanize(id), parent: lane, start: dates.start, ...(milestone ? {} : { end: dates.end }), ...look(c) } });
+  }
+  rows.sort((a, b) => a.y - b.y);
+  return { diagram: { type: 'timeline', title: m.meta.aiviz_title, direction: 'auto', theme, ...(accent ? { accent } : {}), groups, nodes: rows.map((r) => r.node), edges: [] }, notes, idMap, edgeCells: new Map(), skipped };
 }
 
 // ---------- sequence ----------
@@ -370,6 +471,7 @@ function nodeParts(d: Diagram, n: Node): string[] {
   if (n.kind !== DEFAULT_KIND[d.type]) parts.push(`kind: ${n.kind}`);
   if (n.tech) parts.push(`tech: ${q(n.tech, true)}`);
   if (n.icon) parts.push(`icon: ${n.icon}`);
+  if (n.start && d.type === 'timeline') parts.push(...(n.end && n.end !== n.start ? [`start: ${n.start}`, `end: ${n.end}`] : n.kind === 'milestone' ? [`at: ${n.start}`] : [`start: ${n.start}`]));
   if (n.parent) parts.push(`in: ${n.parent}`);
   if (n.color) parts.push(`color: ${n.color}`);
   if (n.highlight) parts.push('highlight: true');
@@ -381,7 +483,7 @@ export function toYaml(d: Diagram, header?: string): string {
   if (header) out.push(...header.split('\n').map((l) => `# ${l}`));
   out.push(`type: ${d.type}`);
   if (d.title) out.push(`title: ${q(d.title)}`);
-  if (d.type !== 'sequence') out.push(`direction: ${d.direction}`);
+  if (d.type !== 'sequence' && d.type !== 'timeline') out.push(`direction: ${d.direction}`);
   if (d.theme !== 'clean') out.push(`theme: ${d.theme}`);
   if (d.accent) out.push(`accent: ${q(d.accent)}`);
   if (d.type === 'sequence') {
@@ -409,8 +511,12 @@ export function toYaml(d: Diagram, header?: string): string {
     if (n.fields?.length) {
       out.push(`  ${n.id}:`);
       for (const p of parts) out.push(`    ${p}`);
-      out.push('    fields:');
+      out.push(d.type === 'class' ? '    members:' : '    fields:');
       for (const f of n.fields) {
+        if (d.type === 'class') {
+          out.push(`      - ${JSON.stringify(f.type ? `${f.name}: ${f.type}` : f.name)}`);
+          continue;
+        }
         const rest = [f.type, ...f.flags].filter(Boolean).join(' ');
         out.push(rest ? `      - ${q(f.name)}: ${q(rest)}` : `      - ${q(f.name)}`);
       }
@@ -422,12 +528,18 @@ export function toYaml(d: Diagram, header?: string): string {
     for (const e of d.edges) {
       const from = pseudo.has(e.from) ? '[*]' : e.from;
       const to = pseudo.has(e.to) ? '[*]' : e.to;
+      const REL_OP: Record<ClassRel, string> = { inherits: '<|--', implements: '<|..', composition: '*--', aggregation: 'o--', association: '-->', dependency: '..>' };
+      if (e.rel && !e.color && !e.highlight) {
+        out.push(lineItem('  ', `${from} ${REL_OP[e.rel]} ${to}`, e.label));
+        continue;
+      }
       const op = e.card ? `${CARD_L[e.card.from]}${e.card.identifying ? '--' : '..'}${CARD_R[e.card.to]}` : e.highlight && e.style === 'sync' ? '==>' : arrow[e.style];
       if (!e.card && (e.color || (e.highlight && op !== '==>'))) {
         // The one-line form has no room for a color: use the object form.
         const parts = [`from: ${from === '[*]' ? '"[*]"' : from}`, `to: ${to === '[*]' ? '"[*]"' : to}`];
         if (e.label) parts.push(`label: ${q(e.label, true)}`);
         if (e.style !== 'sync') parts.push(`style: ${e.style}`);
+        if (e.rel) parts.push(`rel: ${e.rel}`);
         if (e.color) parts.push(`color: ${e.color}`);
         if (e.highlight) parts.push('highlight: true');
         out.push(`  - { ${parts.join(', ')} }`);

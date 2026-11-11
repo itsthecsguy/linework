@@ -23,7 +23,8 @@ async function main(argv: string[]): Promise<void> {
 
   const draws = needsBrowser(cmd, values);
   // A custom render scale needs its own page, so that one runs here.
-  const shareable = draws && !(cmd === 'render' && values.scale) && !values['no-daemon'];
+  // So does anything that keeps running, or that can take minutes.
+  const shareable = draws && !(cmd === 'render' && values.scale) && !values['no-daemon'] && !values.watch && cmd !== 'library';
   if (shareable) {
     // Chromium, draw.io and ELK may already be warm in the background process.
     const { viaDaemon } = await import('./daemon.js');

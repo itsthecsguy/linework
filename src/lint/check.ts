@@ -50,8 +50,8 @@ export function check(cells: InspectCell[]): CheckResult {
   const findings: Finding[] = [];
   const byId = new Map(cells.map((c) => [c.id, c]));
   const name = (c: InspectCell) => (c.label ? `"${c.label.slice(0, 40)}"` : c.id);
-  // Sequence scaffolding (lifelines, frames, activation bars, guards) isn't an obstacle.
-  const scaffold = (c: InspectCell) => c.shape === 'umlLifeline' || c.shape === 'umlFrame' || ['bar', 'guard', 'frame'].includes(c.aivizType ?? '');
+  // Sequence scaffolding (lifelines, frames, activation bars, guards) isn't an obstacle, nor is a timeline's axis.
+  const scaffold = (c: InspectCell) => c.shape === 'umlLifeline' || c.shape === 'umlFrame' || ['bar', 'guard', 'frame', 'grid', 'tick', 'lane'].includes(c.aivizType ?? '');
   const nodes = cells.filter((c) => c.vertex && !c.container && !c.text && !scaffold(c));
   const containers = cells.filter((c) => c.vertex && c.container);
   const edges = cells.filter((c) => c.edge && c.points && c.points.length >= 2);
@@ -125,6 +125,8 @@ export function check(cells: InspectCell[]): CheckResult {
 
   for (const n of nodes) {
     if (!n.textBox || !n.label) continue;
+    // A label set beside its shape on purpose (a timeline bar too short for its name) has nothing to fit in.
+    if (n.textBox.x >= n.box.x + n.box.w - 1) continue;
     if (n.textBox.w > n.box.w + 2 || n.textBox.h > n.box.h + 2)
       findings.push({ level: 'warning', rule: 'label-overflow', message: `label of ${name(n)} doesn't fit its shape; shorten it` });
   }

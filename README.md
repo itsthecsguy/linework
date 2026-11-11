@@ -98,7 +98,7 @@ edges:
 npx -y @itsthecsguy/linework build spec.yaml -o docs/checkout.drawio.svg --png /tmp/preview.png
 ```
 
-Linework lays it out with ELK and draws it with draw.io's own renderer. It draws architecture, flow, state, sequence and ER diagrams, with AWS, Google Cloud, Azure and Kubernetes icons, and it converts Mermaid.
+Linework lays it out with ELK and draws it with draw.io's own renderer. It draws architecture, flow, state, sequence, ER and class diagrams and timelines, with AWS, Google Cloud, Azure and Kubernetes icons, and it converts Mermaid.
 
 To change a diagram, the agent runs `linework show` to get the spec back, hand edits included, edits it and rebuilds. The rebuild merges into your layout. Your boxes stay where you put them, new ones go next to their neighbours, and only the edges that need it get rerouted (with draw.io's libavoid router).
 
@@ -129,6 +129,14 @@ ER
 
 <a href="examples/shop-er.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/shop-er-dark.drawio.svg"><img alt="Entity relationship diagram of a shop: customers, addresses, orders, order items, products, inventory and payments, with keys and crow's-foot cardinality." src="docs/gallery/shop-er-light.drawio.svg"></picture></a>
 
+Class
+
+<a href="examples/billing-class.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/billing-class-dark.drawio.svg"><img alt="Class diagram of a billing model: an invoice made of line items, owned by a customer, paid through a payment method interface that cards and bank transfers implement." src="docs/gallery/billing-class-light.drawio.svg"></picture></a>
+
+Timeline
+
+<a href="examples/launch-timeline.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/launch-timeline-dark.drawio.svg"><img alt="Timeline of a rollout from January to April: design review, then a build lane with API, UI and migration work ending in a code freeze, then a rollout lane with a beta, general availability and cleanup." src="docs/gallery/launch-timeline-light.drawio.svg"></picture></a>
+
 ## Excalidraw
 
 Linework goes both ways with Excalidraw. Write a copy of a diagram in its format, edit it there, and bring the edits back:
@@ -147,20 +155,77 @@ Open the `.excalidraw` file at excalidraw.com, or with an Excalidraw extension i
 | retype a name, a second line, a group title or an arrow label | the label changes |
 | draw a box and type in it | a new node; a diamond in a flow is a decision |
 | duplicate a box | a new node of the same kind, icon and color |
-| draw an arrow between two boxes | a new edge, dashed if you made it dashed |
+| draw an arrow between two boxes | a new edge |
 | drag an arrow's end to another box | the edge connects there |
 | delete a box, an arrow or a group | it's removed; a group's boxes stay |
 | move or resize boxes, or drag one into or out of a group | they sit where you put them, and their arrows are routed again |
+| pick a fill or stroke color | the nearest of linework's colors (`color: red`); back to none clears it |
+| make an arrow dashed, or give it a second head or none | `async`, two-way, or a plain line |
+| drag a segment of an arrow, or draw one with bends | that path is kept |
+| **sequence:** draw a box level with the participants | a new participant, in that position |
+| **sequence:** draw an arrow between two lifelines | a new message at that height; dashed is a reply |
+| **sequence:** drag a message up or down, or into a frame | the order changes |
+| **sequence:** delete a message, a note, a frame or a participant | it's removed, a participant with its messages |
+| **ER, class:** type a line of text in a table, or under its last row | a new column or member |
+| **ER, class:** retype, delete or reorder a row | the column changes, goes, or moves |
+| **ER, class:** draw a box with rows of text in it | a new table |
+| **timeline:** drag or stretch a bar | new dates |
 
-It prints each change it found. Then `linework show` gives you the updated spec, and `render` writes a fresh Excalidraw copy for the next round. If the `.drawio.svg` is gone, `import` rebuilds it: the Excalidraw file carries the spec.
+It prints each change it found. Then `linework show` gives you the updated spec (or pass `--spec arch.yaml` to have `import` write it). If the `.drawio.svg` is gone, `import` rebuilds it: the Excalidraw file carries the spec.
+
+**Importing on every save.** `--watch` keeps running and imports each time the file is saved, so the diagram and its spec follow along while you draw:
+
+```bash
+linework import arch.excalidraw -o docs/arch.drawio.svg --spec docs/arch.yaml --watch
+```
+
+The same file can be imported any number of times. A box you drew is added once, not once per save.
+
+**One file that is both a picture and a drawing.** Excalidraw can keep a scene inside an image. `.excalidraw.svg` and `.excalidraw.png` show in a README like any image, and open for editing in Excalidraw (and in its VS Code extension). `import` reads them too.
+
+```bash
+linework render docs/arch.drawio.svg -o docs/arch.excalidraw.svg
+```
+
+**A link.** `linework share docs/arch.drawio.svg` prints an excalidraw.com link that opens the diagram there. It works the way Excalidraw's own "Shareable link" does: the drawing is encrypted on your machine and the ciphertext is stored on excalidraw.com; the key is only in the link. Anyone you give the link to can open the drawing, and it can't be taken back.
+
+**A library.** `linework library` writes an `.excalidrawlib` of ready-made nodes to drop into a drawing: linework's own shapes, or cloud icons.
+
+```bash
+linework library shapes -o linework.excalidrawlib --style sketch
+linework library aws lambda s3 sqs dynamodb -o aws.excalidrawlib
+```
+
+A node dropped from one of these comes back through `import` as the right kind of node with its icon, not as an anonymous box. A provider has hundreds of icons (AWS over a thousand), so name the ones you use.
 
 What doesn't come back:
 
-- **Looks.** Colors, fonts and line styles you change in Excalidraw stay there. The diagram keeps its linework style; set `color:` or `highlight:` in the spec.
-- **Arrow paths.** Linework routes arrows itself, around boxes, so a path you drew by hand isn't kept. Which boxes an arrow joins is.
-- **Structure of sequence and ER diagrams.** Text edits come back for both, and ER tables can be moved and get new relationships. Adding or removing participants, messages, tables or columns is a spec edit.
+- **Exact shades, fonts and widths.** A color you pick becomes the nearest of linework's nine, drawn in the diagram's style. Fonts and line widths stay as the style has them.
+- **Frames in a sequence diagram** can be deleted, moved and renamed, but not drawn from scratch; add an `alt` or `loop` in the spec.
+- **A class relationship's kind.** Inheritance, composition and the rest keep the kind the spec gives them; a new arrow drawn in Excalidraw is a plain association.
 
-Excalidraw also draws a few things its own way. It has one text weight, so names aren't bold. It has no database, table or lifeline shape, so each is built from grouped parts. And once it reroutes an arrow (when you drag a box), that arrow gets Excalidraw's larger arrowhead and a path that may cross other boxes; importing routes it cleanly again.
+Excalidraw also draws a few things its own way. It has one text weight, so names aren't bold. It has no database, table or lifeline shape, so each is built from grouped parts; double-click twice to edit text in a grouped node (the first enters the group). Share links and libraries can't hold images, so there the icons are drawn as shapes. And once Excalidraw reroutes an arrow (when you drag a box), that arrow gets its larger arrowhead and a path that may cross other boxes; importing routes it cleanly again. On a very short arrow, a double-click on the label can land on one of Excalidraw's segment handles instead: select the arrow and press Enter.
+
+## Keeping diagrams in step with their specs
+
+If you keep the YAML next to the diagram (`docs/arch.yaml` beside `docs/arch.drawio.svg`), `linework sync` rebuilds every diagram whose spec changed and leaves the rest alone:
+
+```bash
+linework sync docs          # rebuild what's out of date, keeping each layout
+linework sync docs --check  # change nothing; exit 1 if anything is out of date
+```
+
+Each build records which spec it came from, so "out of date" means the YAML changed since. Moving boxes in draw.io doesn't count. `--check` needs no browser, which makes it cheap in a pre-commit hook.
+
+In GitHub Actions:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: itsthecsguy/linework@v0.6.0
+  with:
+    paths: docs
+    mode: check        # or "update" to rebuild in the workspace for a later step to commit
+```
 
 ## Styles
 
@@ -295,10 +360,13 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 | `linework edit <file> [--no-open]` | edit in the bundled draw.io, in your browser; saves write the file |
 | `linework check <file>` | lint: overlaps, edges through nodes, labels that don't fit, too wide |
 | `linework render <file> -o out.png [--scale 2]` | preview image |
-| `linework render <file> -o out.excalidraw` | a copy to open and edit in Excalidraw |
-| `linework import <file.excalidraw> -o <file.drawio.svg>` | bring edits made in Excalidraw back into the diagram |
+| `linework render <file> -o out.excalidraw` | a copy to open and edit in Excalidraw; `.excalidraw.svg` or `.excalidraw.png` for a picture that also opens there |
+| `linework import <file.excalidraw> -o <file.drawio.svg> [--spec s.yaml] [--watch]` | bring edits made in Excalidraw back into the diagram, once or on every save |
+| `linework share <file>` | an excalidraw.com link to the diagram |
+| `linework library <shapes\|aws\|gcp\|azure\|k8s> [filter...] -o x.excalidrawlib` | an Excalidraw library of linework nodes |
+| `linework sync [paths...] [--check]` | rebuild diagrams whose YAML spec changed, or fail if any is out of date |
 | `linework tidy <file>` | after hand edits: reroute stale edges and move colliding labels; boxes stay |
-| `linework import <file.mmd\|doc.md> [-o out.drawio.svg]` | convert a Mermaid diagram |
+| `linework import <file.mmd\|doc.md> [-o out.drawio.svg]` | convert a Mermaid diagram (flowchart, state, sequence, ER, class, gantt) |
 | `linework publish <file...> [--to dir] [--pull]` | copy diagrams into Google Drive for the Docs add-on |
 | `linework icons <aws\|gcp\|k8s\|azure> [filter]` | list icon names |
 | `linework git-setup` | `git diff` shows diagram changes as spec changes |

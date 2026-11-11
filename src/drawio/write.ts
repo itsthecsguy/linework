@@ -3,11 +3,11 @@
 // from merging a spec into an existing file (merge.ts). Every cell carries aiviz_*
 // attributes so `show` can turn a (possibly hand-edited) file back into a spec.
 import type { Diagram } from '../spec/model.js';
-import { kindDef } from '../spec/model.js';
+import { kindDef, stereotype } from '../spec/model.js';
 import type { Box, Layout, Point } from '../layout/layout.js';
 import { DOMParser, XMLSerializer, type Element } from '@xmldom/xmldom';
 import { ICON_PAD, ICON_SIZE, resolveIcon } from './icons.js';
-import { CYL_SIZE, ER_HEAD, ER_ROW, edgeStyle, erEdgeStyle, fieldLabel, fieldStyle, groupLabel, groupStyle, nodeLabel, nodeStyle, paintFor, palette, textMiddle, typeface } from './theme.js';
+import { CYL_SIZE, ER_HEAD, ER_ROW, classEdgeStyle, edgeStyle, erEdgeStyle, tableLabel, fieldLabel, fieldStyle, groupLabel, groupStyle, nodeLabel, nodeStyle, paintFor, palette, textMiddle, typeface } from './theme.js';
 import type { Look } from '../spec/model.js';
 
 export { ER_HEAD, ER_ROW };
@@ -72,7 +72,7 @@ export function diagramMeta(d: Diagram, extra: Record<string, string> = {}): Rec
 export function nodeAttrs(d: Diagram, n: Diagram['nodes'][number]): Record<string, string> {
   const shape = kindDef(d.type, n.kind).shape;
   const label =
-    shape === 'start' || shape === 'end' ? '' : shape === 'table' ? n.label : nodeLabel(n.label, n.tech, { theme: d, type: d.type, kind: n.kind, color: n.color, highlight: n.highlight });
+    shape === 'start' || shape === 'end' ? '' : shape === 'table' ? tableLabel(n.label, stereotype(d.type, n.kind), d) : nodeLabel(n.label, n.tech, { theme: d, type: d.type, kind: n.kind, color: n.color, highlight: n.highlight });
   return {
     label,
     aiviz_kind: n.kind,
@@ -152,11 +152,12 @@ function labelBg(d: Diagram, l: Layout, label?: Box): string | undefined {
 }
 
 export function edgeStyleFor(d: Diagram, e: Diagram['edges'][number], bg?: string): string {
+  if (d.type === 'class' && e.rel) return classEdgeStyle(e.rel, d, e, bg);
   return d.type === 'er' && e.card ? erEdgeStyle(e.card, d, e) : edgeStyle(e.style, d, e, bg);
 }
 
 export function edgeAttrs(e: Diagram['edges'][number]): Record<string, string> {
-  return { label: e.label ?? '', aiviz_edge: e.id, ...lookAttrs(e) };
+  return { label: e.label ?? '', aiviz_edge: e.id, ...(e.rel ? { aiviz_rel: e.rel } : {}), ...lookAttrs(e) };
 }
 
 /** How deep a group sits: 0 at the top, 1 inside another group, and so on. */
