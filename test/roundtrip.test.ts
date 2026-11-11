@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { parseSpecText } from '../src/spec/parse.js';
 import { estimateMeasure, layout } from '../src/layout/layout.js';
 import { sequenceScene } from '../src/layout/sequence.js';
+import { timelineScene } from '../src/layout/timeline.js';
 import { serialize, toMxfile } from '../src/drawio/write.js';
 import { readDrawio } from '../src/drawio/read.js';
 import { manualEdits, toDiagram, toYaml } from '../src/drawio/show.js';
@@ -13,7 +14,7 @@ describe('spec -> drawio -> spec', () => {
   for (const f of fs.readdirSync('examples')) {
     it(`round-trips ${f}`, async () => {
       const { diagram } = parseSpecText(fs.readFileSync(`examples/${f}`, 'utf8'));
-      const xml = diagram.type === 'sequence' ? serialize(await sequenceScene(diagram, estimateMeasure)) : toMxfile(diagram, await layout(diagram));
+      const xml = diagram.type === 'sequence' ? serialize(await sequenceScene(diagram, estimateMeasure)) : diagram.type === 'timeline' ? serialize(await timelineScene(diagram, estimateMeasure)) : toMxfile(diagram, await layout(diagram));
       const back = toDiagram(readDrawio(xml));
       expect(back.notes).toEqual([]);
       expect(strip(back.diagram)).toEqual(strip(diagram));

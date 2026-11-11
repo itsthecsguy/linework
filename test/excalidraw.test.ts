@@ -8,8 +8,12 @@ import path from 'node:path';
 import { build, render } from '../src/api.js';
 import { readDrawio } from '../src/drawio/read.js';
 import { DrawioBrowser } from '../src/render/browser.js';
-import { centreRouteOn, toExcalidraw, wrapLines, type ExcalidrawElement, type ExcalidrawFile, type Origin } from '../src/excalidraw/export.js';
-import { embeddedSpec, readEdits, setBoxes, setLabels } from '../src/excalidraw/import.js';
+import { centreRouteOn, iconPolygons, simplify, toExcalidraw, wrapLines, type ExcalidrawElement, type ExcalidrawFile, type Origin } from '../src/excalidraw/export.js';
+import { colorName, embeddedSpec, readEdits, setBoxes, setLabels, tidyPath } from '../src/excalidraw/import.js';
+import { embedInPng, embedInSvg, readScene, sceneFromSvg } from '../src/excalidraw/file.js';
+import { buildLibrary } from '../src/excalidraw/library.js';
+import { concatBuffers, seal, shareLink, shareable, splitBuffers, unseal } from '../src/excalidraw/share.js';
+import { watchFile } from '../src/watch.js';
 import { importExcalidraw, show } from '../src/api.js';
 import { parseSpecText } from '../src/spec/parse.js';
 
@@ -307,7 +311,7 @@ describe.runIf(run)('Excalidraw files', () => {
     const f = JSON.parse(fs.readFileSync(out, 'utf8')) as ExcalidrawFile;
     expect(f.type).toBe('excalidraw');
     expect(f.elements.length).toBeGreaterThan(10);
-    await expect(render(svg, path.join(tmp, 'out.pdf'), b)).rejects.toThrow(/\.png, \.svg or \.excalidraw/);
+    await expect(render(svg, path.join(tmp, 'out.pdf'), b)).rejects.toThrow(/\.png, \.svg, \.excalidraw/);
   }, 60000);
 });
 
@@ -481,20 +485,231 @@ describe.runIf(run)('edits made in Excalidraw come back', () => {
     expect(gone.spec.nodes.find((n) => n.id === 'db')!.parent).toBe('vpc');
   }, 180000);
 
-  it('reads text edits to a sequence diagram, and says what it will not read', async () => {
+  /** A message as a person sees it: the arrow, found by the text over it. */
+  const message = (f: ExcalidrawFile, text: string) => {
+    const t = f.elements.find((e) => e.type === 'text' && e.text === text)!;
+    return f.elements.filter((e) => e.groupIds.some((g) => t.groupIds.includes(g)) || e.id === t.containerId || e === t);
+  };
+  const line = (f: ExcalidrawFile, id: string, from: [number, number], to: [number, number], label?: string, over: Record<string, unknown> = {}) => {
+    f.elements.push({ id, type: 'arrow', x: from[0], y: from[1], width: Math.abs(to[0] - from[0]), height: Math.abs(to[1] - from[1]), points: [[0, 0], [to[0] - from[0], to[1] - from[1]]], groupIds: [], boundElements: label ? [{ id: `${id}-t`, type: 'text' }] : [], isDeleted: false, strokeStyle: 'solid', strokeColor: '#1e1e1e', startBinding: null, endBinding: null, endArrowhead: 'arrow', startArrowhead: null, ...over });
+    if (label) f.elements.push({ id: `${id}-t`, type: 'text', x: from[0], y: from[1], width: 60, height: 20, groupIds: [], boundElements: [], isDeleted: false, text: label, originalText: label, containerId: id });
+  };
+  const freeText = (f: ExcalidrawFile, id: string, at: [number, number], text: string) =>
+    f.elements.push({ id, type: 'text', x: at[0], y: at[1], width: 120, height: 20 * text.split('\n').length, groupIds: [], boundElements: [], isDeleted: false, text, originalText: text, containerId: null });
+  const stemX = (el: (id: string) => ExcalidrawElement, id: string) => el(`lw-${id}`).x + el(`lw-${id}`).width / 2;
+  type Msg = { kind: string; from?: string; to?: string; label?: string; text?: string; style?: string; branches?: Array<{ items: Msg[] }> };
+  const flat = (items: Msg[]): Msg[] => items.flatMap((i) => (i.kind === 'frame' ? i.branches!.flatMap((br) => flat(br.items)) : [i]));
+
+  it('reads text edits to a sequence diagram', async () => {
     const r = await roundTrip('pay-sequence', (f) => {
       const byText = (t: string) => f.elements.find((e) => e.type === 'text' && e.text === t)!;
       retype(byText('POST /checkout'), 'POST /v2/checkout');
       retype(byText('Shopper'), 'Buyer');
       retype(byText('idempotent on event id'), 'safe to retry');
-      drawBox(f, 'extra', 'rectangle', [0, 900, 100, 50], 'Auditor');
+      retype(byText('[declined]'), 'card refused');
     });
     const yaml = show(r.out).yaml;
     expect(yaml).toContain('POST /v2/checkout');
     expect(yaml).toContain('label: Buyer');
     expect(yaml).toContain('safe to retry');
+    expect(yaml).toContain('card refused');
     expect(r.spec.nodes.length).toBe(5);
-    expect(r.res.notes.join(' ')).toMatch(/not read back into a sequence diagram/);
+    expect(r.res.changes.length).toBe(4);
+  }, 120000);
+
+  it('adds a participant, a message and a note drawn in a sequence diagram, where they were drawn', async () => {
+    const r = await roundTrip('pay-sequence', (f, el) => {
+      const db = el('lw-db');
+      // A box level with the other participants is one more of them.
+      drawBox(f, 'ledger', 'rectangle', [db.x + db.width + 60, db.y, 140, db.height], 'Ledger');
+      const after = message(f, 'create PaymentIntent').find((e) => e.type === 'arrow')!;
+      line(f, 'post', [stemX(el, 'api'), after.y + 12], [db.x + db.width + 130, after.y + 12], 'record charge');
+      line(f, 'back', [db.x + db.width + 130, after.y + 20], [stemX(el, 'api'), after.y + 20], 'ok', { strokeStyle: 'dashed' });
+      // A box anywhere lower down is a note over whichever lines it covers.
+      drawBox(f, 'memo', 'rectangle', [stemX(el, 'user') - 60, after.y + 26, 120, 30], 'tell support');
+      line(f, 'stray', [5, 5], [stemX(el, 'api'), 5]);
+    }, 'seq-add');
+    expect(r.spec.nodes.map((n) => n.id)).toEqual(['user', 'web', 'api', 'stripe', 'db', 'ledger']);
+    const seq = flat(r.spec.seq as Msg[]);
+    const at = seq.findIndex((i) => i.label === 'create PaymentIntent');
+    expect(seq.slice(at + 1, at + 4)).toMatchObject([
+      { kind: 'msg', from: 'api', to: 'ledger', label: 'record charge', style: 'sync' },
+      { kind: 'msg', from: 'ledger', to: 'api', label: 'ok', style: 'reply' },
+      { kind: 'note', text: 'tell support' },
+    ]);
+    expect(seq[at + 4]).toMatchObject({ label: 'client_secret', from: 'stripe' });
+    expect(r.res.changes).toEqual(expect.arrayContaining(['added participant "Ledger"', 'added a message from "Checkout API" to "Ledger": record charge', 'added a note: "tell support"']));
+    expect(r.res.notes.join(' ')).toMatch(/1 arrow drawn in Excalidraw doesn't run between two participants/);
+    expect(r.res.check.findings.filter((x) => x.level === 'error')).toEqual([]);
+    // The result is a clean diagram again: exporting and importing it changes nothing.
+    const again = path.join(tmp, 'seq-add-again.excalidraw');
+    await render(r.out, again, b);
+    expect((await importExcalidraw(again, r.out, { browser: b })).changes).toEqual([]);
+  }, 120000);
+
+  it('removes, reorders and reconnects messages, and drops a participant with everything on its line', async () => {
+    const r = await roundTrip('pay-sequence', (f, el) => {
+      // "Click Pay" dragged down past the next message.
+      const first = message(f, 'Click "Pay"'), second = message(f, 'POST /checkout').find((e) => e.type === 'arrow')!;
+      const gap = second.y - first.find((e) => e.type === 'arrow')!.y;
+      for (const e of first) e.y += gap + 10;
+      for (const e of message(f, 'result page')) e.isDeleted = true;
+      // The declined reply dragged from the web app's line to the shopper's.
+      const reply = message(f, 'card_declined').find((e) => e.type === 'arrow')!;
+      const pts = reply.points as number[][];
+      const endX = reply.x + pts[pts.length - 1]![0]!;
+      pts[pts.length - 1]![0]! += stemX(el, 'user') - endX;
+      for (const e of f.elements) if ((e.customData as { lw: Origin }).lw.cell === 'db' || e.groupIds.includes('lw-db-group')) e.isDeleted = true;
+    }, 'seq-edit');
+    const seq = flat(r.spec.seq as Msg[]);
+    expect(seq.slice(0, 2).map((i) => i.label)).toEqual(['POST /checkout', 'Click "Pay"']);
+    expect(seq.some((i) => i.label === 'result page')).toBe(false);
+    expect(seq.find((i) => i.label === 'card_declined')).toMatchObject({ from: 'stripe', to: 'user' });
+    expect(r.spec.nodes.map((n) => n.id)).toEqual(['user', 'web', 'api', 'stripe']);
+    expect(seq.some((i) => i.from === 'db' || i.to === 'db')).toBe(false);
+    // The frame is still there, with both its branches.
+    const frame = (r.spec.seq as Msg[]).find((i) => i.kind === 'frame')!;
+    expect(frame.branches!.length).toBe(2);
+    expect(r.res.changes).toEqual(expect.arrayContaining(['removed participant "Orders DB"', 'removed the message "result page"', 'the message "card_declined" now runs from "Stripe" to "Shopper"', 'put the messages in a new order']));
+    expect(r.res.check.findings.filter((x) => x.level === 'error')).toEqual([]);
+  }, 120000);
+
+  it('reads a sequence diagram the same after the whole drawing is dragged somewhere else', async () => {
+    const r = await roundTrip('pay-sequence', (f) => {
+      for (const e of f.elements) Object.assign(e, { x: e.x + 300, y: e.y - 140 });
+    }, 'seq-shift');
+    expect(r.res.changes).toEqual([]);
+  }, 120000);
+
+  it('reads columns added, renamed, retyped, removed and reordered in a table, and a table drawn from scratch', async () => {
+    const r = await roundTrip('shop-er', (f, el) => {
+      const orders = el('lw-orders');
+      freeText(f, 'c1', [orders.x + 14, orders.y + orders.height + 4], 'notes text null');
+      for (const part of ['name', 'type']) el(`lw-addresses__city-${part}`).isDeleted = true;
+      retype(el('lw-products__sku-name'), 'code');
+      retype(el('lw-products__title-type'), 'varchar(80) unique');
+      // Swap two rows of inventory.
+      const [wh, on] = [el('lw-inventory__warehouse-name'), el('lw-inventory__on_hand-name')];
+      const [y1, y2] = [wh.y, on.y];
+      for (const part of ['name', 'type']) {
+        el(`lw-inventory__warehouse-${part}`).y = y2;
+        el(`lw-inventory__on_hand-${part}`).y = y1;
+      }
+      drawBox(f, 'coupons', 'rectangle', [orders.x, orders.y + orders.height + 200, 220, 110], 'Coupons');
+      f.elements.find((e) => e.id === 'coupons-t')!.y = orders.y + orders.height + 204;
+      freeText(f, 'c2', [orders.x + 14, orders.y + orders.height + 240], 'id uuid pk\ncode: text unique');
+      drawArrow(f, 'rel', el('lw-orders'), f.elements.find((e) => e.id === 'coupons')!);
+    }, 'er-columns');
+    const table = (id: string) => r.spec.nodes.find((n) => n.id === id)!;
+    expect(table('orders').fields!.at(-1)).toEqual({ name: 'notes', type: 'text', flags: ['null'] });
+    expect(table('addresses').fields!.map((x) => x.name)).toEqual(['id', 'customer_id', 'line1', 'country']);
+    expect(table('products').fields!.find((x) => x.name === 'code')).toMatchObject({ type: 'text', flags: ['unique'] });
+    expect(table('products').fields!.find((x) => x.name === 'title')).toMatchObject({ type: 'varchar(80)', flags: ['unique'] });
+    expect(table('inventory').fields!.map((x) => x.name)).toEqual(['product_id', 'on_hand', 'warehouse']);
+    expect(table('coupons')).toMatchObject({ kind: 'entity', label: 'Coupons', fields: [{ name: 'id', type: 'uuid', flags: ['pk'] }, { name: 'code', type: 'text', flags: ['unique'] }] });
+    expect(r.spec.edges.find((e) => e.from === 'orders' && e.to === 'coupons')!.card).toBeDefined();
+    expect(r.res.changes).toEqual(expect.arrayContaining([
+      'added column "notes" to "Orders"', 'removed column "city" from "Addresses"', 'renamed column "sku" to "code" in "Products"',
+      '"Products".title is now varchar(80) unique', 'reordered the columns of "Inventory"', 'added table "Coupons"',
+    ]));
+    // The tables grew or shrank to their rows.
+    expect(r.cells.has('orders__notes')).toBe(true);
+    expect(r.cells.has('addresses__city')).toBe(false);
+    expect(r.res.check.findings.filter((x) => x.level === 'error')).toEqual([]);
+    const again = path.join(tmp, 'er-again.excalidraw');
+    await render(r.out, again, b);
+    expect((await importExcalidraw(again, r.out, { browser: b })).changes).toEqual([]);
+  }, 120000);
+
+  it('reads colors and line styles picked in Excalidraw as the nearest of linework\'s', async () => {
+    const r = await roundTrip('checkout', (f, el) => {
+      // Excalidraw's own palette: a red fill, a blue stroke, a green group.
+      for (const e of f.elements) if (e.type !== 'text' && e.type !== 'image' && (e.customData as { lw: Origin }).lw.cell === 'stripe') e.backgroundColor = '#ffc9c9';
+      el('lw-e_api__db').strokeColor = '#1971c2';
+      el('lw-vpc').strokeColor = '#2f9e44';
+      el('lw-e_user__web').strokeStyle = 'dashed';
+      Object.assign(el('lw-e_web__gw'), { startArrowhead: 'arrow' });
+    }, 'colors');
+    expect(r.spec.nodes.find((n) => n.id === 'stripe')!.color).toBe('red');
+    expect(r.spec.edges.find((e) => e.id === 'api->db')!.color).toBe('blue');
+    expect(r.spec.groups.find((g) => g.id === 'vpc')!.color).toBe('green');
+    expect(r.spec.edges.find((e) => e.id === 'user->web')!.style).toBe('async');
+    expect(r.spec.edges.find((e) => e.id === 'web->gw')!.style).toBe('bidir');
+    expect(r.res.changes.length).toBe(5);
+    // Nothing moved for it.
+    const was = new Map((await b.inspect(readDrawio(r.before).xml)).map((c) => [c.id, c.box]));
+    for (const id of ['web', 'gw', 'api', 'db', 'stripe']) expect(r.cells.get(id)!.box, id).toEqual(was.get(id));
+    // The same file again asks for nothing new: its colors already are the diagram's.
+    expect((await importExcalidraw(r.file, r.out, { browser: b })).changes).toEqual([]);
+    // Back to no color at all.
+    const f = await toExcalidraw(readDrawio(fs.readFileSync(r.out, 'utf8')), b);
+    for (const e of f.elements) if (e.type !== 'text' && e.type !== 'image' && (e.customData as { lw: Origin }).lw.cell === 'stripe') e.backgroundColor = 'transparent';
+    fs.writeFileSync(r.file, JSON.stringify(f));
+    const cleared = await importExcalidraw(r.file, r.out, { browser: b });
+    expect(cleared.changes).toEqual(['"Stripe" is back to its own color']);
+    expect(parseSpecText(show(r.out).yaml).diagram.nodes.find((n) => n.id === 'stripe')!.color).toBeUndefined();
+  }, 120000);
+
+  it('names the nearest color for anything Excalidraw offers', () => {
+    const cases: Record<string, string> = {
+      '#e03131': 'red', '#ffc9c9': 'red', '#e8590c': 'orange', '#f08c00': 'orange', '#ffec99': 'amber', '#2f9e44': 'green', '#b2f2bb': 'green',
+      '#099268': 'teal', '#0c8599': 'teal', '#1971c2': 'blue', '#a5d8ff': 'blue', '#6741d9': 'violet', '#d0bfff': 'violet', '#c2255c': 'pink', '#fcc2d7': 'pink',
+      '#868e96': 'gray', '#1e1e1e': 'none', '#ffffff': 'none', transparent: 'none',
+    };
+    for (const [hex, want] of Object.entries(cases)) expect(colorName(hex), hex).toBe(want);
+    expect(colorName('rgb(1,2,3)')).toBeUndefined();
+  });
+
+  it('keeps an arrow path a person drew, and reroutes the ones Excalidraw routed itself', async () => {
+    let detour = 0;
+    let picked = '';
+    const r = await roundTrip('checkout', (f) => {
+      // A straight right-angle arrow, given a bump by dragging its middle out.
+      const straight = f.elements.find((e) => e.type === 'arrow' && e.elbowed && tidyPath((e.points as number[][]).map(([x, y]) => ({ x: x!, y: y! }))).length === 2)!;
+      picked = straight.id;
+      const pts = straight.points as number[][];
+      const end = pts[pts.length - 1]!;
+      const horizontal = Math.abs(end[0]!) > Math.abs(end[1]!);
+      const [a, c] = horizontal ? [end[0]! / 3, (2 * end[0]!) / 3] : [end[1]! / 3, (2 * end[1]!) / 3];
+      detour = horizontal ? straight.y - 28 : straight.x - 28;
+      straight.points = horizontal ? [[0, 0], [a, 0], [a, -28], [c, -28], [c, 0], end] : [[0, 0], [0, a], [-28, a], [-28, c], [0, c], end];
+      straight.fixedSegments = [{ index: 3, start: straight.points[2], end: straight.points[3] }];
+    }, 'route');
+    const cellId = picked.slice(3);
+    const route = r.cells.get(cellId)!.points!;
+    const horizontal = Math.abs(route[0]!.x - route.at(-1)!.x) > Math.abs(route[0]!.y - route.at(-1)!.y);
+    expect(route.some((p) => Math.abs((horizontal ? p.y : p.x) - detour) < 1.5), JSON.stringify(route)).toBe(true);
+    expect(r.res.changes).toEqual([expect.stringMatching(/^kept the path drawn for the arrow from/)]);
+    // The same file again: the path is already the diagram's.
+    expect((await importExcalidraw(r.file, r.out, { browser: b })).changes).toEqual([]);
+  }, 120000);
+
+  it('writes and reads Excalidraw\'s image files: a picture with the drawing inside it', async () => {
+    const src = path.join(tmp, 'img-src.drawio.svg');
+    await build(fs.readFileSync('examples/checkout.yaml', 'utf8'), { out: src, browser: b });
+    const plain = await toExcalidraw(readDrawio(fs.readFileSync(src, 'utf8')), b);
+    for (const ext of ['svg', 'png'] as const) {
+      const file = path.join(tmp, `img.excalidraw.${ext}`);
+      await render(src, file, b);
+      const bytes = fs.readFileSync(file);
+      if (ext === 'svg') {
+        expect(bytes.toString('utf8')).toMatch(/<svg[^>]*><!-- svg-source:excalidraw --><metadata><!-- payload-type:application\/vnd\.excalidraw\+json -->/);
+        expect(bytes.toString('utf8')).not.toContain('mxfile');
+      } else expect(bytes.subarray(1, 4).toString('latin1')).toBe('PNG');
+      expect(readScene(file).elements.map((e) => e.id)).toEqual(plain.elements.map((e) => e.id));
+      expect(readScene(file).files).toEqual(plain.files);
+      const res = await importExcalidraw(file, src, { browser: b });
+      expect(res.changes, ext).toEqual([]);
+    }
+    // Edited and saved again as a picture, the edit comes back.
+    const scene = readScene(path.join(tmp, 'img.excalidraw.png'));
+    retype(scene.elements.find((e) => e.containerId === 'lw-user')!, 'Member');
+    const edited = path.join(tmp, 'img-edited.excalidraw.png');
+    fs.writeFileSync(edited, embedInPng(fs.readFileSync(path.join(tmp, 'img.excalidraw.png')), JSON.stringify(scene)));
+    expect((await importExcalidraw(edited, src, { browser: b })).changes).toEqual(['renamed "Shopper" to "Member"']);
+    expect(() => readScene(src)).toThrow(/no Excalidraw scene in it/);
+    // Text that is not Latin-1 survives the trip.
+    expect(sceneFromSvg(embedInSvg('<svg xmlns="x" content="&lt;a&gt;"><g/></svg>', '{"type":"excalidraw","t":"naïve ✓ 日本"}'))).toBe('{"type":"excalidraw","t":"naïve ✓ 日本"}');
   }, 120000);
 
   it('keeps an ER table\'s columns, renames it, moves it and adds a relationship', async () => {
@@ -509,6 +724,101 @@ describe.runIf(run)('edits made in Excalidraw come back', () => {
     expect(r.spec.edges.find((e) => e.from === 'inventory' && e.to === 'payments')!.card).toBeDefined();
     const was = (await b.inspect(readDrawio(r.before).xml)).find((c) => c.id === 'inventory')!.box;
     expect(r.cells.get('inventory')!.box).toMatchObject({ x: was.x, y: was.y + 200, w: was.w, h: was.h });
+  }, 120000);
+
+  it('gives a stale file the last word without doing its edits twice', async () => {
+    // Excalidraw keeps the file open: the second save still describes the first export.
+    const r = await roundTrip('pay-sequence', (f) => {
+      for (const e of message(f, 'result page')) e.isDeleted = true;
+      retype(f.elements.find((e) => e.type === 'text' && e.text === 'mark paid')!, 'mark as paid');
+    }, 'seq-stale');
+    expect(r.res.changes.length).toBe(2);
+    expect((await importExcalidraw(r.file, r.out, { browser: b })).changes).toEqual([]);
+    const f = JSON.parse(fs.readFileSync(r.file, 'utf8')) as ExcalidrawFile;
+    for (const e of message(f, 'show error')) e.isDeleted = true;
+    fs.writeFileSync(r.file, JSON.stringify(f));
+    const third = await importExcalidraw(r.file, r.out, { browser: b });
+    expect(third.changes).toContain('removed the message "show error"');
+    const labels = flat(parseSpecText(show(r.out).yaml).diagram.seq as Msg[]).map((i) => i.label ?? i.text);
+    expect(labels).toEqual(['Click "Pay"', 'POST /checkout', 'insert order (pending)', 'order id', 'create PaymentIntent', 'client_secret', 'client_secret', 'confirmCardPayment', 'webhook payment_succeeded', 'mark as paid', 'idempotent on event id', 'card_declined']);
+
+    // The same for boxes and arrows somebody drew: imported once, they are not added again.
+    const c = await roundTrip('checkout', (f2, el) => {
+      const api = el('lw-api');
+      drawBox(f2, 'new1', 'rectangle', [api.x + 20, api.y + api.height + 200, 150, 50], 'Fraud check');
+      drawArrow(f2, 'arr1', api, f2.elements.find((e) => e.id === 'new1')!);
+    }, 'stale-box');
+    expect(c.spec.nodes.some((n) => n.id === 'fraud_check')).toBe(true);
+    expect((await importExcalidraw(c.file, c.out, { browser: b })).changes).toEqual([]);
+    const d = parseSpecText(show(c.out).yaml).diagram;
+    expect(d.nodes.filter((n) => n.label === 'Fraud check').length).toBe(1);
+    expect(d.edges.filter((e) => e.to === 'fraud_check').length).toBe(1);
+  }, 180000);
+
+  it('reads a node dragged in from a linework library as that kind of node, with its icon', async () => {
+    const lib = await buildLibrary('aws', b, { names: ['lambda', 'not_a_real_icon'] });
+    const shapes = await buildLibrary('shapes', b, { theme: 'soft' });
+    expect(lib.libraryItems.map((i) => i.name)).toEqual(['aws.lambda']);
+    expect(shapes.libraryItems.map((i) => i.name)).toEqual(expect.arrayContaining(['service', 'database', 'queue', 'decision', 'terminal', 'start', 'end']));
+    for (const item of [...lib.libraryItems, ...shapes.libraryItems]) {
+      // A library holds no images, and every element says what it is a part of.
+      expect(item.elements.some((e) => e.type === 'image'), item.name).toBe(false);
+      for (const e of item.elements) expect((e.customData as { lw: Origin }).lw.lib?.kind, `${item.name} ${e.id}`).toBeTruthy();
+      expect(Math.min(...item.elements.map((e) => e.x))).toBe(0);
+    }
+    expect(lib.libraryItems[0]!.elements.filter((e) => e.type === 'line').length).toBeGreaterThan(1);
+    /** What Excalidraw does when an item is dropped: new ids, new groups, a new place. */
+    const drop = (f: ExcalidrawFile, item: (typeof lib.libraryItems)[number], at: [number, number], tag: string, label?: string) => {
+      for (const e of item.elements) {
+        const copy = { ...structuredClone(e), id: `${tag}-${e.id}`, x: e.x + at[0], y: e.y + at[1], groupIds: e.groupIds.map((g) => `${tag}-${g}`), boundElements: e.boundElements.map((x) => ({ ...x, id: `${tag}-${x.id}` })), ...(e.containerId ? { containerId: `${tag}-${e.containerId}` } : {}) };
+        if (label && copy.type === 'text') Object.assign(copy, { text: label, originalText: label });
+        f.elements.push(copy);
+      }
+    };
+    const r = await roundTrip('serverless-aws', (f) => {
+      const far = Math.max(...f.elements.map((e) => e.y + e.height));
+      drop(f, lib.libraryItems[0]!, [40, far + 80], 'p1', 'Resize images');
+      drop(f, shapes.libraryItems.find((i) => i.name === 'queue')!, [320, far + 80], 'p2', 'Dead letters');
+    }, 'library');
+    expect(r.spec.nodes.find((n) => n.label === 'Resize images')).toMatchObject({ kind: 'service', icon: 'aws.lambda' });
+    expect(r.spec.nodes.find((n) => n.label === 'Dead letters')).toMatchObject({ kind: 'queue' });
+    expect(r.cells.has('resize_images__icon')).toBe(true);
+    // Dropped into a flowchart, where there are no queues or icons, it is a plain step.
+    const flow = await roundTrip('refund-flow', (f) => drop(f, lib.libraryItems[0]!, [0, -200], 'p3', 'Notify'), 'library-flow');
+    expect(flow.spec.nodes.find((n) => n.label === 'Notify')).toMatchObject({ kind: 'step' });
+    expect(flow.spec.nodes.find((n) => n.label === 'Notify')!.icon).toBeUndefined();
+  }, 180000);
+
+  it('draws icons as shapes when asked: every hole filled with what shows through it', async () => {
+    const out = path.join(tmp, 'vector.drawio.svg');
+    await build(fs.readFileSync('examples/serverless-aws.yaml', 'utf8'), { out, browser: b });
+    const m = readDrawio(fs.readFileSync(out, 'utf8'));
+    const [images, shapes] = [await toExcalidraw(m, b), await toExcalidraw(m, b, { icons: 'vector' })];
+    const n = images.elements.filter((e) => e.type === 'image').length;
+    expect(n).toBeGreaterThan(3);
+    expect(shapes.elements.some((e) => e.type === 'image')).toBe(false);
+    expect(shapes.files).toEqual({});
+    const parts = shapes.elements.filter((e) => /-i\d+$/.test(e.id));
+    expect(new Set(parts.map((e) => (e.customData as { lw: Origin }).lw.cell)).size).toBe(n);
+    for (const e of parts) {
+      expect(String(e.backgroundColor) + String(e.strokeColor), e.id).toMatch(/#[0-9a-f]{6}/i);
+      const img = images.elements.find((x) => x.id === `lw-${(e.customData as { lw: Origin }).lw.cell}`)!;
+      // Inside the icon's box, in the icon's group.
+      const xs = (e.points as number[][]).map((p) => e.x + p[0]!);
+      expect(Math.min(...xs)).toBeGreaterThanOrEqual(img.x - 1);
+      expect(Math.max(...xs)).toBeLessThanOrEqual(img.x + img.width + 1);
+      expect(e.groupIds).toEqual(expect.arrayContaining(img.groupIds));
+    }
+    // Importing the shapes version back changes nothing either.
+    const file = path.join(tmp, 'vector.excalidraw');
+    fs.writeFileSync(file, JSON.stringify(shapes));
+    expect((await importExcalidraw(file, out, { browser: b })).changes).toEqual([]);
+    // A ring: the hole takes the color under it, and is painted after the ring whatever the order.
+    const ring = (r: number): Array<[number, number]> => Array.from({ length: 24 }, (_, i) => [10 + r * Math.cos((i * Math.PI) / 12), 10 + r * Math.sin((i * Math.PI) / 12)]);
+    const o = (path_: number, pts: Array<[number, number]>, fill: string) => ({ path: path_, fill, stroke: null, strokeWidth: 1, opacity: 1, closed: true, points: pts });
+    const polys = iconPolygons([o(0, [[0, 0], [20, 0], [20, 20], [0, 20]], '#ff0000'), o(1, ring(3), '#ffffff'), o(1, ring(8), '#ffffff')], '#000000');
+    expect(polys.map((p) => p.fill)).toEqual(['#ff0000', '#ffffff', '#ff0000']);
+    expect(simplify([[0, 0], [1, 0.001], [2, 0], [2, 2]], 0.05)).toEqual([[0, 0], [2, 0], [2, 2]]);
   }, 120000);
 
   it('rebuilds the diagram from the spec in the file when the .drawio.svg is gone', async () => {
@@ -552,6 +862,19 @@ describe.runIf(run)('edits made in Excalidraw come back', () => {
     expect(d.nodes.map((n) => n.id)).not.toContain('email');
     expect(res.check.findings.filter((x) => x.level === 'error')).toEqual([]);
 
+    // A sequence diagram: a node pasted from the shapes library and dragged up beside the
+    // participants, an arrow drawn to it, a message deleted, one dragged down, a color picked.
+    const seq = path.join(tmp, 'real-seq.drawio.svg');
+    await build(fs.readFileSync('examples/pay-sequence.yaml', 'utf8'), { out: seq, browser: b });
+    const res3 = await importExcalidraw('test/fixtures/excalidraw/pay-sequence-edited.excalidraw', seq, { browser: b });
+    expect(res3.changes).toEqual(['added participant "Mobile app"', 'removed the message "result page"', 'added a message from "Checkout API" to "Mobile app": push receipt', 'put the messages in a new order', '"Stripe" is now red']);
+    const d3 = parseSpecText(show(seq).yaml).diagram;
+    expect(d3.nodes.at(-1)).toMatchObject({ label: 'Mobile app', kind: 'client' });
+    expect(d3.nodes.find((n) => n.id === 'stripe')!.color).toBe('red');
+    expect(flat(d3.seq as Msg[]).slice(0, 2).map((i) => i.label)).toEqual(['POST /checkout', 'Click "Pay"']);
+    expect(res3.check.findings).toEqual([]);
+    expect((await importExcalidraw('test/fixtures/excalidraw/pay-sequence-edited.excalidraw', seq, { browser: b })).changes).toEqual([]);
+
     const flow = path.join(tmp, 'real-flow.drawio.svg');
     await build(fs.readFileSync('examples/refund-flow.yaml', 'utf8'), { out: flow, browser: b });
     const res2 = await importExcalidraw('test/fixtures/excalidraw/refund-flow-edited.excalidraw', flow, { browser: b });
@@ -560,4 +883,70 @@ describe.runIf(run)('edits made in Excalidraw come back', () => {
     expect(d2.nodes.find((n) => n.id === 'fraud_flag')!.kind).toBe('decision');
     expect(d2.edges.find((e) => e.from === 'review' && e.to === 'approved')!.label).toBe('decided');
   }, 120000);
+});
+
+describe('share links', () => {
+  it('frames buffers the way Excalidraw does and seals a scene only its key opens', async () => {
+    const parts = [Buffer.from('one'), Buffer.from(''), Buffer.from('three, longer')];
+    const joined = concatBuffers(...parts);
+    expect([...joined.subarray(0, 8)]).toEqual([0, 0, 0, 1, 0, 0, 0, 3]);
+    expect(splitBuffers(joined).map(String)).toEqual(['one', '', 'three, longer']);
+    const text = JSON.stringify({ type: 'excalidraw', note: 'naïve ✓' });
+    const a = await seal(text), z = await seal(text);
+    expect(a.key).toMatch(/^[\w-]{22}$/);
+    expect(a.key).not.toBe(z.key);
+    expect(Buffer.from(a.payload).includes(Buffer.from('excalidraw"'))).toBe(false);
+    expect(JSON.parse(splitBuffers(a.payload)[0]!.toString())).toEqual({ version: 2, compression: 'pako@1', encryption: 'AES-GCM' });
+    expect(await unseal(a.payload, a.key)).toBe(text);
+    await expect(unseal(a.payload, z.key)).rejects.toThrow();
+  });
+
+  it('leaves images out, posts once, and builds the link from the id and the key', async () => {
+    const el = (id: string, type: string) => ({ id, type, x: 0, y: 0, width: 1, height: 1, groupIds: [], boundElements: [] }) as unknown as ExcalidrawElement;
+    const scene = { type: 'excalidraw', version: 2, source: 'x', elements: [el('a', 'rectangle'), el('b', 'image')], appState: { viewBackgroundColor: '#fff', gridSize: null, theme: 'light' }, files: { f: { mimeType: 'image/svg+xml', id: 'f', dataURL: 'data:', created: 1, lastRetrieved: 1 } } } as ExcalidrawFile;
+    expect(shareable(scene).images).toBe(1);
+    expect(JSON.parse(shareable(scene).text)).toMatchObject({ elements: [{ id: 'a' }], files: {} });
+    const calls: Array<{ url: string; body: Uint8Array }> = [];
+    const post = (async (url: string, init: { body: Uint8Array }) => {
+      calls.push({ url, body: init.body });
+      return new Response(JSON.stringify({ id: 'abc123' }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const res = await shareLink(scene, post);
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.url).toBe('https://json.excalidraw.com/api/v2/post/');
+    const m = /^https:\/\/excalidraw\.com\/#json=abc123,([\w-]{22})$/.exec(res.url)!;
+    expect(m).toBeTruthy();
+    expect(JSON.parse(await unseal(calls[0]!.body, m[1]!)).elements.length).toBe(1);
+    const refuse = (async () => new Response(JSON.stringify({ error_class: 'RequestTooLargeError' }), { status: 413 })) as unknown as typeof fetch;
+    await expect(shareLink(scene, refuse)).rejects.toThrow(/too large/);
+    const down = (async () => { throw new Error('offline'); }) as unknown as typeof fetch;
+    await expect(shareLink(scene, down)).rejects.toThrow(/couldn't reach excalidraw\.com/);
+  });
+});
+
+describe('watching a file', () => {
+  it('runs once per save, however the editor writes it, and not for other files', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-watch-'));
+    const file = path.join(dir, 'a.excalidraw');
+    fs.writeFileSync(file, 'one');
+    let runs = 0;
+    const w = watchFile(file, async () => void runs++, { settle: 40 });
+    const settle = () => new Promise((r) => setTimeout(r, 250));
+    fs.writeFileSync(path.join(dir, 'other.txt'), 'x');
+    await settle();
+    expect(runs).toBe(0);
+    fs.writeFileSync(file, 'two!');
+    await settle();
+    expect(runs).toBe(1);
+    // Saved by writing beside it and renaming over it.
+    fs.writeFileSync(path.join(dir, 'a.excalidraw.tmp'), 'three!!');
+    fs.renameSync(path.join(dir, 'a.excalidraw.tmp'), file);
+    await settle();
+    expect(runs).toBe(2);
+    w.stop();
+    await w.done;
+    fs.writeFileSync(file, 'four!!!!');
+    await settle();
+    expect(runs).toBe(2);
+  });
 });

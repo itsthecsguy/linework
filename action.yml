@@ -1,0 +1,50 @@
+name: Linework diagrams
+description: Rebuild linework diagrams when their YAML specs change, or fail the job when a diagram is out of date.
+author: itsthecsguy
+branding:
+  icon: git-branch
+  color: blue
+inputs:
+  paths:
+    description: Files or folders to look in for specs (docs/arch.yaml builds docs/arch.drawio.svg). Space separated.
+    default: .
+  mode:
+    description: '"check" fails the job if any diagram is out of date and changes nothing. "update" rebuilds them in the workspace, for a later step to commit.'
+    default: check
+  version:
+    description: The linework version to run, as an npm version or tag.
+    default: latest
+outputs:
+  changed:
+    description: '"true" when update mode rebuilt at least one diagram.'
+    value: ${{ steps.sync.outputs.changed }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+    - name: Install linework
+      shell: bash
+      run: npm install --global "@itsthecsguy/linework@${{ inputs.version }}"
+    # Checking only reads files. Rebuilding draws, which needs a browser: GitHub's
+    # runners come with Chrome; anywhere else, fetch the headless build linework uses.
+    - name: Find a browser
+      if: inputs.mode != 'check'
+      shell: bash
+      run: |
+        if ! command -v google-chrome >/dev/null && ! command -v chromium >/dev/null && ! command -v chromium-browser >/dev/null; then
+          linework install-browser
+        fi
+    - name: Sync diagrams
+      id: sync
+      shell: bash
+      env:
+        LINEWORK_NO_DAEMON: '1'
+      run: |
+        if [ "${{ inputs.mode }}" = "check" ]; then
+          linework sync ${{ inputs.paths }} --check
+        else
+          linework sync ${{ inputs.paths }}
+          if [ -n "$(git status --porcelain -- '*.drawio.svg' 2>/dev/null)" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "changed=false" >> "$GITHUB_OUTPUT"; fi
+        fi

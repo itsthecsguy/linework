@@ -10,7 +10,7 @@ const root = path.resolve(here, '../..')
 const { build } = await import(path.join(root, 'dist/api.js'))
 const { DrawioBrowser } = await import(path.join(root, 'dist/render/browser.js'))
 
-const TYPES = ['serverless-aws', 'gcp-ingest', 'orders-azure', 'refund-flow', 'job-state', 'pay-sequence', 'shop-er']
+const TYPES = ['serverless-aws', 'gcp-ingest', 'orders-azure', 'refund-flow', 'job-state', 'pay-sequence', 'shop-er', 'billing-class', 'launch-timeline']
 const STYLES = ['clean', 'soft', 'paper', 'dark', 'midnight', 'mono', 'bold', 'sketch', 'blueprint', 'c4']
 
 const withTheme = (file, theme) => fs.readFileSync(file, 'utf8').replace(/^theme:.*\n/m, '') + `\ntheme: ${theme}\n`

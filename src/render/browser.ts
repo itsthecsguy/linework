@@ -111,6 +111,53 @@ window.aiviz = {
       });
     });
   },
+  // The outlines an icon's SVG is made of, as points: one list per closed contour,
+  // sampled every \`step\` pixels. For tools that draw polygons but not SVG paths.
+  iconOutlines: function (svgs, step) {
+    var NS = 'http://www.w3.org/2000/svg';
+    return svgs.map(function (text) {
+      if (!text) return null;
+      var holder = document.createElement('div');
+      holder.style.cssText = 'position:absolute;left:-99999px;top:0';
+      holder.innerHTML = text;
+      document.body.appendChild(holder);
+      var out = [];
+      try {
+        var svg = holder.querySelector('svg');
+        if (!svg || svg.querySelector('image')) return null;
+        var base = svg.getScreenCTM();
+        var els = svg.querySelectorAll('path,rect,ellipse,circle,polygon');
+        for (var k = 0; k < els.length; k++) {
+          var el = els[k];
+          var fill = el.getAttribute('fill'), stroke = el.getAttribute('stroke');
+          var hasFill = !!fill && fill != 'none', hasStroke = !!stroke && stroke != 'none';
+          if (!hasFill && !hasStroke) continue;
+          var m = base.inverse().multiply(el.getScreenCTM());
+          var subs = el.tagName == 'path' ? ((el.getAttribute('d') || '').match(/M[^M]*/g) || []) : [null];
+          for (var j = 0; j < subs.length; j++) {
+            var p = el;
+            if (subs[j] != null) {
+              p = document.createElementNS(NS, 'path');
+              p.setAttribute('d', subs[j]);
+              el.parentNode.appendChild(p);
+            }
+            var len = p.getTotalLength();
+            if (len > 0) {
+              var n = Math.max(8, Math.ceil(len / step)), pts = [];
+              for (var i = 0; i < n; i++) {
+                var q = p.getPointAtLength((len * i) / n);
+                pts.push([q.x * m.a + q.y * m.c + m.e, q.x * m.b + q.y * m.d + m.f]);
+              }
+              var alpha = function (name) { var v = parseFloat(el.getAttribute(name)); return isNaN(v) ? 1 : v; };
+              out.push({ path: k, opacity: alpha('opacity') * alpha(hasFill ? 'fill-opacity' : 'stroke-opacity'), fill: hasFill ? fill : null, stroke: hasStroke ? stroke : null, strokeWidth: +(el.getAttribute('stroke-width') || 1), closed: subs[j] == null || /z\\s*$/i.test(subs[j]), points: pts });
+            }
+            if (p !== el) p.remove();
+          }
+        }
+      } finally { holder.remove(); }
+      return out;
+    });
+  },
   hasStencil: function (name) {
     return mxStencilRegistry.getStencil(name) != null;
   },
@@ -184,6 +231,19 @@ export interface InspectCell {
   points: Array<{ x: number; y: number }> | null;
 }
 
+/** One contour of an icon: a filled outline or a stroked line, in the icon's own pixels. */
+export interface IconOutline {
+  /** Which SVG element it came from. Contours of one element cut holes in each other. */
+  path: number;
+  fill: string | null;
+  stroke: string | null;
+  strokeWidth: number;
+  /** 0 to 1. */
+  opacity: number;
+  closed: boolean;
+  points: Array<[number, number]>;
+}
+
 export class DrawioBrowser {
   private constructor(private browser: Browser, private page: Page, private server: http.Server) {}
 
@@ -239,6 +299,11 @@ export class DrawioBrowser {
   /** Each of the cells drawn alone, as SVG text; null for a cell the file doesn't have. */
   cellSvgs(xml: string, ids: string[]): Promise<Array<string | null>> {
     return this.page.evaluate(([x, i]) => (window as any).aiviz.cellSvgs(x, i), [xml, ids] as const);
+  }
+
+  /** Each icon SVG as the contours it is made of; null for one that isn't plain shapes. */
+  iconOutlines(svgs: Array<string | null>, step = 0.2): Promise<Array<IconOutline[] | null>> {
+    return this.page.evaluate(([s, st]) => (window as any).aiviz.iconOutlines(s, st), [svgs, step] as const);
   }
 
   hasStencil(name: string): Promise<boolean> {

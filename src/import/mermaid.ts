@@ -1,7 +1,8 @@
 // Mermaid -> linework Diagram. Covers the subset people actually use in design docs:
-// flowchart/graph, stateDiagram(-v2), sequenceDiagram and erDiagram. Styling
+// flowchart/graph, stateDiagram(-v2), sequenceDiagram, erDiagram and classDiagram. Styling
 // directives (classDef, style, linkStyle, click) are dropped with a warning.
-import { humanize } from '../spec/parse.js';
+import { humanize, parseClassEdge, parseMember } from '../spec/parse.js';
+import { dayOf, isoOf } from '../spec/model.js';
 import type { Card, Diagram, EdgeStyle, FrameOp, Group, MessageStyle, Node, SeqItem } from '../spec/model.js';
 
 export interface ImportResult {
@@ -20,7 +21,9 @@ export function importMermaid(src: string): ImportResult {
   if (/^stateDiagram(-v2)?\b/.test(head)) return stateDiagram(lines);
   if (/^sequenceDiagram\b/.test(head)) return sequenceDiagram(lines);
   if (/^erDiagram\b/.test(head)) return erDiagram(lines);
-  throw new Error(`unsupported Mermaid diagram "${head.split(/\s/)[0]}". linework imports flowchart/graph, stateDiagram, sequenceDiagram and erDiagram.`);
+  if (/^classDiagram(-v2)?\b/.test(head)) return classDiagram(lines);
+  if (/^gantt\b/.test(head)) return gantt(lines);
+  throw new Error(`unsupported Mermaid diagram "${head.split(/\s/)[0]}". linework imports flowchart/graph, stateDiagram, sequenceDiagram, erDiagram, classDiagram and gantt.`);
 }
 
 /** Pull ```mermaid blocks out of a Markdown document. */
@@ -474,4 +477,157 @@ function erDiagram(lines: string[]): ImportResult {
   // Mermaid entity names are often UPPERCASE; show them as written.
   for (const n of ents.values()) if (!n.fields?.length) delete n.fields;
   return { diagram: { type: 'er', direction: 'auto', theme: 'clean', groups: [], nodes: [...ents.values()], edges }, warnings: [...warnings] };
+}
+
+// ---------- class ----------
+
+/** Mermaid writes a member either way round: "+String name" or "+name: String", "+area() float" or "+area(): float". */
+function mermaidMember(raw: string) {
+  const text = raw.trim().replace(/[*$]$/, '');
+  const m = /^([+\-#~])?\s*(.*)$/.exec(text)!;
+  const vis = m[1] ?? '', body = m[2]!.trim();
+  const call = /^(.*\))\s*:?\s*(\S.*)?$/.exec(body);
+  if (call) return { name: vis + call[1]!.replace(/\s+/g, ' '), type: call[2]?.trim() || undefined, flags: [] };
+  if (body.includes(':')) return parseMember(vis + body);
+  const parts = body.split(/\s+/);
+  // Two words and no colon: the type comes first.
+  return parts.length >= 2 ? { name: vis + parts[parts.length - 1]!, type: parts.slice(0, -1).join(' '), flags: [] } : { name: vis + body, type: undefined, flags: [] };
+}
+
+function classDiagram(lines: string[]): ImportResult {
+  const warnings = new Set<string>();
+  const classes = new Map<string, Node>();
+  const used = new Set<string>();
+  const ids = new Map<string, string>();
+  const cls = (raw: string) => {
+    const name = raw.replace(/^`|`$/g, '').replace(/~.*~$/, '');
+    if (!ids.has(name)) {
+      const id = safeId(name, used);
+      ids.set(name, id);
+      classes.set(id, { id, label: name, kind: 'class', fields: [] });
+    }
+    return classes.get(ids.get(name)!)!;
+  };
+  const mark = (n: Node, text: string) => {
+    const k = text.toLowerCase();
+    if (k === 'interface' || k === 'enumeration' || k === 'enum' || k === 'abstract') n.kind = k === 'enumeration' ? 'enum' : k;
+  };
+  const edges: Diagram['edges'] = [];
+  let direction: Diagram['direction'] = 'auto';
+  let open: Node | null = null;
+  for (const raw of lines.slice(1)) {
+    const l = raw.trim();
+    let m: RegExpExecArray | null;
+    if (open) {
+      if (l === '}') open = null;
+      else if ((m = /^<<\s*(\w+)\s*>>$/.exec(l))) mark(open, m[1]!);
+      else {
+        const member = mermaidMember(l);
+        if (member?.name) open.fields!.push(member);
+      }
+      continue;
+    }
+    if ((m = /^direction\s+(TB|TD|BT|LR|RL)$/.exec(l))) { direction = m[1] === 'TD' ? 'TB' : (m[1] as Diagram['direction']); continue; }
+    if ((m = /^class\s+(`[^`]+`|[\w.~<>-]+)(?:\s*\["([^"]*)"\])?\s*(?:<<\s*(\w+)\s*>>)?\s*(\{)?\s*(\})?$/.exec(l))) {
+      const n = cls(m[1]!);
+      if (m[2]) n.label = m[2];
+      if (m[3]) mark(n, m[3]);
+      if (m[4] && !m[5]) open = n;
+      continue;
+    }
+    if ((m = /^<<\s*(\w+)\s*>>\s+(\S+)$/.exec(l))) { mark(cls(m[2]!), m[1]!); continue; }
+    // A relationship, with optional "1" and "many" at its ends.
+    const rel = /^(\S+)\s+(?:"([^"]*)"\s+)?([<|.*o>-]{2,4})\s+(?:"([^"]*)"\s+)?(\S+?)(?:\s*:\s*(.*))?$/.exec(l);
+    if (rel) {
+      const [, a, ca, op, cb, b, text] = rel;
+      const parsed = parseClassEdge(`${a} ${op} ${b}`);
+      const plain = op === '--' || op === '..';
+      if (parsed || plain) {
+        const from = cls(parsed ? parsed.from : a!), to = cls(parsed ? parsed.to : b!);
+        const base = `${from.id}->${to.id}`;
+        const k = edges.filter((e) => e.id.startsWith(base)).length + 1;
+        const label = [clean(text ?? ''), ca || cb ? [ca, cb].filter(Boolean).join(' to ') : ''].filter(Boolean).join(' ') || undefined;
+        edges.push({ id: k === 1 ? base : `${base}#${k}`, from: from.id, to: to.id, label, style: plain ? 'line' : 'sync', ...(parsed ? { rel: parsed.rel } : {}) });
+        continue;
+      }
+    }
+    // "Duck : +swim()" adds a member to a class from outside its braces.
+    if ((m = /^(`[^`]+`|[\w.-]+)\s*:\s*(.+)$/.exec(l))) {
+      const member = mermaidMember(m[2]!);
+      if (member?.name) cls(m[1]!).fields!.push(member);
+      continue;
+    }
+    if (/^(note|link|click|callback|style|classDef|cssClass|namespace|\}|title)\b/.test(l) || l === '}') {
+      if (/^(note|namespace)/.test(l)) warnings.add('notes and namespaces are dropped');
+      continue;
+    }
+    warnings.add(`skipped a line linework couldn't read: "${l.slice(0, 60)}"`);
+  }
+  for (const n of classes.values()) if (!n.fields?.length) delete n.fields;
+  return { diagram: { type: 'class', direction, theme: 'clean', groups: [], nodes: [...classes.values()], edges }, warnings: [...warnings] };
+}
+
+// ---------- gantt ----------
+
+function gantt(lines: string[]): ImportResult {
+  const warnings = new Set<string>();
+  const used = new Set<string>();
+  const groups: Group[] = [];
+  const nodes: Node[] = [];
+  /** Mermaid task id to the day after it ends, for "after a1". */
+  const endOf = new Map<string, number>();
+  let title: string | undefined, lane: string | undefined, last: number | undefined;
+  const skipWeekends = lines.some((l) => /^\s*excludes\s+.*weekends/.test(l));
+  if (skipWeekends) warnings.add('"excludes weekends" is not applied: durations count calendar days');
+  for (const raw of lines.slice(1)) {
+    const l = raw.trim();
+    let m: RegExpExecArray | null;
+    if ((m = /^title\s+(.+)$/.exec(l))) { title = clean(m[1]!); continue; }
+    if ((m = /^section\s+(.+)$/.exec(l))) {
+      lane = safeId(m[1]!.toLowerCase(), used);
+      groups.push({ id: lane, label: clean(m[1]!) });
+      continue;
+    }
+    if ((m = /^dateFormat\s+(.+)$/.exec(l))) {
+      if (m[1]!.trim() !== 'YYYY-MM-DD') warnings.add(`dateFormat ${m[1]!.trim()} isn't read; dates are taken as YYYY-MM-DD`);
+      continue;
+    }
+    if (/^(axisFormat|tickInterval|excludes|includes|todayMarker|weekday|accTitle|accDescr|click)\b/.test(l)) continue;
+    if (!(m = /^([^:]+):\s*(.*)$/.exec(l))) {
+      warnings.add(`skipped a line linework couldn't read: "${l.slice(0, 60)}"`);
+      continue;
+    }
+    const label = clean(m[1]!);
+    const parts = m[2]!.split(',').map((p) => p.trim()).filter(Boolean);
+    const tags = new Set<string>();
+    while (parts.length && ['done', 'active', 'crit', 'milestone'].includes(parts[0]!)) tags.add(parts.shift()!);
+    // What is left: [id,] [start,] end-or-duration.
+    const span = (p: string | undefined) => (p && /^\d+(\.\d+)?[dwhm]$/i.test(p) ? p : undefined);
+    const when = (p: string | undefined): number | undefined => {
+      const after = /^after\s+(.+)$/.exec(p ?? '');
+      if (after) return Math.max(...after[1]!.split(/\s+/).map((id) => endOf.get(id) ?? -Infinity));
+      return dayOf(p);
+    };
+    let id: string | undefined;
+    if (parts.length >= 3 || (parts.length === 2 && when(parts[0]) == null && !span(parts[0]))) id = parts.shift();
+    let start = parts.length >= 2 ? when(parts.shift()) : last;
+    if (start == null || !Number.isFinite(start)) {
+      warnings.add(`skipped "${label}": couldn't work out when it starts`);
+      continue;
+    }
+    const tail = parts[0];
+    let days = 1;
+    if (span(tail)) {
+      const n = parseFloat(tail!);
+      days = Math.max(1, Math.round(/w$/i.test(tail!) ? n * 7 : /m$/i.test(tail!) ? n / 1440 : /h$/i.test(tail!) ? n / 24 : n));
+    } else if (dayOf(tail) != null) days = Math.max(1, dayOf(tail)! - start);
+    const milestone = tags.has('milestone');
+    const end = start + (milestone ? 0 : days - 1);
+    last = milestone ? start : end + 1;
+    if (id) endOf.set(id, last);
+    const nid = safeId(id ?? label.toLowerCase(), used);
+    nodes.push({ id: nid, label, kind: milestone ? 'milestone' : tags.has('done') ? 'done' : tags.has('crit') ? 'risk' : 'task', parent: lane, start: isoOf(start), ...(milestone ? {} : { end: isoOf(end) }), ...(tags.has('active') ? { highlight: true } : {}) });
+  }
+  if (!nodes.length) throw new Error('this gantt chart has no tasks linework could read');
+  return { diagram: { type: 'timeline', title, direction: 'auto', theme: 'clean', groups: groups.filter((g) => nodes.some((n) => n.parent === g.id)), nodes, edges: [] }, warnings: [...warnings] };
 }

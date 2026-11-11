@@ -11,7 +11,7 @@
 // text. Icons become embedded SVG images.
 import { fingerprint, labelLines, type Cell, type DrawioModel } from '../drawio/read.js';
 import { toDiagram, toYaml } from '../drawio/show.js';
-import type { DrawioBrowser, InspectCell } from '../render/browser.js';
+import type { DrawioBrowser, IconOutline, InspectCell } from '../render/browser.js';
 
 type Box = { x: number; y: number; w: number; h: number };
 type P = { x: number; y: number };
@@ -77,6 +77,8 @@ interface PendingText {
 export interface Origin {
   cell: string;
   part: string;
+  /** In a library file: what a copy of this drawing is, wherever it is dropped. */
+  lib?: { kind: string; icon?: string };
   /** On a few elements: the diagram's spec, so the file can be imported without its .drawio.svg. */
   doc?: { v: 1; spec: string; base: string };
 }
@@ -158,8 +160,13 @@ const lerp = (a: P, b: P, t: number): P => ({ x: a.x + (b.x - a.x) * t, y: a.y +
  * the count is odd, the middle of the middle segment when even. That is often a
  * corner. Given where linework put the label, add points along the straight runs
  * (which changes nothing drawn) until the middle of the path is that spot.
+ *
+ * With `always`, the label gets a short run of its own even where it already
+ * sits in the middle. Excalidraw puts a handle at the middle of every long run
+ * of a right-angle arrow, and a double-click there grabs the handle instead of
+ * opening the label for editing. A run this short has no handle.
  */
-export function centreRouteOn(pts: P[], label: P): P[] {
+export function centreRouteOn(pts: P[], label: P, always = false): P[] {
   const n = pts.length;
   const natural = n % 2 ? pts[(n - 1) / 2]! : lerp(pts[n / 2 - 1]!, pts[n / 2]!, 0.5);
   const hit = nearest(pts, label);
@@ -169,14 +176,18 @@ export function centreRouteOn(pts: P[], label: P): P[] {
   // Keep clear of the segment's ends so the two new points stay in order.
   const at = Math.max(2, Math.min(len - 2, hit.t * len));
   const spot = lerp(a, b, at / len);
-  if (Math.hypot(spot.x - natural.x, spot.y - natural.y) <= 6) return pts;
-  const half = Math.min(4, at / 2, (len - at) / 2);
+  if (!always && Math.hypot(spot.x - natural.x, spot.y - natural.y) <= 6) return pts;
+  // The label's own run is a couple of pixels: too short for Excalidraw to hang a handle on.
+  const half = Math.min(1, at / 2, (len - at) / 2);
   const before = pts.slice(0, hit.i + 1), after = pts.slice(hit.i + 1);
-  const lo = (at - half) / len, hi = (at + half) / len;
   // The label's segment is the middle one when as many points come before it as after.
+  // The points that even the count out huddle against it, so the runs either side
+  // stay long and their handles stay clear of the label.
   const padLeft = Math.max(0, after.length - before.length), padRight = Math.max(0, before.length - after.length);
-  const left = Array.from({ length: padLeft }, (_, k) => lerp(a, b, (lo * (k + 1)) / (padLeft + 1)));
-  const right = Array.from({ length: padRight }, (_, k) => lerp(a, b, hi + ((1 - hi) * (k + 1)) / (padRight + 1)));
+  const stepL = Math.min(0.5, (at - half) / (padLeft + 1)), stepR = Math.min(0.5, (len - at - half) / (padRight + 1));
+  const lo = (at - half) / len, hi = (at + half) / len;
+  const left = Array.from({ length: padLeft }, (_, k) => lerp(a, b, (at - half - stepL * (padLeft - k)) / len));
+  const right = Array.from({ length: padRight }, (_, k) => lerp(a, b, (at + half + stepR * (k + 1)) / len));
   return [...before, ...left, lerp(a, b, lo), lerp(a, b, hi), ...right, ...after];
 }
 
@@ -195,7 +206,78 @@ export function drawnText(c: Cell): { label: string; tech?: string } {
   return tech ? { label: lines.slice(0, -1).join(' ') || lines[0] || '', tech: tech.text } : { label: lines.join(' ') };
 }
 
-export async function toExcalidraw(m: DrawioModel, b: DrawioBrowser): Promise<ExcalidrawFile> {
+export interface ExcalidrawOptions {
+  /**
+   * How cloud icons are drawn. 'image' (the default) embeds each as an SVG image,
+   * exact at any size. 'vector' draws them as Excalidraw shapes, for the places
+   * images can't go: a library file, and a link shared from excalidraw.com.
+   */
+  icons?: 'image' | 'vector';
+}
+
+/** A contour with the points a straight run doesn't need taken out (Douglas-Peucker). */
+export function simplify(pts: Array<[number, number]>, tolerance: number): Array<[number, number]> {
+  if (pts.length < 3) return pts;
+  const keep = new Uint8Array(pts.length);
+  keep[0] = keep[pts.length - 1] = 1;
+  const stack: Array<[number, number]> = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [a, z] = stack.pop()!;
+    let worst = 0, at = -1;
+    for (let i = a + 1; i < z; i++) {
+      const d = distToSegment({ x: pts[i]![0], y: pts[i]![1] }, { x: pts[a]![0], y: pts[a]![1] }, { x: pts[z]![0], y: pts[z]![1] }).d;
+      if (d > worst) [worst, at] = [d, i];
+    }
+    if (worst > tolerance && at > 0) {
+      keep[at] = 1;
+      stack.push([a, at], [at, z]);
+    }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+
+function inPolygon(p: [number, number], poly: Array<[number, number]>): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i]!, [xj, yj] = poly[j]!;
+    if (yi > p[1] !== yj > p[1] && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** Any CSS color draw.io writes, as #RRGGBB. */
+function hex(c: string): string {
+  const m = /^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/.exec(c);
+  if (m) return '#' + [m[1], m[2], m[3]].map((v) => Number(v).toString(16).padStart(2, '0')).join('');
+  const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(c);
+  return short ? `#${short[1]}${short[1]}${short[2]}${short[2]}${short[3]}${short[3]}` : c;
+}
+
+/**
+ * An icon as polygons Excalidraw can fill. A contour inside another of the same
+ * shape is a hole in it; Excalidraw has no holes, so a hole is drawn in the
+ * colour that shows through it: the shape underneath, or what the icon sits on.
+ */
+export function iconPolygons(outlines: IconOutline[], under: string): Array<{ points: Array<[number, number]>; fill: string | null; stroke: string | null; strokeWidth: number; opacity: number; closed: boolean }> {
+  const shapes = outlines.map((o) => ({ ...o, points: simplify(o.points, 0.06) })).filter((o) => o.points.length >= 2);
+  const out = shapes.map((o, i) => {
+    const opacity = Math.round(Math.max(0, Math.min(1, o.opacity ?? 1)) * 100);
+    if (!o.fill || !o.closed) return { path: o.path, depth: 0, points: o.points, fill: null, stroke: o.stroke ? hex(o.stroke) : null, strokeWidth: o.strokeWidth, opacity, closed: o.closed };
+    const probe = o.points[0]!;
+    const depth = shapes.filter((x, k) => k !== i && x.path === o.path && x.fill && inPolygon(probe, x.points)).length;
+    let fill = hex(o.fill);
+    if (depth % 2) {
+      // A see-through shape (a drop shadow) is not what shows through a hole; the solid one under it is.
+      const below = shapes.slice(0, i).reverse().find((x) => x.path !== o.path && x.fill && x.closed && (x.opacity ?? 1) > 0.9 && inPolygon(probe, x.points));
+      fill = below ? hex(below.fill!) : under;
+    }
+    return { path: o.path, depth, points: o.points, fill, stroke: null, strokeWidth: o.strokeWidth, opacity: depth % 2 ? 100 : opacity, closed: true };
+  });
+  // A hole is painted over the contour it is cut from, whichever the path lists first.
+  return out.map((o, i) => ({ o, i })).sort((p, q) => p.o.path - q.o.path || p.o.depth - q.o.depth || p.i - q.i).map(({ o }) => o);
+}
+
+export async function toExcalidraw(m: DrawioModel, b: DrawioBrowser, opts: ExcalidrawOptions = {}): Promise<ExcalidrawFile> {
   const inspected = await b.inspect(m.xml);
   const geo = new Map(inspected.map((c) => [c.id, c]));
   const background = /<mxGraphModel[^>]*\sbackground="(#[0-9a-fA-F]{6})"/.exec(m.xml)?.[1] ?? '#FFFFFF';
@@ -227,7 +309,7 @@ export async function toExcalidraw(m: DrawioModel, b: DrawioBrowser): Promise<Ex
       strokeWidth: num(s.strokeWidth, 1),
       strokeStyle: s.dashed === '1' ? 'dashed' : 'solid',
       roughness: s.sketch === '1' ? 1 : 0,
-      opacity: 100,
+      opacity: Math.max(0, Math.min(100, num(s.opacity, 100))),
       groupIds: [],
       frameId: null,
       roundness: null,
@@ -335,7 +417,7 @@ export async function toExcalidraw(m: DrawioModel, b: DrawioBrowser): Promise<Ex
       return;
     }
 
-    if (kind === 'group' || (g.container && s.shape !== 'umlLifeline' && s.shape !== 'swimlane')) {
+    if (kind === 'group' || kind === 'lane' || (g.container && s.shape !== 'umlLifeline' && s.shape !== 'swimlane')) {
       const el = make(id, 'rectangle', box, s, { roundness: corners(s) });
       const tb = g.textBox;
       const title = text(`${id}-title`, lines.join(' '), s, tb ? { left: tb.x, cy: tb.y + tb.h / 2 } : { left: box.x + 14, cy: box.y + 18 });
@@ -378,6 +460,11 @@ export async function toExcalidraw(m: DrawioModel, b: DrawioBrowser): Promise<Ex
      */
     const label = (owner: ExcalidrawElement, parts: Array<ExcalidrawElement | undefined> = []) => {
       anchors.set(c.id, owner);
+      // A name set beside its shape (a timeline bar too short to hold it) stays beside it.
+      if (!tech && !hasIcon && g.textBox && g.textBox.x >= box.x + box.w - 1) {
+        group(`${id}-group`, ...parts, owner, text(`${id}-label`, drawnText(c).label, s, { left: g.textBox.x, cy: g.textBox.y + g.textBox.h / 2 }));
+        return;
+      }
       if (!tech && !hasIcon) {
         bind(owner, whole, s, centreOf(g));
         if (parts.length) group(`${id}-group`, ...parts, owner);
@@ -466,8 +553,14 @@ export async function toExcalidraw(m: DrawioModel, b: DrawioBrowser): Promise<Ex
     const value = labelLines(c.label).join('\n');
     const tb = value ? g.textBox : null;
     const centre = tb ? { x: tb.x + tb.w / 2, y: tb.y + tb.h / 2 } : undefined;
-    const head = (name: string | undefined, fallback: string | null) => (name === undefined ? fallback : name in HEADS ? HEADS[name]! : 'triangle');
-    const endHead = head(s.endArrow, 'triangle'), startHead = head(s.startArrow, null);
+    const head = (name: string | undefined, fill: string | undefined, fallback: string | null) => {
+      if (name === undefined) return fallback;
+      // UML's marks: a hollow triangle for "extends", a diamond for "has".
+      if (name === 'block' && fill === '0') return 'triangle_outline';
+      if (name === 'diamondThin' || name === 'diamond') return fill === '0' ? 'diamond_outline' : 'diamond';
+      return name in HEADS ? HEADS[name]! : 'triangle';
+    };
+    const endHead = head(s.endArrow, s.endFill, 'triangle'), startHead = head(s.startArrow, s.startFill, null);
     const isArrow = !!(endHead || startHead);
 
     let route = pts;
@@ -482,7 +575,7 @@ export async function toExcalidraw(m: DrawioModel, b: DrawioBrowser): Promise<Ex
     // A label on the line is bound to the arrow, which masks the line behind it.
     // One set beside the line (a sequence message) stays where it is, as its own text.
     const onLine = !!centre && isArrow && nearest(pts, centre).d <= 6;
-    if (onLine) route = centreRouteOn(route, centre!);
+    if (onLine) route = centreRouteOn(route, centre!, true);
 
     const attach = (cellId: string | undefined, p: P) => {
       // A field row stands for its table.
@@ -580,10 +673,38 @@ export async function toExcalidraw(m: DrawioModel, b: DrawioBrowser): Promise<Ex
 
   const files: ExcalidrawFile['files'] = {};
   const svgs = icons.length ? await b.cellSvgs(m.xml, icons.map((i) => i.cell)) : [];
+  const outlines = opts.icons === 'vector' && icons.length ? await b.iconOutlines(svgs) : [];
   icons.forEach((icon, i) => {
     const svg = svgs[i];
+    const at = elements.indexOf(icon.el);
     if (!svg) {
-      elements.splice(elements.indexOf(icon.el), 1);
+      elements.splice(at, 1);
+      return;
+    }
+    const shapes = outlines[i];
+    if (shapes?.length) {
+      // Drawn as shapes, in the image's place and in its groups.
+      const ownerId = icon.cell.endsWith('__icon') ? icon.cell.slice(0, -'__icon'.length) : '';
+      const ownerFill = String(anchors.get(ownerId)?.backgroundColor ?? 'transparent');
+      const under = ownerFill === 'transparent' ? background : ownerFill;
+      const [x0, y0] = [icon.el.x, icon.el.y];
+      cell = icon.cell;
+      const before = elements.length;
+      iconPolygons(shapes, under).forEach((poly, k) => {
+        const [px, py] = poly.points[0]!;
+        const pts = (poly.closed ? [...poly.points, poly.points[0]!] : poly.points).map(([x, y]) => [r2(x - px), r2(y - py)]);
+        const xs = pts.map((p) => p[0]!), ys = pts.map((p) => p[1]!);
+        const el = make(`lw-${icon.cell}-i${k}`, 'line', { x: x0 + px, y: y0 + py, w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) }, {}, {
+          ...LINE,
+          points: pts,
+          strokeColor: poly.stroke ?? 'transparent',
+          backgroundColor: poly.fill ?? 'transparent',
+          strokeWidth: poly.stroke ? Math.max(0.5, poly.strokeWidth) : 1,
+          opacity: poly.opacity,
+        });
+        el.groupIds.push(`lw-${icon.cell}-shapes`, ...icon.el.groupIds);
+      });
+      elements.splice(at, 1, ...elements.splice(before));
       return;
     }
     const dataURL = `data:image/svg+xml;base64,${Buffer.from(svg, 'utf8').toString('base64')}`;

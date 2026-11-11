@@ -1,7 +1,7 @@
 // Diagram -> absolute geometry, via ELK layered.
 import ElkModule from 'elkjs/lib/elk.bundled.js';
 import type { ElkNode, ElkExtendedEdge, ELK as ElkApi } from 'elkjs/lib/elk-api.js';
-import { kindDef, type Diagram, type Direction, type ThemeName } from '../spec/model.js';
+import { kindDef, stereotype, type Diagram, type Direction, type ThemeName } from '../spec/model.js';
 import { type ThemeArg, ER_HEAD, ER_ROW, FIELD_PAD, GROUP_INSET, LINE, PAD_X, PAD_Y, typeface } from '../drawio/theme.js';
 import { TextMeasurer, type FontSpec } from './text.js';
 import { ICON_PAD } from '../drawio/icons.js';
@@ -69,7 +69,8 @@ export async function layout(d: Diagram, measure: Measure = estimateMeasure): Pr
   const tm = new TextMeasurer(measure);
   await tm.prepare([
     ...d.nodes.flatMap((n): Array<[string | undefined, FontSpec]> => [
-      [n.label, kindDef(d.type, n.kind).shape === 'table' ? fonts.label : fonts.label],
+      [stereotype(d.type, n.kind) ? `«${stereotype(d.type, n.kind)}» ${n.label}` : n.label, fonts.label],
+      [n.label, fonts.label],
       [n.tech, fonts.sub],
       ...(n.fields ?? []).flatMap((fl): Array<[string | undefined, FontSpec]> => [
         [fl.name, fl.flags.includes('pk') ? fonts.fieldKey : fonts.field],
@@ -143,6 +144,8 @@ export async function layout(d: Diagram, measure: Measure = estimateMeasure): Pr
   if (d.direction !== 'auto') return go(d.direction);
   // Relationships attach to rows, on a table's sides, so tables read left to right.
   if (d.type === 'er') return go('LR');
+  // A class diagram is a hierarchy: parents and owners above what extends or belongs to them.
+  if (d.type === 'class') return go('TB');
   // Pick the direction whose result fits a document page best.
   const [tb, lr] = await Promise.all([go('TB'), go('LR')]);
   return score(tb) <= score(lr) ? tb : lr;
@@ -180,7 +183,8 @@ function nodeSizes(d: Diagram, tm: TextMeasurer, fonts: Fonts) {
   for (const n of d.nodes) {
     const shape = kindDef(d.type, n.kind).shape;
     if (shape === 'table') {
-      let w = tm.width(n.label, fonts.label) + 2 * FIELD_PAD + 8;
+      const mark = stereotype(d.type, n.kind);
+      let w = tm.width(mark ? `«${mark}» ${n.label}` : n.label, fonts.label) + 2 * FIELD_PAD + 8;
       for (const f of n.fields ?? []) {
         const nameW = tm.width(f.name, f.flags.includes('pk') ? fonts.fieldKey : fonts.field);
         w = Math.max(w, nameW + tm.width(fieldRight(f), fonts.field) + 2 * FIELD_PAD + 28);
