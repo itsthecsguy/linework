@@ -24,6 +24,18 @@ Usage:
         linework set d.drawio.svg api.label="Checkout API v2" api.highlight=true
         linework add d.drawio.svg "fraud: { label: Fraud check, in: vpc }" "api -> fraud: score"
         linework rm  d.drawio.svg cache "api -> stripe"
+  linework config [init]
+      Print the team settings that apply here, from the nearest linework.yaml:
+      theme, shared components, statuses, kinds, naming rules and templates.
+  linework lint [dir|file...] [--strict]
+      Check every diagram under the paths (default: here) against the layout
+      rules and the team's linework.yaml. Exit 1 on errors; --strict, on warnings too.
+  linework restyle <dir|file...>
+      Bring existing diagrams back to the team's theme and colors. Boxes stay
+      where they are; styling changed by hand in draw.io is reset.
+  linework new [template] [-o spec.yaml]
+      Print a starter spec: one of the team's templates, or a built-in example.
+      With no name, list them.
   linework show <file.drawio.svg> [--geometry]
       Print the spec of an existing diagram (including hand edits) as YAML.
       --geometry appends node positions as comments.
@@ -71,6 +83,38 @@ Usage:
 
 
 
+const STARTER_CONFIG = `# Team settings for linework diagrams in this repo.
+# Every option: run "linework skill" and read references/team-config.md there.
+
+theme: clean          # clean | soft | dark | sketch | blueprint | c4, or one from "themes:" below
+lockTheme: true       # a spec may not pick another theme
+out: docs/diagrams    # where new diagrams go
+
+# What a color means, once, for every diagram. Specs write "status: new".
+statuses:
+  new: green
+  deprecated: gray
+  failure: red
+legend: true
+
+# Systems many diagrams share. A spec writes "stripe: {}" and gets these.
+components: {}
+#  stripe: { label: Stripe, kind: external, tech: Payments }
+
+naming:
+  case: sentence      # sentence | title | any
+  maxLength: 32
+
+limits: { nodes: 16 }
+
+# Your own theme, built on a built-in one. Colors are hex.
+# themes:
+#   acme:
+#     extends: clean
+#     accent: "#0A6E5C"
+#     font: { family: Acme Sans, regular: fonts/AcmeSans-Regular.woff2, bold: fonts/AcmeSans-SemiBold.woff2 }
+`;
+
 /** Where a command writes, and where it reads a spec piped on stdin from. */
 export interface IO {
   out(text: string): void;
@@ -111,6 +155,10 @@ export function report(e: unknown, io: IO = processIO): number {
     io.err(`error: ${(e as Error).message}\n`);
     return 2;
   }
+  if ((e as Error)?.name === 'ConfigError') {
+    io.err(`linework.yaml error in ${(e as Error).message}\n`);
+    return 2;
+  }
   if ((e as Error)?.name === 'SpecError') {
     io.err('spec error:\n');
     for (const i of (e as SpecError).issues) io.err(`  ${i.path ? i.path + ': ' : ''}${i.message}\n`);
@@ -122,7 +170,7 @@ export function report(e: unknown, io: IO = processIO): number {
 
 /** Commands that draw, and so need Chromium. */
 export function needsBrowser(cmd: string, values: Values): boolean {
-  return ['build', 'set', 'add', 'rm', 'render', 'check', 'tidy', 'icons'].includes(cmd) || (cmd === 'import' && !!values.out);
+  return ['build', 'set', 'add', 'rm', 'render', 'check', 'tidy', 'icons', 'lint', 'restyle'].includes(cmd) || (cmd === 'import' && !!values.out);
 }
 
 /** A small spec with a group, labels and a cycle: enough to exercise ELK's main paths. */
@@ -146,6 +194,7 @@ export const OPTIONS = {
   scale: { type: 'string' },
   'no-open': { type: 'boolean', default: false },
   port: { type: 'string' },
+  strict: { type: 'boolean', default: false },
   'no-daemon': { type: 'boolean', default: false },
   root: { type: 'string' },
   to: { type: 'string' },
@@ -176,6 +225,7 @@ export async function run(cmd: string, values: Values, positionals: string[], la
       const text = src === '-' ? io.stdin() : fs.readFileSync(src, 'utf8');
       const { build } = await import('./api.js');
       // Spec errors first: they shouldn't wait on, or hide behind, a browser problem.
+      (await import('./config.js')).useConfigFor(values.out);
       (await import('./spec/parse.js')).parseSpecText(text);
       const res = await build(text, { out: values.out, png: values.png, force: values.force, relayout: values.relayout, browser: await browser() });
       for (const line of buildLines(res, values.png)) console.log(line);
@@ -192,6 +242,101 @@ export async function run(cmd: string, values: Values, positionals: string[], la
       (await import('./spec/parse.js')).parseSpecText(patchSpec(show(file).yaml, [{ op: cmd, args }]));
       const res = await patchFile(file, [{ op: cmd, args }], { png: values.png, browser: await browser() });
       for (const line of buildLines(res, values.png)) console.log(line);
+      return;
+    }
+    case 'config': {
+      const { useConfigFor } = await import('./config.js');
+      const { themeNames } = await import('./drawio/theme.js');
+      if (positionals[0] === 'init') {
+        const target = path.resolve('linework.yaml');
+        if (fs.existsSync(target) && !values.force) fail('linework.yaml already exists here. Use --force to overwrite it.');
+        fs.writeFileSync(target, STARTER_CONFIG);
+        console.log('wrote linework.yaml. Edit it, then run "linework config" to see what applies and "linework lint" to check existing diagrams.');
+        return;
+      }
+      const cfg = useConfigFor(positionals[0] ?? process.cwd());
+      if (!cfg.path) return void console.log('no linework.yaml here or in any folder above. Built-in defaults apply: theme clean, direction auto. "linework config init" writes a starter file.');
+      const rel = (p: string) => path.relative(process.cwd(), p) || '.';
+      console.log(`config: ${rel(cfg.path)}`);
+      console.log(`theme: ${cfg.theme ?? 'clean'}${cfg.lockTheme ? ' (locked: leave "theme:" out of specs)' : ` (default; a spec may pick another of: ${themeNames().join(', ')})`}`);
+      if (cfg.direction) console.log(`direction: ${cfg.direction}`);
+      if (cfg.out) console.log(`save new diagrams in: ${rel(cfg.out)}`);
+      const comps = Object.entries(cfg.components);
+      if (comps.length) {
+        console.log('shared components (use these ids; leave out the fields shown, they are filled in):');
+        for (const [id, c] of comps) console.log(`  ${id}: { ${Object.entries(c).map(([k, v]) => `${k}: ${v}`).join(', ')} }`);
+      }
+      const sts = Object.entries(cfg.statuses);
+      if (sts.length) {
+        console.log(`statuses (write "status: <name>" on a node, group or edge instead of "color:"):`);
+        for (const [name, st] of sts) console.log(`  ${name}: ${st.color}${st.label ? `, shown as "${st.label}"` : ''}`);
+        if (cfg.legend) console.log('  a legend for the statuses used is drawn under each diagram');
+      }
+      for (const [type, kinds] of Object.entries(cfg.kinds)) {
+        console.log(`extra ${type} kinds:`);
+        for (const [k, def] of Object.entries(kinds ?? {})) console.log(`  ${k}: ${def.description}`);
+      }
+      const n = cfg.naming;
+      const naming = [n.case !== 'any' ? `${n.case} case` : '', n.maxLength ? `at most ${n.maxLength} characters` : '', n.banned.length ? `never: ${n.banned.join(', ')}` : ''].filter(Boolean);
+      if (naming.length) console.log(`labels: ${naming.join('; ')}`);
+      console.log(`limits: ${cfg.limits.nodes} nodes, ${cfg.limits.width}px wide`);
+      const rules = Object.entries(cfg.rules);
+      if (rules.length) console.log(`rule levels: ${rules.map(([r, l]) => `${r}=${l}`).join(', ')}`);
+      if (cfg.templates) console.log(`templates: run "linework new" to list them`);
+      return;
+    }
+    case 'lint': {
+      const { lintFiles } = await import('./api.js');
+      const res = await lintFiles(positionals.length ? positionals : ['.'], await browser());
+      let errors = 0, warnings = 0;
+      for (const r of res) {
+        const fs_ = r.check?.findings ?? [];
+        const e = fs_.filter((f) => f.level === 'error').length + (r.error ? 1 : 0);
+        errors += e;
+        warnings += fs_.length - (e - (r.error ? 1 : 0));
+        if (!r.error && !fs_.length) continue;
+        console.log(path.relative(process.cwd(), r.file));
+        if (r.error) console.log(`  error: ${r.error}`);
+        for (const f of fs_) console.log(`  ${f.level}: ${f.message} [${f.rule}]`);
+      }
+      console.log(`${res.length} diagram${res.length === 1 ? '' : 's'} checked: ${errors} errors, ${warnings} warnings`);
+      if (errors || (values.strict && warnings)) io.code = 1;
+      return;
+    }
+    case 'restyle': {
+      if (!positionals.length) fail('usage: linework restyle <dir|file...>');
+      const { restyleFiles } = await import('./api.js');
+      const res = await restyleFiles(positionals, await browser());
+      for (const r of res) {
+        const name = path.relative(process.cwd(), r.file);
+        if (r.error) console.log(`${name}: error: ${r.error}`);
+        else {
+          const left = r.result!.check.findings;
+          console.log(`${name}: restyled${left.length ? `, ${left.length} finding${left.length === 1 ? '' : 's'} left (run linework check on it)` : ''}`);
+        }
+      }
+      if (res.some((r) => r.error)) io.code = 1;
+      return;
+    }
+    case 'new': {
+      const { useConfigFor } = await import('./config.js');
+      const { fileURLToPath } = await import('node:url');
+      const cfg = useConfigFor(process.cwd());
+      const builtin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'linework', 'examples');
+      const list = (dir: string | undefined) => (dir && fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /\.ya?ml$/.test(f)).map((f) => ({ name: f.replace(/\.ya?ml$/, ''), file: path.join(dir, f) })) : []);
+      const team = list(cfg.templates), examples = list(builtin);
+      const name = positionals[0];
+      if (!name) {
+        if (team.length) console.log(`team templates:\n${team.map((t) => `  ${t.name}`).join('\n')}`);
+        console.log(`built-in examples:\n${examples.map((t) => `  ${t.name}`).join('\n')}`);
+        return;
+      }
+      const hit = [...team, ...examples].find((t) => t.name === name) ?? fail(`no template named "${name}". Run "linework new" to list them.`);
+      const text = fs.readFileSync(hit.file, 'utf8');
+      if (!values.out) return void io.out(text);
+      if (fs.existsSync(values.out) && !values.force) fail(`${values.out} exists. Use --force to overwrite it.`);
+      fs.writeFileSync(values.out, text);
+      console.log(`wrote ${values.out} from ${team.includes(hit) ? 'the team template' : 'the built-in example'} "${name}"`);
       return;
     }
     case 'show': {

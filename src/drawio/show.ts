@@ -23,7 +23,8 @@ import {
 } from '../spec/model.js';
 import { humanize } from '../spec/parse.js';
 import { absBox, labelLines, type Cell, type DrawioModel } from './read.js';
-import { cardFromArrow } from './theme.js';
+import { cardFromArrow, isTheme } from './theme.js';
+import { activeConfig } from '../config.js';
 import { lookOf } from './write.js';
 import { COLORS, type Look } from '../spec/model.js';
 
@@ -46,7 +47,8 @@ const isEntityStyle = (c: Cell) => (c.style.shape === 'swimlane' || 'swimlane' i
 
 export function toDiagram(m: DrawioModel): ShowResult {
   const notes: string[] = [];
-  const vertices = m.cells.filter((c) => c.vertex && c.attrs.aiviz_type !== 'icon');
+  // Icons and the legend are drawn from the spec each build; they aren't part of it.
+  const vertices = m.cells.filter((c) => c.vertex && c.attrs.aiviz_type !== 'icon' && c.attrs.aiviz_type !== 'legend');
 
   let type = m.meta.aiviz_type as DiagramType | undefined;
   if (!type || !DIAGRAM_TYPES.includes(type)) {
@@ -62,7 +64,8 @@ export function toDiagram(m: DrawioModel): ShowResult {
   const dirRaw = m.meta.aiviz_direction as Direction | undefined;
   const direction: Direction = dirRaw && DIRECTIONS.includes(dirRaw) ? dirRaw : 'auto';
   const themeRaw = m.meta.aiviz_theme as ThemeName | undefined;
-  const theme: ThemeName = themeRaw && THEMES.includes(themeRaw) ? themeRaw : 'clean';
+  // A theme this repo's config no longer defines falls back to the default.
+  const theme: ThemeName = themeRaw && isTheme(themeRaw) ? themeRaw : 'clean';
   if (type === 'sequence') return sequenceDiagram(m, theme, notes);
 
   const isEntity = (c: Cell) => type === 'er' && ((!!c.attrs.aiviz_kind && kindDef('er', c.attrs.aiviz_kind).shape === 'table') || isEntityStyle(c));
@@ -364,12 +367,17 @@ const CARD_R: Record<Card, string> = { zero_or_one: 'o|', one: '||', many: 'o{',
 
 function nodeParts(d: Diagram, n: Node): string[] {
   const parts: string[] = [];
-  if (n.label !== humanize(n.id)) parts.push(`label: ${q(n.label, true)}`);
-  if (n.kind !== DEFAULT_KIND[d.type]) parts.push(`kind: ${n.kind}`);
-  if (n.tech) parts.push(`tech: ${q(n.tech, true)}`);
-  if (n.icon) parts.push(`icon: ${n.icon}`);
+  // What the parser fills in when a field is left out: the team's shared
+  // component with this id, then the built-in default. Anything else is written.
+  const c = activeConfig().components[n.id] ?? {};
+  if (n.label !== (c.label ?? humanize(n.id))) parts.push(`label: ${q(n.label, true)}`);
+  if (n.kind !== (c.kind ?? DEFAULT_KIND[d.type])) parts.push(`kind: ${n.kind}`);
+  if ((n.tech ?? '') !== (c.tech ?? '')) parts.push(`tech: ${n.tech ? q(n.tech, true) : '""'}`);
+  const icon = c.icon ?? (d.type === 'architecture' ? KINDS[d.type][n.kind]?.icon : undefined);
+  if ((n.icon ?? '') !== (icon ?? '')) parts.push(`icon: ${n.icon ?? '""'}`);
   if (n.parent) parts.push(`in: ${n.parent}`);
-  if (n.color) parts.push(`color: ${n.color}`);
+  if (n.status) parts.push(`status: ${n.status}`);
+  else if (n.color) parts.push(`color: ${n.color}`);
   if (n.highlight) parts.push('highlight: true');
   return parts;
 }
@@ -380,7 +388,7 @@ export function toYaml(d: Diagram, header?: string): string {
   out.push(`type: ${d.type}`);
   if (d.title) out.push(`title: ${q(d.title)}`);
   if (d.type !== 'sequence') out.push(`direction: ${d.direction}`);
-  if (d.theme !== 'clean') out.push(`theme: ${d.theme}`);
+  if (d.theme !== (activeConfig().theme ?? 'clean')) out.push(`theme: ${d.theme}`);
   if (d.type === 'sequence') {
     out.push('participants:');
     for (const n of d.nodes) out.push(`  ${n.id}: { ${nodeParts(d, n).join(', ')} }`.replace('{  }', '{}'));
@@ -393,7 +401,8 @@ export function toYaml(d: Diagram, header?: string): string {
     for (const g of d.groups) {
       const parts = [`label: ${q(g.label, true)}`];
       if (g.parent) parts.push(`in: ${g.parent}`);
-      if (g.color) parts.push(`color: ${g.color}`);
+      if (g.status) parts.push(`status: ${g.status}`);
+      else if (g.color) parts.push(`color: ${g.color}`);
       if (g.highlight) parts.push('highlight: true');
       out.push(`  ${g.id}: { ${parts.join(', ')} }`);
     }
@@ -425,7 +434,8 @@ export function toYaml(d: Diagram, header?: string): string {
         const parts = [`from: ${from === '[*]' ? '"[*]"' : from}`, `to: ${to === '[*]' ? '"[*]"' : to}`];
         if (e.label) parts.push(`label: ${q(e.label, true)}`);
         if (e.style !== 'sync') parts.push(`style: ${e.style}`);
-        if (e.color) parts.push(`color: ${e.color}`);
+        if (e.status) parts.push(`status: ${e.status}`);
+        else if (e.color) parts.push(`color: ${e.color}`);
         if (e.highlight) parts.push('highlight: true');
         out.push(`  - { ${parts.join(', ')} }`);
       } else out.push(lineItem('  ', `${from} ${op} ${to}`, e.label));
@@ -466,7 +476,7 @@ export interface ManualEdit {
   what: 'moved' | 'resized' | 'added';
 }
 
-const STRUCTURAL = new Set(['bar', 'frame', 'note', 'guard', 'sep', 'icon']);
+const STRUCTURAL = new Set(['bar', 'frame', 'note', 'guard', 'sep', 'icon', 'legend']);
 
 /** Changes a person made in draw.io that a plain rebuild would throw away. */
 export function manualEdits(m: DrawioModel): ManualEdit[] {

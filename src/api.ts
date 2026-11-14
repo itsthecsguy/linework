@@ -13,6 +13,10 @@ import { resolveIcon, PROVIDERS, type Provider } from './drawio/icons.js';
 import { DrawioBrowser, type InspectCell } from './render/browser.js';
 import { brokenEdges, check, type CheckResult } from './lint/check.js';
 import { fixLabels } from './lint/fixlabels.js';
+import { applyRules, type Finding } from './lint/check.js';
+import { conventions } from './lint/conventions.js';
+import { useConfigFor, type Config } from './config.js';
+import { palette } from './drawio/theme.js';
 
 export interface BuildOptions {
   out: string;
@@ -23,6 +27,8 @@ export interface BuildOptions {
   relayout?: boolean;
   /** Always merge into the existing file, and never fall back to a fresh layout. */
   keepLayout?: boolean;
+  /** Put colors and fonts someone changed by hand back to the theme's. Positions stay. */
+  restyle?: boolean;
   browser?: DrawioBrowser;
 }
 
@@ -49,6 +55,8 @@ async function withBrowser<T>(given: DrawioBrowser | undefined, fn: (b: DrawioBr
 }
 
 export async function build(specText: string, opts: BuildOptions): Promise<BuildResult> {
+  // The repo's linework.yaml, if it has one, decides defaults, names and rules.
+  const cfg = useConfigFor(opts.out);
   const { diagram, warnings } = parseSpecText(specText);
   const kind = outputKind(opts.out);
   let old: DrawioModel | undefined;
@@ -67,6 +75,7 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
   let mode: 'fresh' | 'merge' = 'fresh';
   if (old && !opts.relayout) mode = touched || opts.keepLayout || smallChange(old, diagram) ? 'merge' : 'fresh';
   return withBrowser(opts.browser, async (b) => {
+    await b.useFonts(cfg.fonts);
     const measure = (r: Array<[string, number, number, string?]>) => b.measure(r);
     for (const n of diagram.nodes) {
       if (!n.icon) continue;
@@ -92,7 +101,7 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
           if (!prev || !now || shown.diagram.theme !== diagram.theme) continue;
           const { id: _i, value: _v, aiviz_auto: _a, ...attrs } = c.attrs;
           const sameLook = (prev.color ?? '') === (now.color ?? '') && !!prev.highlight === !!now.highlight;
-          const { aiviz_color: _c, aiviz_highlight: _h, ...rest } = attrs;
+          const { aiviz_color: _c, aiviz_highlight: _h, aiviz_status: _s, ...rest } = attrs;
           keep.set(specId, {
             attrs: rest,
             style: prev.kind === now.kind && sameLook ? c.styleRaw : undefined,
@@ -101,7 +110,7 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
         }
       }
       const scene = await sequenceScene(diagram, measure, { keepX, keep, extraMeta: mode === 'merge' ? { aiviz_layout: 'manual' } : {} });
-      const xml = stampEdgeRoutes(serialize(scene));
+      const xml = await withLegend(b, stampEdgeRoutes(serialize(scene)), diagram, cfg);
       return finish(b, xml, { mode, warnings, direction: 'TB', edits, old });
     }
     const l = await layout(diagram, measure);
@@ -109,7 +118,7 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
     let stats: MergeStats | undefined;
     let freshXml: string | undefined;
     if (mode === 'merge') {
-      const m = merge(diagram, old!, l, { specIsCurrent: specBase(specText) === fingerprint(old!), touched });
+      const m = merge(diagram, old!, l, { specIsCurrent: specBase(specText) === fingerprint(old!), touched, restyle: opts.restyle || cfg.handStyles === 'reset' });
       stats = m.stats;
       xml = serialize(m.scene);
       if (m.reroute.length) xml = await rerouteInto(b, xml, m.reroute);
@@ -140,8 +149,8 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
     else xml = xml!;
     const fixed = await fixLabels(b, xml);
     xml = fixed.xml;
-    xml = stampEdgeRoutes(xml);
-    // Stamping routes changes attributes, not geometry: the cells fixLabels read still hold.
+    xml = await withLegend(b, stampEdgeRoutes(xml), diagram, cfg);
+    // Stamping routes and adding a legend below the diagram changes attributes, not geometry: the cells fixLabels read still hold.
     return finish(b, xml, { mode, warnings, direction: mode === 'merge' ? (old!.meta.aiviz_direction ?? l.direction) : l.direction, edits, old, stats, cells: fixed.cells, labelsMoved: fixed.moved });
   });
 
@@ -158,7 +167,7 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
     return {
       out: opts.out,
       warnings: r.warnings,
-      check: check(cells),
+      check: withConventions(check(cells), xml, cfg),
       direction: r.direction,
       mode: r.mode,
       merge: r.stats,
@@ -253,6 +262,7 @@ export async function tidy(file: string, browser?: DrawioBrowser): Promise<{ fix
 }
 
 export function show(file: string, opts: { geometry?: boolean } = {}): { yaml: string; notes: string[]; edits: ManualEdit[] } {
+  useConfigFor(file);
   const m = readDrawio(fs.readFileSync(file, 'utf8'));
   const { diagram, notes, idMap } = toDiagram(m);
   let yaml = toYaml(diagram, `linework-base: ${fingerprint(m)}  (keep this line; it tells build this spec includes the latest hand edits)`);
@@ -269,8 +279,10 @@ export function show(file: string, opts: { geometry?: boolean } = {}): { yaml: s
 }
 
 export async function render(file: string, out: string, browser?: DrawioBrowser): Promise<void> {
+  const cfg = useConfigFor(file);
   const m = readDrawio(fs.readFileSync(file, 'utf8'));
   await withBrowser(browser, async (b) => {
+    await b.useFonts(cfg.fonts);
     if (out.endsWith('.png')) await b.renderPng(m.xml, out);
     else if (out.endsWith('.svg')) fs.writeFileSync(out, await b.renderSvg(m.xml));
     else throw new Error('render output must end in .png or .svg');
@@ -278,9 +290,121 @@ export async function render(file: string, out: string, browser?: DrawioBrowser)
 }
 
 export async function checkFile(file: string, browser?: DrawioBrowser): Promise<CheckResult> {
+  const cfg = useConfigFor(file);
   const m = readDrawio(fs.readFileSync(file, 'utf8'));
-  return withBrowser(browser, async (b) => check(await b.inspect(m.xml)));
+  return withBrowser(browser, async (b) => {
+    await b.useFonts(cfg.fonts);
+    return withConventions(check(await b.inspect(m.xml)), m, cfg);
+  });
 }
+
+/** Add the team's content rules (theme, names, colors, styling) to a layout check. */
+function withConventions(res: CheckResult, source: string | DrawioModel, cfg: Config): CheckResult {
+  if (!cfg.path) return res;
+  const m = typeof source === 'string' ? readDrawio(source) : source;
+  let extra: Finding[] = [];
+  try {
+    extra = applyRules(conventions(m, toDiagram(m), cfg));
+  } catch {
+    // A file linework can't read back has nothing to check against.
+  }
+  return { ...res, findings: [...res.findings, ...extra] };
+}
+
+const esc = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/**
+ * A legend under the diagram for the statuses it uses, so a reader doesn't need
+ * the doc to say what green means. Drawn fresh on every build; show ignores it.
+ */
+async function withLegend(b: DrawioBrowser, xml: string, d: Diagram, cfg: Config): Promise<string> {
+  if (!cfg.legend) return xml;
+  const used = new Set([...d.nodes, ...d.groups, ...d.edges].map((x) => x.status).filter((s): s is string => !!s));
+  const names = Object.keys(cfg.statuses).filter((s) => used.has(s));
+  if (!names.length) return xml;
+  const cells = (await b.inspect(xml)).filter((c) => c.aivizType !== 'legend');
+  const boxes = [...cells.filter((c) => c.vertex).map((c) => c.box), ...cells.flatMap((c) => (c.textBox ? [c.textBox] : []))];
+  const pts = cells.flatMap((c) => c.points ?? []);
+  const minX = Math.min(...boxes.map((r) => r.x), ...pts.map((p) => p.x));
+  const maxY = Math.max(...boxes.map((r) => r.y + r.h), ...pts.map((p) => p.y));
+  const t = palette(d.theme);
+  const size = t.type.size.edge;
+  const widths = await b.measure(names.map((s) => [cfg.statuses[s]!.label, size, 400, t.type.family]));
+  const SW = 12, H = Math.round(size * 1.5);
+  let x = Math.round(minX);
+  const y = Math.round(maxY + 28);
+  const out: string[] = [];
+  const cell = (id: string, label: string, style: string, gx: number, gy: number, w: number, h: number) =>
+    `<object id="${id}" label="${esc(label)}" aiviz_type="legend"><mxCell style="${esc(style)}" vertex="1" parent="1"><mxGeometry x="${gx}" y="${gy}" width="${w}" height="${h}" as="geometry"/></mxCell></object>`;
+  names.forEach((s, i) => {
+    const p = t.paint(cfg.statuses[s]!.color, false);
+    const w = Math.ceil(widths[i]!) + 6;
+    out.push(cell(`legend_${i}_swatch`, '', `rounded=1;absoluteArcSize=1;arcSize=6;fillColor=${p.fill};strokeColor=${p.stroke === 'none' ? p.fill : p.stroke};strokeWidth=${p.strokeWidth};${t.extra}${p.extra ?? ''}`, x, y + (H - SW) / 2, SW, SW));
+    out.push(cell(`legend_${i}_label`, cfg.statuses[s]!.label, `text;html=1;align=left;verticalAlign=middle;spacing=0;fontFamily=${t.type.family};fontSize=${size};fontColor=${t.muted};`, x + SW + 6, y, w, H));
+    x += SW + 6 + w + 18;
+  });
+  return xml.replace('</root>', `${out.join('')}</root>`);
+}
+
+export interface LintedFile {
+  file: string;
+  check?: CheckResult;
+  /** Set when the file couldn't be read as a diagram. */
+  error?: string;
+}
+
+/** Every .drawio.svg and .drawio under the given files and folders. */
+export function diagramFiles(targets: string[]): string[] {
+  const out: string[] = [];
+  const walk = (p: string) => {
+    const st = fs.statSync(p);
+    if (st.isDirectory()) {
+      for (const e of fs.readdirSync(p)) if (e !== 'node_modules' && !e.startsWith('.')) walk(path.join(p, e));
+    } else if (/\.drawio(\.svg)?$/.test(p)) out.push(p);
+  };
+  for (const t of targets) walk(t);
+  return out.sort();
+}
+
+/** Check every diagram under the targets against layout rules and the team's linework.yaml. */
+export async function lintFiles(targets: string[], browser?: DrawioBrowser): Promise<LintedFile[]> {
+  const files = diagramFiles(targets);
+  return withBrowser(browser, async (b) => {
+    const out: LintedFile[] = [];
+    for (const file of files) {
+      try {
+        out.push({ file, check: await checkFile(file, b) });
+      } catch (e) {
+        out.push({ file, error: (e as Error).message });
+      }
+    }
+    return out;
+  });
+}
+
+/**
+ * Bring existing diagrams back to the team's theme, names and colors. Every box
+ * stays where it is; styling changed by hand is reset.
+ */
+export async function restyleFiles(targets: string[], browser?: DrawioBrowser): Promise<Array<{ file: string; result?: BuildResult; error?: string }>> {
+  const files = diagramFiles(targets);
+  return withBrowser(browser, async (b) => {
+    const out: Array<{ file: string; result?: BuildResult; error?: string }> = [];
+    for (const file of files) {
+      try {
+        const cfg = useConfigFor(file);
+        let yaml = show(file).yaml;
+        // Under a locked theme the file takes the team's, whatever it was drawn in.
+        if (cfg.lockTheme) yaml = yaml.replace(/^theme:.*\n/m, '');
+        out.push({ file, result: await build(yaml, { out: file, keepLayout: true, restyle: true, browser: b }) });
+      } catch (e) {
+        out.push({ file, error: (e as Error).message });
+      }
+    }
+    return out;
+  });
+}
+
 
 function outputKind(out: string): 'svg' | 'xml' {
   if (out.endsWith('.svg')) return 'svg';

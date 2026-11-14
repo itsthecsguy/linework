@@ -8,7 +8,9 @@ export const DIRECTIONS = ['auto', 'TB', 'LR', 'BT', 'RL'] as const;
 export type Direction = (typeof DIRECTIONS)[number];
 
 export const THEMES = ['clean', 'soft', 'dark', 'sketch', 'blueprint', 'c4'] as const;
-export type ThemeName = (typeof THEMES)[number];
+export type BuiltinTheme = (typeof THEMES)[number];
+/** A built-in style, or the name of one a team defined in linework.yaml. */
+export type ThemeName = BuiltinTheme | (string & {});
 
 export const COLORS = ['blue', 'violet', 'pink', 'red', 'orange', 'amber', 'green', 'teal', 'gray'] as const;
 export type ColorName = (typeof COLORS)[number];
@@ -23,6 +25,8 @@ export interface KindDef {
   semantic?: boolean;
   dashed?: boolean;
   description: string;
+  /** Icon nodes of this kind get unless they name their own. Team kinds only. */
+  icon?: string;
 }
 
 // Kinds are per diagram type so the AI gets a short, relevant list.
@@ -78,6 +82,8 @@ export type EdgeStyle = 'sync' | 'async' | 'bidir' | 'line';
 export interface Look {
   color?: ColorName;
   highlight?: boolean;
+  /** A meaning from the team's linework.yaml ("new", "deprecated"). It sets the color. */
+  status?: string;
 }
 
 export interface Group extends Look {
@@ -138,6 +144,16 @@ export interface Diagram {
   groups: Group[];
   nodes: Node[];
   edges: Edge[];
+}
+
+const BUILTIN_KINDS = new Map(DIAGRAM_TYPES.map((t) => [t, new Set(Object.keys(KINDS[t]))]));
+
+/** Replace the team-defined kinds. Built-in kinds can't be redefined. */
+export function setCustomKinds(custom: Partial<Record<DiagramType, Record<string, KindDef>>> = {}): void {
+  for (const t of DIAGRAM_TYPES) {
+    for (const k of Object.keys(KINDS[t])) if (!BUILTIN_KINDS.get(t)!.has(k)) delete KINDS[t][k];
+    for (const [k, def] of Object.entries(custom[t] ?? {})) if (!BUILTIN_KINDS.get(t)!.has(k)) KINDS[t][k] = def;
+  }
 }
 
 export function kindDef(type: DiagramType, kind: string): KindDef {

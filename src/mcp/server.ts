@@ -80,14 +80,14 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
       description: 'Returns the linework guide: diagram types, the YAML spec format with examples, and the style rules. Read it before your first diagram.',
       inputSchema: z.object({
         topic: z
-          .enum(['overview', 'spec', 'style', 'google-docs', 'troubleshooting'])
+          .enum(['overview', 'spec', 'style', 'google-docs', 'troubleshooting', 'team-config'])
           .default('overview')
-          .describe('overview: workflow and cheat sheet. spec: the full spec reference. style: what makes a good diagram. google-docs: getting diagrams into Google Docs. troubleshooting: what to do when a command fails.'),
+          .describe('overview: workflow and cheat sheet. spec: the full spec reference. style: what makes a good diagram. google-docs: getting diagrams into Google Docs. troubleshooting: what to do when a command fails. team-config: linework.yaml, for one look across a team.'),
       }),
       annotations: { readOnlyHint: true },
     },
     async ({ topic }) => {
-      const file = { overview: 'SKILL.md', spec: 'references/spec.md', style: 'references/style-guide.md', 'google-docs': 'references/google-docs.md', troubleshooting: 'references/troubleshooting.md' }[topic];
+      const file = { overview: 'SKILL.md', spec: 'references/spec.md', style: 'references/style-guide.md', 'google-docs': 'references/google-docs.md', troubleshooting: 'references/troubleshooting.md', 'team-config': 'references/team-config.md' }[topic];
       const body = fs.readFileSync(path.join(PKG, 'skills', 'linework', file), 'utf8').replace(/^---\n[\s\S]*?\n---\n/, '');
       return { content: [text(TOOL_NAMES + body)] };
     },

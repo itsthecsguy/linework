@@ -55,13 +55,13 @@ function withoutKeys(style: string, keys: string[]) {
 
 function ownAttrs(c: Cell): Record<string, string> {
   // color/highlight come from the spec every time, so dropping one in the spec drops it here.
-  const { id: _id, value: _value, aiviz_auto: _auto, aiviz_color: _c, aiviz_highlight: _h, ...rest } = c.attrs;
+  const { id: _id, value: _value, aiviz_auto: _auto, aiviz_color: _c, aiviz_highlight: _h, aiviz_status: _s, ...rest } = c.attrs;
   return rest;
 }
 
 const sameLookOf = (a?: Look, b?: Look) => (a?.color ?? '') === (b?.color ?? '') && !!a?.highlight === !!b?.highlight;
 
-export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specIsCurrent?: boolean; touched?: boolean } = {}): MergeResult {
+export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specIsCurrent?: boolean; touched?: boolean; restyle?: boolean } = {}): MergeResult {
   const shown = toDiagram(old);
   const cellOf = new Map<string, Cell>();
   for (const [cellId, specId] of shown.idMap) cellOf.set(specId, old.byId.get(cellId)!);
@@ -69,7 +69,8 @@ export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specI
   const oldGroups = new Map(shown.diagram.groups.map((g) => [g.id, g]));
   const handEdits = new Map(manualEdits(old).map((e) => [e.id, e.what]));
   // A theme change restyles everything; positions still stay.
-  const themeChanged = shown.diagram.theme !== d.theme;
+  // So does a restyle: colors and fonts someone changed by hand go back to the theme's.
+  const themeChanged = shown.diagram.theme !== d.theme || !!opts.restyle;
   const isTable = (n: Node) => kindDef(d.type, n.kind).shape === 'table';
 
   const abs = new Map<string, Box>(); // final absolute boxes for nodes

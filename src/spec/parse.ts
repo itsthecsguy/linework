@@ -2,6 +2,8 @@
 // because the reader is usually a model that will retry.
 import YAML from 'yaml';
 import { parseIcon } from '../drawio/icons.js';
+import { isTheme, themeNames } from '../drawio/theme.js';
+import { activeConfig } from '../config.js';
 import { z } from 'zod';
 import {
   DEFAULT_KIND,
@@ -9,11 +11,11 @@ import {
   DIRECTIONS,
   FRAME_OPS,
   KINDS,
-  THEMES,
   COLORS,
   type ColorName,
   type Card,
   type Diagram,
+  type Direction,
   type DiagramType,
   type Edge,
   type EdgeStyle,
@@ -47,6 +49,7 @@ const NodeInput = z.union([
     icon: z.string().optional(),
     fields: z.array(FieldInput).optional(),
     color: ColorInput.optional(),
+    status: z.string().optional(),
     highlight: HighlightInput.optional(),
   }),
 ]);
@@ -57,6 +60,7 @@ const GroupInput = z.union([
     label: scalar.optional(),
     in: z.string().optional(),
     color: ColorInput.optional(),
+    status: z.string().optional(),
     highlight: HighlightInput.optional(),
   }),
 ]);
@@ -67,6 +71,7 @@ const EdgeObject = z.strictObject({
   label: scalar.optional(),
   style: z.enum(['sync', 'async', 'bidir', 'line']).optional(),
   color: ColorInput.optional(),
+  status: z.string().optional(),
   highlight: HighlightInput.optional(),
 });
 
@@ -81,7 +86,8 @@ export const SpecInput = z.strictObject({
   type: z.enum(DIAGRAM_TYPES),
   title: scalar.optional(),
   direction: z.enum(DIRECTIONS).optional(),
-  theme: z.enum(THEMES).optional(),
+  // Checked by hand: a team's linework.yaml can add themes.
+  theme: z.string().optional(),
   groups: z.record(z.string(), GroupInput).optional(),
   nodes: z.record(z.string(), NodeInput).optional(),
   edges: z.array(EdgeInput).optional(),
@@ -156,8 +162,9 @@ export function parseSpec(raw: unknown): ParseResult {
     const path = `nodes.${id}`;
     if (!ID_RE.test(id)) issues.push({ path, message: badId(id) });
     if (groupIds.has(id)) issues.push({ path, message: `"${id}" is already a group id. Node and group ids must be unique.` });
-    const obj = typeof n === 'string' ? { label: n } : n;
+    const obj = withComponent(id, typeof n === 'string' ? { label: n } : n);
     const kind = obj.kind ?? DEFAULT_KIND[type];
+    if (!obj.icon && KINDS[type][kind]?.icon && type === 'architecture') obj.icon = KINDS[type][kind]!.icon;
     if (!KINDS[type][kind]) {
       issues.push({ path: `${path}.kind`, message: `unknown kind "${kind}" for a ${type} diagram. Use one of: ${Object.keys(KINDS[type]).join(', ')}.` });
     }
@@ -253,11 +260,12 @@ export function parseSpec(raw: unknown): ParseResult {
   if (needStart && !nodeIds.has(START_ID)) nodes.unshift({ id: START_ID, label: '', kind: 'start' });
   for (const from of endFor) nodes.push({ id: `${END_ID}_${from === START_ID ? 'start' : from}`, label: '', kind: 'end' });
 
+  const set = settings(spec, issues);
   if (issues.length) throw new SpecError(issues);
 
   // Warnings: things that produce worse diagrams but still render.
   const real = nodes.filter((n) => n.kind !== 'start' && n.kind !== 'end');
-  if (real.length > 20) warnings.push({ path: 'nodes', message: `${real.length} nodes is a lot for one diagram. Consider splitting it; 12 or fewer reads best.` });
+  if (real.length > activeConfig().limits.nodes) warnings.push({ path: 'nodes', message: `${real.length} nodes is a lot for one diagram. Consider splitting it; 12 or fewer reads best.` });
   if (type === 'flow') {
     for (const n of nodes.filter((n) => n.kind === 'decision')) {
       const out = edges.filter((e) => e.from === n.id);
@@ -270,7 +278,7 @@ export function parseSpec(raw: unknown): ParseResult {
   for (const n of real) if (edges.length && !linked.has(n.id)) warnings.push({ path: `nodes.${n.id}`, message: 'not connected to anything' });
 
   return {
-    diagram: { type, title: spec.title, direction: spec.direction ?? 'auto', theme: spec.theme ?? 'clean', groups, nodes, edges },
+    diagram: { type, title: spec.title, direction: set.direction, theme: set.theme, groups, nodes, edges },
     warnings,
   };
 }
@@ -332,7 +340,7 @@ function parseSequence(spec: z.infer<typeof SpecInput>): ParseResult {
   for (const [id, n] of Object.entries(spec.participants ?? {})) {
     const path = `participants.${id}`;
     if (!ID_RE.test(id)) issues.push({ path, message: badId(id) });
-    const obj = typeof n === 'string' ? { label: n } : n;
+    const obj = withComponent(id, typeof n === 'string' ? { label: n } : n);
     const kind = obj.kind ?? 'service';
     if (!KINDS.sequence[kind]) issues.push({ path: `${path}.kind`, message: `unknown kind "${kind}" for a sequence diagram. Use one of: ${Object.keys(KINDS.sequence).join(', ')}.` });
     if ('fields' in obj && obj.fields) issues.push({ path: `${path}.fields`, message: 'fields are for type: er' });
@@ -405,13 +413,14 @@ function parseSequence(spec: z.infer<typeof SpecInput>): ParseResult {
     return { kind: 'msg', from: m[1]!, to: m[3]!, label: text || undefined, style: MSG_ARROWS[m[2]!]!, ...(m[2] === '==>' ? { highlight: true } : {}) };
   };
   const seq = items(spec.messages ?? [], 'messages');
+  const set = settings({ theme: spec.theme }, issues);
   if (issues.length) throw new SpecError(issues);
   const msgs: Array<{ highlight?: boolean }> = [];
   const flat = (xs: SeqItem[]) => xs.forEach((x) => (x.kind === 'msg' ? msgs.push(x) : x.kind === 'frame' ? x.branches.forEach((b) => flat(b.items)) : 0));
   flat(seq);
   highlightWarning(nodes, msgs, warnings);
   if (nodes.length > 8) warnings.push({ path: 'participants', message: `${nodes.length} participants is wide; 6 or fewer fits a doc page` });
-  return { diagram: { type: 'sequence', title: spec.title, direction: 'auto', theme: spec.theme ?? 'clean', groups: [], nodes, edges: [], seq }, warnings };
+  return { diagram: { type: 'sequence', title: spec.title, direction: 'auto', theme: set.theme, groups: [], nodes, edges: [], seq }, warnings };
 }
 
 function parseEdgeString(s: string, path: string, issues: Issue[]) {
@@ -426,15 +435,44 @@ function parseEdgeString(s: string, path: string, issues: Issue[]) {
   return { from: m[1]!, to: m[3]!, label: label || undefined, style: ARROWS[m[2]!]!, ...(m[2] === '==>' ? { highlight: true } : {}) };
 }
 
-function look(o: { color?: string; highlight?: boolean }, path: string, issues: Issue[]): { color?: ColorName; highlight?: boolean } {
-  const out: { color?: ColorName; highlight?: boolean } = {};
+function look(o: { color?: string; highlight?: boolean; status?: string }, path: string, issues: Issue[]): { color?: ColorName; highlight?: boolean; status?: string } {
+  const out: { color?: ColorName; highlight?: boolean; status?: string } = {};
   if (o.color != null) {
     const c = o.color.toLowerCase();
     if ((COLORS as readonly string[]).includes(c)) out.color = c as ColorName;
     else issues.push({ path: `${path}.color`, message: `unknown color "${o.color}". Use one of: ${COLORS.join(', ')}.` });
   }
+  if (o.status != null) {
+    const all = activeConfig().statuses;
+    const st = all[o.status];
+    const names = Object.keys(all);
+    if (st) {
+      // The status decides the color, so one meaning is one color in every diagram.
+      out.status = o.status;
+      out.color = st.color;
+    } else
+      issues.push({
+        path: `${path}.status`,
+        message: names.length ? `unknown status "${o.status}". This repo's linework.yaml defines: ${names.join(', ')}.` : `status needs a "statuses:" section in linework.yaml, like "statuses: { ${o.status}: green }". Without one, use color.`,
+      });
+  }
   if (o.highlight) out.highlight = true;
   return out;
+}
+
+/** Fill in what the team's linework.yaml says about a component with this id. */
+function withComponent<T extends { label?: string; kind?: string; tech?: string; icon?: string }>(id: string, obj: T): T {
+  const c = activeConfig().components[id];
+  return c ? { ...obj, label: obj.label ?? c.label, kind: obj.kind ?? c.kind, tech: obj.tech ?? c.tech, icon: obj.icon ?? c.icon } : obj;
+}
+
+/** The theme and direction a spec gets, after the team's defaults and lock. */
+function settings(spec: { theme?: string; direction?: Direction }, issues: Issue[]): { theme: string; direction: Direction } {
+  const cfg = activeConfig();
+  if (spec.theme && !isTheme(spec.theme)) issues.push({ path: 'theme', message: `unknown theme "${spec.theme}". Use one of: ${themeNames().join(', ')}.` });
+  else if (spec.theme && cfg.lockTheme && spec.theme !== cfg.theme)
+    issues.push({ path: 'theme', message: `this repo's linework.yaml sets every diagram to theme "${cfg.theme}". Remove the theme line.` });
+  return { theme: spec.theme ?? cfg.theme ?? 'clean', direction: spec.direction ?? cfg.direction ?? 'auto' };
 }
 
 /** Emphasis only works when it's rare. */
@@ -464,7 +502,7 @@ function zodIssue(i: z.core.$ZodIssue): Issue {
     return { path, message: `unknown key(s) ${i.keys.map((k) => `"${k}"`).join(', ')}. Allowed here: ${where}.` };
   }
   if (i.code === 'invalid_value' && path === 'type') return { path, message: `type must be one of: ${DIAGRAM_TYPES.join(', ')}` };
-  if (i.code === 'invalid_value' && path === 'theme') return { path, message: `theme must be one of: ${THEMES.join(', ')}` };
+  if (i.code === 'invalid_value' && path === 'theme') return { path, message: `theme must be one of: ${themeNames().join(', ')}` };
   if (i.code === 'invalid_value' && path === 'direction') return { path, message: `direction must be one of: ${DIRECTIONS.join(', ')}` };
   if (i.code === 'invalid_type' && path === 'nodes') return { path, message: 'nodes is required: a map of id -> { label, kind, tech, in }' };
   if (i.code === 'invalid_union') return { path, message: path.startsWith('edges') ? 'each edge is a string like "a -> b: label"' : 'expected a label string or an object' };
