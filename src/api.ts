@@ -1,5 +1,7 @@
 // Programmatic API behind the CLI (and later the MCP server).
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { parseSpecText, type Issue } from './spec/parse.js';
 import { layout, type Layout } from './layout/layout.js';
@@ -9,7 +11,10 @@ import { absBox, fingerprint, readDrawio, specBase, type DrawioModel } from './d
 import { manualEdits, toDiagram, toYaml, type ManualEdit } from './drawio/show.js';
 import { merge, type MergeStats } from './drawio/merge.js';
 import { sequenceScene } from './layout/sequence.js';
-import { resolveIcon, PROVIDERS, type Provider } from './drawio/icons.js';
+import { PROVIDERS, resolveIcon, stencilSets, type Provider } from './drawio/icons.js';
+import { toExcalidraw, type ExcalidrawFile } from './excalidraw/export.js';
+import { cellsNamed, embeddedDoc, embeddedSpec, readEdits, setBoxes, setRoutes, type Box } from './excalidraw/import.js';
+import { readScene, sceneKind, writeScene } from './excalidraw/file.js';
 import { DrawioBrowser, type InspectCell } from './render/browser.js';
 import { brokenEdges, check, type CheckResult } from './lint/check.js';
 import { fixLabels } from './lint/fixlabels.js';
@@ -29,6 +34,8 @@ export interface BuildOptions {
   keepLayout?: boolean;
   /** Put colors and fonts someone changed by hand back to the theme's. Positions stay. */
   restyle?: boolean;
+  /** Merge into this draw.io file text, not whatever is at `out`. */
+  base?: string;
   browser?: DrawioBrowser;
 }
 
@@ -54,13 +61,24 @@ async function withBrowser<T>(given: DrawioBrowser | undefined, fn: (b: DrawioBr
   }
 }
 
+/**
+ * A short stamp of what a spec says, whatever its comments and formatting. A
+ * build records it in the diagram (aiviz_spec), which is how `sync` knows
+ * whether a diagram was built from the YAML beside it or from an older one.
+ */
+export function specStamp(specText: string): string {
+  return createHash('sha1').update(toYaml(parseSpecText(specText).diagram)).digest('hex').slice(0, 12);
+}
+
 export async function build(specText: string, opts: BuildOptions): Promise<BuildResult> {
   // The repo's linework.yaml, if it has one, decides defaults, names and rules.
   const cfg = useConfigFor(opts.out);
   const { diagram, warnings } = parseSpecText(specText);
+  const stamp = createHash('sha1').update(toYaml(diagram)).digest('hex').slice(0, 12);
   const kind = outputKind(opts.out);
   let old: DrawioModel | undefined;
-  if (fs.existsSync(opts.out)) {
+  if (opts.base != null) old = readDrawio(opts.base);
+  else if (fs.existsSync(opts.out)) {
     try {
       old = readDrawio(fs.readFileSync(opts.out, 'utf8'));
     } catch {
@@ -96,9 +114,11 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
           const c = old!.byId.get(cellId)!;
           const box = absBox(old!, cellId);
           if (box) keepX.set(specId, { x: box.x, w: box.w });
+          // A participant somebody drew in another tool is only a place so far: it gets its look here.
+          if (c.attrs.aiviz_new) continue;
           const prev = shown.diagram.nodes.find((n) => n.id === specId);
           const now = diagram.nodes.find((n) => n.id === specId);
-          if (!prev || !now || shown.diagram.theme !== diagram.theme) continue;
+          if (!prev || !now || shown.diagram.theme !== diagram.theme || (shown.diagram.accent ?? '') !== (diagram.accent ?? '')) continue;
           const { id: _i, value: _v, aiviz_auto: _a, ...attrs } = c.attrs;
           const sameLook = (prev.color ?? '') === (now.color ?? '') && !!prev.highlight === !!now.highlight;
           const { aiviz_color: _c, aiviz_highlight: _h, aiviz_status: _s, ...rest } = attrs;
@@ -112,6 +132,10 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
       const scene = await sequenceScene(diagram, measure, { keepX, keep, extraMeta: mode === 'merge' ? { aiviz_layout: 'manual' } : {} });
       const xml = await withLegend(b, stampEdgeRoutes(serialize(scene)), diagram, cfg);
       return finish(b, xml, { mode, warnings, direction: 'TB', edits, old });
+    }
+    if (diagram.type === 'timeline') {
+      const { timelineScene } = await import('./layout/timeline.js');
+      return finish(b, serialize(await timelineScene(diagram, measure)), { mode: 'fresh', warnings, direction: 'LR', edits, old });
     }
     const l = await layout(diagram, measure);
     let xml: string;
@@ -159,6 +183,7 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
     xml: string,
     r: { mode: 'fresh' | 'merge'; warnings: Issue[]; direction: string; edits: ManualEdit[]; old?: DrawioModel; stats?: MergeStats; cells?: InspectCell[]; labelsMoved?: number },
   ): Promise<BuildResult> {
+    xml = stamped(xml, stamp);
     fs.mkdirSync(path.dirname(path.resolve(opts.out)), { recursive: true });
     // Issued together: the browser renders the preview and lays out the lint pass
     // while node subsets the fonts for the SVG.
@@ -183,7 +208,7 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
  * always lay out again; their rows follow message order either way.
  */
 function smallChange(old: DrawioModel, d: Diagram): boolean {
-  if (d.type === 'sequence') return false;
+  if (d.type === 'sequence' || d.type === 'timeline') return false;
   let prev: Diagram;
   try {
     prev = toDiagram(old).diagram;
@@ -283,9 +308,133 @@ export async function render(file: string, out: string, browser?: DrawioBrowser)
   const m = readDrawio(fs.readFileSync(file, 'utf8'));
   await withBrowser(browser, async (b) => {
     await b.useFonts(cfg.fonts);
-    if (out.endsWith('.png')) await b.renderPng(m.xml, out);
+    const scene = sceneKind(out);
+    if (scene) fs.writeFileSync(out, await writeScene(scene, await toExcalidraw(m, b), m, b));
+    else if (out.endsWith('.png')) await b.renderPng(m.xml, out);
     else if (out.endsWith('.svg')) fs.writeFileSync(out, await b.renderSvg(m.xml));
-    else throw new Error('render output must end in .png or .svg');
+    else throw new Error('render output must end in .png, .svg, .excalidraw, .excalidraw.svg or .excalidraw.png');
+  });
+}
+
+/** Store a diagram at excalidraw.com and return the link that opens it there. Sends the drawing, encrypted, to excalidraw.com. */
+export async function share(file: string, browser?: DrawioBrowser): Promise<{ url: string; images: number }> {
+  const { shareLink } = await import('./excalidraw/share.js');
+  if (sceneKind(file) || /\.excalidraw\./i.test(file)) return shareLink(readScene(file));
+  const m = readDrawio(fs.readFileSync(file, 'utf8'));
+  // A link carries no images, so icons go as shapes.
+  return withBrowser(browser, async (b) => shareLink(await toExcalidraw(m, b, { icons: 'vector' })));
+}
+
+/** Write an Excalidraw library: every node kind ('shapes'), or a cloud provider's icons as ready nodes. */
+export async function library(set: string, out: string, opts: { theme?: string; filter?: string | string[]; browser?: DrawioBrowser } = {}): Promise<{ out: string; items: number }> {
+  if (!out.endsWith('.excalidrawlib')) throw new Error(`a library file must end in .excalidrawlib, got ${out}`);
+  const { buildLibrary } = await import('./excalidraw/library.js');
+  return withBrowser(opts.browser, async (b) => {
+    // Several filters pick several services: "lambda s3 sqs".
+    const filters = [opts.filter ?? []].flat().map((f) => f.toLowerCase());
+    const all = set in PROVIDERS ? await listIcons(set as Provider, undefined, b) : undefined;
+    const names = all?.filter((n) => !filters.length || filters.some((f) => n.includes(f)));
+    const lib = await buildLibrary(set, b, { theme: opts.theme as Diagram['theme'] | undefined, filters, names });
+    fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
+    fs.writeFileSync(out, JSON.stringify(lib) + '\n');
+    return { out, items: lib.libraryItems.length };
+  });
+}
+
+export interface ImportResult {
+  out: string;
+  /** What the Excalidraw file changed, one line each. Empty when it matches the diagram. */
+  changes: string[];
+  /** Things in the file that were not brought across. */
+  notes: string[];
+  check: CheckResult;
+  /** The diagram did not exist yet and was built from the spec the Excalidraw file carries. */
+  created: boolean;
+}
+
+/**
+ * Bring edits made in Excalidraw back into a diagram. `file` is an .excalidraw
+ * that `render` wrote; `out` is the .drawio.svg it came from (or, when that is
+ * gone, where to rebuild it from the spec the file carries).
+ *
+ * The spec changes first (text, boxes and arrows added or removed), built as any
+ * edited spec is. Then every box is put where it sits in Excalidraw, and the
+ * arrows on the ones that moved are routed again.
+ */
+export async function importExcalidraw(file: string, out: string, opts: { browser?: DrawioBrowser; png?: string } = {}): Promise<ImportResult> {
+  const data: ExcalidrawFile = readScene(file);
+  outputKind(out);
+  return withBrowser(opts.browser, async (b) => {
+    let created = false;
+    if (!fs.existsSync(out)) {
+      const spec = embeddedSpec(data);
+      if (!spec) throw new Error(`${out} doesn't exist, and ${file} doesn't carry the diagram's spec to rebuild it from. Point -o at the .drawio.svg this was exported from.`);
+      await build(spec, { out, browser: b });
+      created = true;
+    }
+    const current = readDrawio(fs.readFileSync(out, 'utf8'));
+    let base = current;
+    // A sequence diagram's cells are numbered by row, so once the diagram has
+    // changed (an earlier import of this same file, say) the file's elements no
+    // longer name the right ones. The file carries the spec it was drawn from:
+    // read its edits against that, and let the file have the last word.
+    const doc = embeddedDoc(data);
+    if (current.meta.aiviz_type === 'sequence' && doc && doc.base !== fingerprint(current)) {
+      const tmp = path.join(os.tmpdir(), `linework-import-${process.pid}-${Date.now()}.drawio`);
+      try {
+        await build(doc.spec, { out: tmp, browser: b });
+        const then = readDrawio(fs.readFileSync(tmp, 'utf8'));
+        if ([...cellsNamed(data)].every((id) => then.byId.has(id))) base = then;
+      } catch {
+        // The carried spec doesn't build any more: fall back to matching against the diagram as it is.
+      } finally {
+        fs.rmSync(tmp, { force: true });
+      }
+    }
+    // The file as export would write it now: what a colour, a line style or a path is compared with.
+    const edits = readEdits(data, base, await b.inspect(base.xml), await toExcalidraw(base, b));
+    const specOf = (m: DrawioModel, d = toDiagram(m).diagram) => toYaml(d, `linework-base: ${fingerprint(m)}`);
+    // Nothing to bring across: leave the diagram exactly as it is.
+    const same = base !== current && toYaml(edits.diagram) === toYaml(toDiagram(current).diagram);
+    if (!edits.changes.length || same) return { out, changes: [], notes: edits.notes, check: check(await b.inspect(current.xml)), created };
+    const edited = readDrawio(edits.xml);
+    let res = await build(specOf(edited, edits.diagram), { out, base: edits.xml, keepLayout: true, browser: b, png: opts.png });
+
+    if (edits.boxes.size || edits.routes.size) {
+      // Excalidraw has the last word on where things are. That covers boxes the
+      // person moved, boxes they drew, any the build above shifted to make room,
+      // and the arrows whose path they drew themselves.
+      const built = readDrawio(fs.readFileSync(out, 'utf8'));
+      const cells = await b.inspect(built.xml);
+      const now = new Map(cells.map((c) => [c.id, c.box as Box]));
+      const cellOf = new Map([...toDiagram(built).idMap].map(([cell, spec]) => [spec, cell]));
+      const want = new Map<string, Box>();
+      for (const [specId, box] of edits.boxes) {
+        const cellId = cellOf.get(specId);
+        const at = cellId ? now.get(cellId) : undefined;
+        if (!cellId || !at) continue;
+        if (Math.abs(at.x - box.x) > 0.75 || Math.abs(at.y - box.y) > 0.75 || Math.abs(at.w - box.w) > 0.75 || Math.abs(at.h - box.h) > 0.75) want.set(cellId, box);
+      }
+      if (want.size || edits.routes.size) {
+        let xml = want.size ? setBoxes(built.xml, want, now) : built.xml;
+        const after = new Map((await b.inspect(xml)).map((c) => [c.id, c.box as Box]));
+        const pinned = new Map<string, { points: Array<{ x: number; y: number }>; from?: Box; to?: Box }>();
+        for (const [edgeId, points] of edits.routes) {
+          const c = built.byId.get(edgeCellId(edgeId));
+          if (c) pinned.set(c.id, { points, from: after.get(c.source ?? ''), to: after.get(c.target ?? '') });
+        }
+        const shifted = (id?: string) => {
+          const p = id ? now.get(id) : undefined, q = id ? after.get(id) : undefined;
+          return !!p && !!q && (Math.abs(p.x - q.x) > 0.75 || Math.abs(p.y - q.y) > 0.75 || Math.abs(p.w - q.w) > 0.75 || Math.abs(p.h - q.h) > 0.75);
+        };
+        const stale = built.cells.filter((c) => c.edge && !pinned.has(c.id) && (shifted(c.source) || shifted(c.target))).map((c) => c.id);
+        if (stale.length) xml = await rerouteInto(b, xml, stale);
+        if (pinned.size) xml = setRoutes(xml, pinned);
+        const moved = readDrawio(xml);
+        res = await build(specOf(moved), { out, base: xml, keepLayout: true, browser: b, png: opts.png });
+      }
+    }
+    return { out, changes: edits.changes, notes: edits.notes, check: res.check, created };
   });
 }
 
@@ -406,6 +555,11 @@ export async function restyleFiles(targets: string[], browser?: DrawioBrowser): 
 }
 
 
+/** Record on the diagram's root which spec it was built from. Not a cell, so nothing drawn or fingerprinted changes. */
+function stamped(xml: string, stamp: string): string {
+  return xml.replace(/<object id="0"([^>]*)>/, (_all, attrs: string) => `<object id="0"${attrs.replace(/\saiviz_spec="[^"]*"/, '')} aiviz_spec="${stamp}">`);
+}
+
 function outputKind(out: string): 'svg' | 'xml' {
   if (out.endsWith('.svg')) return 'svg';
   if (out.endsWith('.drawio') || out.endsWith('.xml')) return 'xml';
@@ -415,8 +569,8 @@ function outputKind(out: string): 'svg' | 'xml' {
 /** Icon names for a provider, optionally filtered. */
 export async function listIcons(provider: Provider, filter?: string, browser?: DrawioBrowser): Promise<string[]> {
   return withBrowser(browser, async (b) => {
-    const p = PROVIDERS[provider];
-    const names = (await b.stencilNames(p.set)).map((n) => n.slice(p.prefix.length));
-    return names.filter((n) => !filter || n.includes(filter.toLowerCase())).sort();
+    const names = new Set<string>();
+    for (const p of stencilSets(provider)) for (const n of await b.stencilNames(p.set)) names.add(n.slice(p.prefix.length));
+    return [...names].filter((n) => !filter || n.includes(filter.toLowerCase())).sort();
   });
 }

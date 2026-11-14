@@ -240,7 +240,7 @@ export function loadConfig(file: string): Config {
       if (!/^[A-Za-z_][\w-]*$/.test(k)) issues.push(`kinds.${t}.${k}: kind names use letters, digits, _ and -`);
       const flowOnly = def.shape === 'diamond' || def.shape === 'parallelogram';
       if (flowOnly && t !== 'flow') issues.push(`kinds.${t}.${k}: shape ${def.shape} is for flow diagrams`);
-      if (t === 'er' || t === 'sequence') issues.push(`kinds.${t}: custom kinds are for architecture, flow and state diagrams`);
+      if (!['architecture', 'flow', 'state'].includes(t)) issues.push(`kinds.${t}: custom kinds are for architecture, flow and state diagrams`);
       (kinds[t] ??= {})[k] = { shape: def.shape as Shape, color: def.color, dashed: def.dashed, icon: def.icon, description: def.description || 'defined in linework.yaml' };
     }
   }

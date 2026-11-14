@@ -5,7 +5,7 @@
 import type { Diagram, FrameOp, SeqItem } from '../spec/model.js';
 import { fontsFor, type Measure } from './layout.js';
 import { TextMeasurer } from './text.js';
-import { FRAME_TAB_INSET, FRAME_TAB_X, FRAME_TAB_Y, LINE, PAD_X, PAD_Y, activationStyle, frameStyle, guardStyle, lifelineStyle, messageStyle, nodeLabel, noteStyle, palette, separatorStyle } from '../drawio/theme.js';
+import { type ThemeArg, FRAME_TAB_INSET, FRAME_TAB_X, FRAME_TAB_Y, LINE, PAD_X, PAD_Y, activationStyle, frameStyle, guardStyle, lifelineStyle, messageStyle, nodeLabel, noteStyle, palette, separatorStyle } from '../drawio/theme.js';
 import { autoAttr, diagramMeta, lookAttrs, type Scene, type SceneEdge, type SceneVertex } from '../drawio/write.js';
 
 const TOP = 24, BAR_W = 10, NOTE_W = 220;
@@ -46,7 +46,7 @@ function labelGap(x1: number, x2: number, w: number, centers: number[]): number 
 export async function sequenceScene(d: Diagram, measure: Measure, opts: SequenceOptions = {}): Promise<Scene> {
   const parts = d.nodes;
   const idx = new Map(parts.map((p, i) => [p.id, i]));
-  const theme = d.theme;
+  const theme: ThemeArg = d;
 
   // 1. Flatten items into rows, remembering frames.
   const rows: Row[] = [];

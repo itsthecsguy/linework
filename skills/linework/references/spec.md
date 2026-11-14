@@ -6,10 +6,11 @@
 
 | key | required | notes |
 |---|---|---|
-| `type` | yes | `architecture`, `flow`, `state`, `sequence` or `er` |
+| `type` | yes | `architecture`, `flow`, `state`, `sequence`, `er`, `class` or `timeline` |
 | `title` | no | stored in the file and used as the page name in draw.io |
-| `direction` | no | `auto` (default), `TB`, `LR`, `BT` or `RL`. Not for sequence. |
-| `theme` | no | the style: `clean` (default), `soft`, `dark`, `sketch`, `blueprint` or `c4` |
+| `direction` | no | `auto` (default), `TB`, `LR`, `BT` or `RL`. Not for sequence or timeline. |
+| `theme` | no | the style: `clean` (default), `soft`, `paper`, `dark`, `midnight`, `mono`, `bold`, `sketch`, `blueprint` or `c4` |
+| `accent` | no | the color highlights are drawn in: a color name, or a hex color in quotes (`"#E11D48"`). Default: the style's own. |
 | `groups` | no | map of id to `{ label, in, color, highlight }`, or to a label string |
 | `nodes` | yes | map of id to `{ label, kind, tech, in, icon, color, highlight }`, or to a label string |
 | `edges` | no | list of edge strings, or `{ from, to, label, style, color, highlight }` objects |
@@ -39,12 +40,16 @@ nodes:
 |---|---|---|
 | `clean` | white boxes with hairline borders, groups drawn as gray grounds, cobalt accent. Nodes are neutral unless the kind means something (error, success). | IBM Plex Sans |
 | `soft` | borderless pastel cards, each kind its own tint | IBM Plex Sans |
+| `paper` | warm cream ground, brown ink, earth-toned colors, terracotta accent | IBM Plex Sans |
 | `dark` | `clean` in GitHub's dark colors, so it sits flush on a dark README | IBM Plex Sans |
+| `midnight` | a navy dark style with softer contrast than `dark` | IBM Plex Sans |
+| `mono` | black ink only. A `color` becomes a gray ground and a highlight is solid black, so it prints and photocopies. | IBM Plex Sans |
+| `bold` | thick black outlines, bright flat fills by kind, hard drop shadows | IBM Plex Sans |
 | `sketch` | hand-drawn strokes, pastel fills, blue accent | Kalam (handwriting) |
 | `blueprint` | blue ink on pale drafting paper, drafting capitals for group titles | IBM Plex Mono |
 | `c4` | C4's colors (dark person, blue containers, gray external systems) in quiet tones; each box says its element type | IBM Plex Sans |
 
-The "drawn as" columns below describe `soft`. In `clean`, `dark` and `blueprint`, kinds differ by shape and dash only, and color comes from `highlight`, `color` and the error/success kinds.
+The "drawn as" columns below describe `soft`. `bold` and `sketch` tint by kind too. In `clean`, `paper`, `dark`, `midnight`, `mono` and `blueprint`, kinds differ by shape and dash only, and color comes from `highlight`, `color` and the error/success kinds.
 
 Linework embeds the font, subset to the characters the diagram uses (about 10 to 15KB), so the SVG looks the same on GitHub, in a browser and in docs.
 
@@ -218,7 +223,7 @@ nodes:
   pod: { label: Worker pods, icon: k8s.deploy }
 ```
 
-`linework icons aws` lists every AWS name (about 1,000); add a filter word to search. Common short names work too: `aws.s3`, `aws.sqs`, `aws.kms`, `aws.msk`, `gcp.pubsub`, `gcp.gke`, `k8s.service`, `k8s.ingress`. An unknown name is a warning, and the node is drawn without an icon.
+`linework icons aws` lists every AWS name (about 1,000); `gcp` has about 300, `azure` about 200 and `k8s` about 40. Add a filter word to search. Common short names work too: `aws.s3`, `aws.sqs`, `aws.kms`, `aws.msk`, `gcp.pubsub`, `gcp.gke`, `azure.functions`, `azure.cosmos`, `azure.aks`, `azure.keyvault`, `k8s.service`, `k8s.ingress`. An unknown name is a warning, and the node is drawn without an icon.
 
 ## Sequence
 
@@ -305,8 +310,71 @@ Relationships use Mermaid's crow's-foot notation:
 
 The middle is `--` for an identifying relationship (solid line) or `..` for a non-identifying one (dashed).
 
+## Class
+
+```yaml
+type: class
+title: Billing model
+nodes:
+  PaymentMethod:
+    kind: interface
+    members:
+      - "+ charge(amount: Money): Receipt"
+  Card:
+    members:
+      - "- token: string"
+      - "+ charge(amount: Money): Receipt"
+  Invoice:
+    members:
+      - "+ id: uuid"
+      - "+ total(): Money"
+  LineItem: { label: Line item }
+  InvoiceStatus:
+    kind: enum
+    members: [draft, open, paid]
+edges:
+  - PaymentMethod <|.. Card
+  - Invoice *-- LineItem: lines
+  - Invoice ..> PaymentMethod: pays with
+  - Invoice --> InvoiceStatus
+```
+
+A member is a quoted string: `"+ name: Type"` for an attribute, `"+ method(arg: Type): Type"` for a method, or a bare word for an enum value. The mark in front is the visibility: `+` public, `-` private, `#` protected, `~` package. Quote members, because of the `: ` in them. Kinds: `class` (default), `interface`, `abstract` and `enum`; the last three are drawn with their name in guillemets, `«interface»`.
+
+Relationships use Mermaid's class notation, and either spelling of each works:
+
+| edge | means | drawn as |
+|---|---|---|
+| `Parent <\|-- Child` or `Child --\|> Parent` | inheritance | hollow triangle at the parent |
+| `Interface <\|.. Class` or `Class ..\|> Interface` | implements | the same, dashed |
+| `Whole *-- Part` | composition: the part can't outlive the whole | filled diamond at the whole |
+| `Whole o-- Part` | aggregation: the whole refers to parts that live on their own | hollow diamond at the whole |
+| `A --> B` | association: A holds or uses a B | open arrow |
+| `A ..> B` | dependency: A needs B to do its work | dashed open arrow |
+
+Parents and owners are placed above what extends or belongs to them. The plain arrows (`->`, `--`) still work for anything else. For a colored relationship use the object form: `{ from: Parent, to: Child, rel: inherits, color: red }`.
+
+## Timeline
+
+```yaml
+type: timeline
+title: Checkout v2 rollout
+groups:                      # optional lanes
+  build: Build
+  rollout: Rollout
+nodes:
+  design:  { label: Design review, kind: done, start: 2026-01-05, end: 2026-01-16 }
+  api:     { label: Payments API, start: 2026-01-12, end: 2026-02-13, in: build }
+  freeze:  { label: Code freeze, at: 2026-03-06, in: build }
+  beta:    { label: Beta, start: 2026-03-09, end: 2026-03-20, in: rollout, highlight: true }
+```
+
+A task has `start` and `end`, both included, as `YYYY-MM-DD`. A milestone has one date, `at`. Kinds: `task` (default), `milestone`, `done` (green) and `risk` (red, for late or blocked work). Groups are lanes; tasks outside any lane come first. Rows are drawn in the order written. There are no edges: when things happen is shown by where they sit. The axis picks days, weeks, months or quarters to fit the span.
+
+A bar dragged or stretched in draw.io (or Excalidraw) has new dates the next time the diagram is read, so `show` after a hand edit gives the dates as drawn.
+
 ## Importing Mermaid
 
-`linework import file.mmd` prints an linework spec. `-o out.drawio.svg` builds it straight away. A Markdown file works too; use `--block N` when it has several Mermaid blocks. Supported: `flowchart`/`graph`, `stateDiagram`, `sequenceDiagram`, `erDiagram`.
+`linework import file.mmd` prints a linework spec. `-o out.drawio.svg` builds it straight away. A Markdown file works too; use `--block N` when it has several Mermaid blocks. Supported: `flowchart`/`graph`, `stateDiagram`, `sequenceDiagram`, `erDiagram`, `classDiagram` and `gantt` (which becomes a `timeline`; durations count calendar days, and `excludes weekends` is not applied).
 
 A flowchart with diamonds becomes a `flow`. One with subgraphs or cylinders becomes an `architecture` diagram. In that case a `<br>` second line becomes `tech`, and kinds are guessed from shapes and names: a cylinder becomes a database, "Kafka" becomes a queue, "Stripe" becomes external. Mermaid styling (`classDef`, `style`, `click`) is dropped. Review the printed spec before building, and fix any kinds it guessed wrong.

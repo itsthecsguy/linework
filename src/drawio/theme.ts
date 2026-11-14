@@ -3,10 +3,18 @@
 //
 // Color rules, used by every style:
 // - Nodes are neutral unless color means something. Semantic kinds (error, success,
-//   start/end) always carry their color. `soft` and `sketch` also tint by kind.
+//   start/end) always carry their color. `soft`, `sketch` and `bold` also tint by kind.
+// - `accent:` in the spec swaps the color highlights are drawn in. Nothing else moves.
 // - `color: <name>` tints a node, group or edge. `highlight: true` makes it the
 //   strongest thing on the page: a solid fill for nodes, a thick colored line for edges.
-import { kindDef, THEMES, type BuiltinTheme, type Card, type ColorName, type DiagramType, type EdgeStyle, type Look, type MessageStyle, type ThemeName } from '../spec/model.js';
+import { kindDef, THEMES, type BuiltinTheme, type Card, type ClassRel, type ColorName, type DiagramType, type EdgeStyle, type Look, type MessageStyle, type ThemeName } from '../spec/model.js';
+import { contrast } from './icons.js';
+
+export { contrast };
+
+/** A style by name, or anything that carries one and maybe an accent: a Diagram does. */
+export type ThemeArg = ThemeName | { theme: ThemeName; accent?: string };
+const nameOf = (a: ThemeArg): ThemeName => (typeof a === 'string' ? a : a.theme);
 
 const SYSTEM = '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif';
 export const FONT_STACK = `IBM Plex Sans, ${SYSTEM}`;
@@ -36,8 +44,8 @@ const MONO: Typeface = {
 /** Line height draw.io uses for HTML labels. */
 export const LINE = 1.2;
 
-export function typeface(theme: ThemeName = 'clean'): Typeface {
-  return palette(theme).type;
+export function typeface(theme: ThemeArg = 'clean'): Typeface {
+  return palette(nameOf(theme)).type;
 }
 
 /** Back-compat: sizes of the default style. */
@@ -56,6 +64,8 @@ interface Swatch {
   solid: string;
   /** Line color for colored and highlighted edges. */
   edge: string;
+  /** Text on `solid`, when white doesn't read on it. Brand colors only. */
+  onSolid?: string;
 }
 
 type Swatches = Record<ColorName, Swatch>;
@@ -108,7 +118,7 @@ const BP_LINE: Record<ColorName, string> = {
   amber: '#A16207',
   green: '#15803D',
   teal: '#0F766E',
-  gray: '#64748B',
+  gray: '#5E6E85',
 };
 
 export interface Paint {
@@ -146,6 +156,10 @@ export interface Theme {
   edgePaint(color: ColorName | undefined, highlight: boolean): { stroke: string; text: string; width: number };
   /** Appended to every shape and edge style. */
   extra: string;
+  /** A highlighted node in a brand color, where the style's highlight isn't a plain solid fill. */
+  brand?(sw: Swatch, base: Paint): Paint;
+  /** Set by `accent:` when it is a hex color: the swatch made from it. */
+  custom?: Swatch;
 }
 
 function lightPaint(sw: Swatches, neutral: { fill: string; stroke: string }, text: string, muted: string, accent: ColorName) {
@@ -268,6 +282,7 @@ const SKETCH: Theme = {
     const s = LIGHT_SW[color ?? 'blue'];
     return { stroke: s.solid, text: s.ink, width: hl ? 2.5 : 1.5 };
   },
+  brand: (sw, base) => ({ ...base, fill: mix(sw.solid, '#FFFFFF', 0.62), stroke: legible(sw.solid, '#FFFFFF', SKETCH_INK, 3), sub: sw.ink }),
   extra: 'sketch=1;curveFitting=1;jiggle=2;',
 };
 
@@ -304,6 +319,232 @@ const BLUEPRINT: Theme = {
   extra: '',
 };
 
+// Midnight: a second dark style. Navy ground, softer contrast than `dark`.
+const MID_SW: Swatches = {
+  blue: { tint: '#1C2C54', line: '#3B5BA8', ink: '#C5D5FF', solid: '#3D63DD', edge: '#88A6F7' },
+  violet: { tint: '#2A2452', line: '#5B4BA8', ink: '#D8D0FF', solid: '#6D55D9', edge: '#A99BF5' },
+  pink: { tint: '#3D1F3D', line: '#8E4583', ink: '#F5C9EC', solid: '#B5479F', edge: '#E08ACF' },
+  red: { tint: '#40202A', line: '#96404F', ink: '#F7C6CC', solid: '#C8475A', edge: '#EC8794' },
+  orange: { tint: '#40281C', line: '#96592F', ink: '#F8D2B5', solid: '#B85C22', edge: '#EBA06C' },
+  amber: { tint: '#3A3018', line: '#8C742B', ink: '#F2E3A6', solid: '#946F12', edge: '#E3C25E' },
+  green: { tint: '#1B3529', line: '#3B7A57', ink: '#BFEBD0', solid: '#2E7D55', edge: '#7FD0A2' },
+  teal: { tint: '#16343A', line: '#2F7A85', ink: '#B4EAF0', solid: '#237583', edge: '#6CCBD8' },
+  gray: { tint: '#243150', line: '#44536F', ink: '#D5DCEA', solid: '#4B5A78', edge: '#93A0B8' },
+};
+const MID_TEXT = '#E2E8F5';
+const MIDNIGHT: Theme = {
+  name: 'midnight',
+  base: 'midnight',
+  type: SANS,
+  canvas: '#101727',
+  text: MID_TEXT,
+  muted: '#93A0B8',
+  edge: '#64748B',
+  edgeText: '#9AA7BD',
+  edgeWidth: 1.25,
+  accent: 'blue',
+  kindColors: false,
+  radius: 10,
+  group: { fill: '#162036', nested: '#1D2946', stroke: 'none', dashed: false, text: '#93A0B8' },
+  note: { fill: '#3B3418', stroke: 'none', text: '#F2E3A6' },
+  well: '#243150',
+  paint: (color, hl) => {
+    if (hl) {
+      const s = MID_SW[color === 'neutral' || color === 'ink' ? 'blue' : color];
+      return { fill: s.solid, stroke: s.solid, text: '#FFFFFF', sub: 'rgba(255,255,255,0.9)', strokeWidth: 1 };
+    }
+    if (color === 'ink') return { fill: MID_TEXT, stroke: MID_TEXT, text: '#101727', sub: '#4B5A78', strokeWidth: 1 };
+    if (color === 'neutral') return { fill: '#1B2540', stroke: '#44536F', text: MID_TEXT, sub: '#93A0B8', strokeWidth: 1 };
+    const s = MID_SW[color];
+    return { fill: s.tint, stroke: s.line, text: MID_TEXT, sub: s.ink, strokeWidth: 1 };
+  },
+  edgePaint: (color, hl) => {
+    const s = MID_SW[color ?? 'blue'];
+    if (hl) return { stroke: s.edge, text: s.ink, width: 2 };
+    return color ? { stroke: s.edge, text: s.ink, width: 1.25 } : { stroke: MIDNIGHT.edge, text: MIDNIGHT.edgeText, width: 1.25 };
+  },
+  extra: '',
+};
+
+// Paper: warm cream stock, brown ink, earth-toned accents. For long reads.
+const PAPER_SW: Swatches = {
+  blue: { tint: '#E8EDF2', line: '#A9B9CC', ink: '#2F4A6B', solid: '#3B5B85', edge: '#4A6C99' },
+  violet: { tint: '#EEE9F2', line: '#BDB0CF', ink: '#54406F', solid: '#6A5290', edge: '#7A62A0' },
+  pink: { tint: '#F5E6EA', line: '#D9AEBB', ink: '#7E3550', solid: '#9C4667', edge: '#AD5576' },
+  red: { tint: '#F6E3DD', line: '#DFA899', ink: '#7F2C1D', solid: '#A63D2A', edge: '#B5492F' },
+  orange: { tint: '#F8E8D8', line: '#E3B58C', ink: '#7F4416', solid: '#B4532A', edge: '#C0622F' },
+  amber: { tint: '#F7EDCB', line: '#DCC37A', ink: '#6E5210', solid: '#8A6510', edge: '#94700F' },
+  green: { tint: '#E6EEDD', line: '#A9C294', ink: '#3A5626', solid: '#4C7033', edge: '#5A803D' },
+  teal: { tint: '#DFEEEA', line: '#97C3B8', ink: '#245A50', solid: '#2F7265', edge: '#3A8375' },
+  gray: { tint: '#EFE9DD', line: '#CDBFA9', ink: '#4E4336', solid: '#6B5D4D', edge: '#8C7B68' },
+};
+const PAPER: Theme = {
+  name: 'paper',
+  base: 'paper',
+  type: SANS,
+  canvas: '#FAF6EE',
+  text: '#2B2118',
+  muted: '#756553',
+  edge: '#8C7B68',
+  edgeText: '#5E4F3F',
+  edgeWidth: 1.25,
+  accent: 'orange',
+  kindColors: false,
+  radius: 8,
+  group: { fill: '#F1EADB', nested: '#E8DEC9', stroke: 'none', dashed: false, text: '#6B5B49' },
+  note: { fill: '#F6E7B4', stroke: 'none', text: '#5C4300' },
+  well: '#EFE7D6',
+  paint: lightPaint(PAPER_SW, { fill: '#FFFDF8', stroke: '#CDBFA9' }, '#2B2118', '#756553', 'orange'),
+  edgePaint: (color, hl) => {
+    const s = PAPER_SW[color ?? 'orange'];
+    if (hl) return { stroke: s.edge, text: s.ink, width: 2 };
+    return color ? { stroke: s.edge, text: s.ink, width: 1.25 } : { stroke: PAPER.edge, text: PAPER.edgeText, width: 1.25 };
+  },
+  extra: '',
+};
+
+// Mono: black ink, no color. For print, papers and RFCs. A color in the spec
+// becomes a gray ground; a highlight is solid black, or a heavy line on an edge.
+const MONO_INK = '#111111';
+const MONO_PAINT: Paint = { fill: '#FFFFFF', stroke: MONO_INK, text: MONO_INK, sub: '#4D4D4D', strokeWidth: 1.25 };
+const MONO_THEME: Theme = {
+  name: 'mono',
+  base: 'mono',
+  type: SANS,
+  canvas: '#FFFFFF',
+  text: MONO_INK,
+  muted: '#4D4D4D',
+  edge: MONO_INK,
+  edgeText: MONO_INK,
+  edgeWidth: 1.25,
+  accent: 'gray',
+  kindColors: false,
+  radius: 4,
+  group: { fill: 'none', stroke: '#6B6B6B', dashed: true, text: '#333333' },
+  note: { fill: '#F2F2F2', stroke: MONO_INK, text: MONO_INK },
+  well: '#E8E8E8',
+  paint: (color, hl) => {
+    if (hl) return { fill: MONO_INK, stroke: MONO_INK, text: '#FFFFFF', sub: 'rgba(255,255,255,0.85)', strokeWidth: 1.25 };
+    if (color === 'ink') return { fill: '#4D4D4D', stroke: '#4D4D4D', text: '#FFFFFF', sub: 'rgba(255,255,255,0.85)', strokeWidth: 1.25 };
+    if (color === 'neutral') return MONO_PAINT;
+    return { ...MONO_PAINT, fill: '#E8E8E8' };
+  },
+  edgePaint: (_color, hl) => ({ stroke: MONO_INK, text: MONO_INK, width: hl ? 2.5 : 1.25 }),
+  extra: '',
+};
+
+// Bold: thick black outlines, flat bright fills and a hard drop shadow. For slides.
+const BOLD_INK = '#111111';
+const BOLD_FILL: Record<ColorName, string> = {
+  blue: '#9DBEFF',
+  violet: '#C9B8FF',
+  pink: '#FFA8D5',
+  red: '#FF9A8F',
+  orange: '#FFB878',
+  amber: '#FFDD57',
+  green: '#93E6A6',
+  teal: '#84E3D7',
+  gray: '#E7E5DF',
+};
+const BOLD_SHADOW = `shadow=1;shadowColor=${BOLD_INK};shadowOffsetX=3;shadowOffsetY=3;shadowBlur=0;shadowOpacity=100;`;
+const boldPaint = (fill: string, text = BOLD_INK): Paint => ({ fill, stroke: BOLD_INK, text, sub: text === BOLD_INK ? '#333333' : 'rgba(255,255,255,0.92)', strokeWidth: 2, extra: BOLD_SHADOW });
+const BOLD: Theme = {
+  name: 'bold',
+  base: 'bold',
+  type: SANS,
+  canvas: '#FFFDF5',
+  text: BOLD_INK,
+  muted: '#4A4A4A',
+  edge: BOLD_INK,
+  edgeText: BOLD_INK,
+  edgeWidth: 2,
+  accent: 'blue',
+  kindColors: true,
+  radius: 6,
+  group: { fill: 'none', stroke: BOLD_INK, dashed: true, text: BOLD_INK },
+  note: { fill: '#FFF3A8', stroke: BOLD_INK, text: BOLD_INK },
+  well: '#E7E5DF',
+  paint: (color, hl) => {
+    if (hl) return { ...boldPaint(LIGHT_SW[color === 'neutral' || color === 'ink' ? 'blue' : color].solid, '#FFFFFF'), strokeWidth: 2.5 };
+    if (color === 'ink') return boldPaint(BOLD_INK, '#FFFFFF');
+    return boldPaint(color === 'neutral' ? '#FFFFFF' : BOLD_FILL[color]);
+  },
+  brand: (sw, base) => ({ ...base, fill: sw.solid, text: sw.onSolid ?? '#FFFFFF', sub: sw.onSolid ?? 'rgba(255,255,255,0.92)' }),
+  edgePaint: (color, hl) => {
+    const stroke = color ? LIGHT_SW[color].solid : hl ? LIGHT_SW.blue.solid : BOLD_INK;
+    return { stroke, text: color || hl ? LIGHT_SW[color ?? 'blue'].ink : BOLD_INK, width: hl ? 3.5 : 2 };
+  },
+  extra: '',
+};
+
+// ---------- accent ----------
+
+const hexRgb = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+/** `a` mixed toward `b`: 0 is all `a`, 1 is all `b`. */
+function mix(a: string, b: string, t: number): string {
+  const [x, y] = [hexRgb(a), hexRgb(b)];
+  return '#' + x.map((v, i) => Math.round(v + (y[i]! - v) * t).toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+/** `color`, moved toward `toward` only as far as it takes to stand `ratio` clear of `on`. */
+function legible(color: string, on: string, toward: string, ratio: number): string {
+  for (let t = 0; t <= 1; t += 0.1) {
+    const c = mix(color, toward, t);
+    if (contrast(c, on) >= ratio) return c;
+  }
+  return toward;
+}
+
+/** A swatch for a brand color, fitted to the style's canvas and text. */
+function brandSwatch(hex: string, t: Theme): Swatch {
+  const onSolid = contrast('#FFFFFF', hex) >= 4.5 || contrast('#FFFFFF', hex) >= contrast('#17171C', hex) ? '#FFFFFF' : '#17171C';
+  return {
+    tint: mix(hex, t.canvas, 0.9),
+    line: mix(hex, t.canvas, 0.5),
+    ink: legible(hex, t.canvas, t.text, 4.5),
+    solid: hex,
+    edge: legible(hex, t.canvas, t.text, 3),
+    onSolid,
+  };
+}
+
+const accented = new Map<string, Theme>();
+
+/** The style with its highlight color swapped for the spec's `accent:`. */
+function withAccent(t: Theme, accent: string): Theme {
+  const key = `${t.name} ${accent}`;
+  let hit = accented.get(key);
+  if (!hit) accented.set(key, (hit = applyAccent(t, accent)));
+  return hit;
+}
+
+function applyAccent(t: Theme, accent: string): Theme {
+  const plain = (c: ColorName | 'neutral' | 'ink' | undefined) => c === undefined || c === 'neutral' || c === 'ink';
+  let out: Theme;
+  if (!accent.startsWith('#')) {
+    // A named color: the style already knows how to draw it.
+    const name = accent as ColorName;
+    out = { ...t, accent: name, paint: (c, hl) => t.paint(hl && plain(c) ? name : c, hl), edgePaint: (c, hl) => t.edgePaint(hl && !c ? name : c, hl) };
+  } else {
+    const sw = brandSwatch(accent, t);
+    out = {
+      ...t,
+      custom: sw,
+      paint: (c, hl) => {
+        const base = t.paint(c, hl);
+        if (!hl || !plain(c)) return base;
+        if (t.brand) return t.brand(sw, base);
+        const on = sw.onSolid ?? '#FFFFFF';
+        return { ...base, fill: sw.solid, stroke: sw.solid, text: on, sub: on };
+      },
+      edgePaint: (c, hl) => {
+        const base = t.edgePaint(c, hl);
+        return hl && !c ? { ...base, stroke: sw.edge, text: sw.ink } : base;
+      },
+    };
+  }
+  return out;
+}
+
 // C4's convention (a dark person, blue containers, gray external systems) in
 // quieter tones than C4-PlantUML's, so a highlight still stands out, with white text at 4.5:1 or better on each.
 // Other diagram types use `clean`.
@@ -314,15 +555,18 @@ const C4_KIND: Record<string, { fill: string; stroke: string; text: string; type
 const C4_CONTAINER = { fill: '#456A9E', stroke: '#456A9E', text: '#FFFFFF', type: 'Container' };
 const C4: Theme = { ...CLEAN, name: 'c4', base: 'c4', group: { fill: 'none', stroke: '#444444', dashed: true, text: '#444444' }, edge: '#707070', edgeText: '#444444' };
 
-const BUILTIN: Record<BuiltinTheme, Theme> = { clean: CLEAN, soft: SOFT, dark: DARK, sketch: SKETCH, blueprint: BLUEPRINT, c4: C4 };
+const BUILTIN: Record<BuiltinTheme, Theme> = { clean: CLEAN, soft: SOFT, dark: DARK, midnight: MIDNIGHT, paper: PAPER, mono: MONO_THEME, bold: BOLD, sketch: SKETCH, blueprint: BLUEPRINT, c4: C4 };
 const custom = new Map<string, Theme>();
 
-export function palette(theme: ThemeName = 'clean'): Theme {
-  return custom.get(theme) ?? BUILTIN[theme as BuiltinTheme] ?? CLEAN;
+export function palette(theme: ThemeArg = 'clean'): Theme {
+  const name = nameOf(theme);
+  const t = custom.get(name) ?? BUILTIN[name as BuiltinTheme] ?? CLEAN;
+  const accent = typeof theme === 'string' ? undefined : theme.accent;
+  return accent ? withAccent(t, accent) : t;
 }
 
 /** The built-in style behind a theme name. */
-export const baseOf = (theme: ThemeName = 'clean'): BuiltinTheme => palette(theme).base;
+export const baseOf = (theme: ThemeArg = 'clean'): BuiltinTheme => palette(nameOf(theme)).base;
 
 export const isTheme = (name: string): boolean => custom.has(name) || (THEMES as readonly string[]).includes(name);
 export const themeNames = (): string[] => [...THEMES, ...custom.keys()];
@@ -353,24 +597,9 @@ export function inkOn(fill: string): string {
   return contrast('#FFFFFF', fill) >= contrast('#17171C', fill) ? '#FFFFFF' : '#17171C';
 }
 
-function luminance(hex: string): number {
-  const h = hex.replace('#', '');
-  const full = h.length === 3 ? [...h].map((c) => c + c).join('') : h;
-  const ch = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
-  return 0.2126 * ch[0]! + 0.7152 * ch[1]! + 0.0722 * ch[2]!;
-}
-
-/** WCAG contrast ratio between two hex colors. */
-export function contrast(a: string, b: string): number {
-  const [x, y] = [luminance(a), luminance(b)].sort((m, n) => n - m);
-  return (x! + 0.05) / (y! + 0.05);
-}
-
 /** A built-in style with a team's tokens laid over it. */
 export function deriveTheme(name: string, base: BuiltinTheme, k: ThemeTokens): Theme {
   const b = BUILTIN[base];
-  const accentName = k.accent && !k.accent.startsWith('#') ? (k.accent as ColorName) : b.accent;
-  const accentHex = k.accent?.startsWith('#') ? k.accent : undefined;
   const text = k.text ?? b.text, muted = k.muted ?? b.muted;
   const width = k.lineWidth;
   const type: Typeface = k.font
@@ -393,7 +622,6 @@ export function deriveTheme(name: string, base: BuiltinTheme, k: ThemeTokens): T
     edge: k.edge ?? b.edge,
     edgeText: k.edgeText ?? b.edgeText,
     edgeWidth: width ?? b.edgeWidth,
-    accent: accentName,
     radius: k.radius ?? b.radius,
     group: {
       ...b.group,
@@ -403,38 +631,42 @@ export function deriveTheme(name: string, base: BuiltinTheme, k: ThemeTokens): T
       text: k.groupText ?? b.group.text,
     },
     paint: (color, hl) => {
-      const p = b.paint(hl && color === 'neutral' ? accentName : color, hl);
-      if (hl && accentHex && (color === 'neutral' || color === 'ink')) {
-        const ink = inkOn(accentHex);
-        return { ...p, fill: accentHex, stroke: accentHex, text: ink, sub: ink };
-      }
+      const p = b.paint(color, hl);
       if (hl) return p;
       if (color === 'neutral') return { ...p, fill: k.box ?? p.fill, stroke: k.border ?? p.stroke, text, sub: muted, strokeWidth: width ?? p.strokeWidth };
       // Tinted boxes keep the base style's tints; only the text follows the team's ink.
       return { ...p, text: p.text === b.text ? text : p.text, strokeWidth: width ?? p.strokeWidth };
     },
     edgePaint: (color, hl) => {
-      const p = b.edgePaint(color ?? (hl ? accentName : undefined), hl);
-      if (!color && hl && accentHex) return { ...p, stroke: accentHex, text: accentHex };
+      const p = b.edgePaint(color, hl);
       if (!color && !hl) return { stroke: k.edge ?? p.stroke, text: k.edgeText ?? p.text, width: width ?? p.width };
       return p;
     },
   };
-  return t;
+  // The team's accent is drawn the way a spec's own `accent:` is.
+  return k.accent ? applyAccent(t, k.accent) : t;
 }
 
 /** Replace the team-defined themes. Built-in names can't be redefined. */
 export function setCustomThemes(themes: Theme[] = []): void {
   custom.clear();
+  // Accented copies are keyed by name, and a team theme's name can mean something new.
+  accented.clear();
   for (const t of themes) if (!(THEMES as readonly string[]).includes(t.name)) custom.set(t.name, t);
+}
+
+/** The tinted (not solid) paint of the accent: a highlighted group's ground, a highlighted lifeline's bar. */
+function accentTint(t: Theme, fallback: ColorName = t.accent): Paint {
+  const p = t.paint(t.custom ? 'neutral' : fallback, false);
+  return t.custom ? { ...p, fill: t.custom.tint, stroke: t.custom.line, sub: t.custom.ink } : p;
 }
 
 const fontPart = (t: Theme, size: number, color: string) => `fontFamily=${t.type.family};fontSize=${size};fontColor=${color};`;
 
 /** How a node of this kind looks. */
-export function paintFor(type: DiagramType, kind: string, theme: ThemeName, look: Look = {}): Paint {
+export function paintFor(type: DiagramType, kind: string, theme: ThemeArg, look: Look = {}): Paint {
   const t = palette(theme);
-  if (baseOf(theme) === 'c4' && type === 'architecture' && !look.highlight && !look.color) {
+  if (t.base === 'c4' && type === 'architecture' && !look.highlight && !look.color) {
     const c = C4_KIND[kind] ?? C4_CONTAINER;
     return { fill: c.fill, stroke: c.stroke, text: c.text, sub: 'rgba(255,255,255,0.92)', strokeWidth: 1 };
   }
@@ -447,7 +679,7 @@ export function paintFor(type: DiagramType, kind: string, theme: ThemeName, look
 
 const dashes = (t: Theme) => (t.base === 'sketch' ? 'dashed=1;dashPattern=8 6;' : 'dashed=1;dashPattern=5 4;');
 
-export function nodeStyle(type: DiagramType, kind: string, theme: ThemeName = 'clean', look: Look = {}): string {
+export function nodeStyle(type: DiagramType, kind: string, theme: ThemeArg = 'clean', look: Look = {}): string {
   const k = kindDef(type, kind);
   const t = palette(theme);
   const c = paintFor(type, kind, theme, look);
@@ -478,8 +710,8 @@ export function nodeStyle(type: DiagramType, kind: string, theme: ThemeName = 'c
     case 'table': {
       // An entity: header (startSize) with field rows stacked inside.
       const neutral = !look.highlight && !look.color && !(t.kindColors && k.color !== 'neutral');
-      const head = neutral && theme !== 'c4' ? t.well : c.fill;
-      const border = stroke === 'none' ? head : neutral && theme !== 'c4' ? palette(theme).paint('neutral', false).stroke : stroke;
+      const head = neutral && t.name !== 'c4' ? t.well : c.fill;
+      const border = stroke === 'none' ? head : neutral && t.name !== 'c4' ? t.paint('neutral', false).stroke : stroke;
       return (
         `shape=swimlane;childLayout=stackLayout;horizontal=1;startSize=${ER_HEAD};horizontalStack=0;resizeParent=1;resizeParentMax=0;` +
         `resizeLast=0;collapsible=0;marginBottom=0;rounded=1;absoluteArcSize=1;arcSize=${r + 2};swimlaneFillColor=${t.canvas};fontStyle=1;` +
@@ -510,7 +742,7 @@ export const PAD_Y = 12;
 export const ER_HEAD = 36;
 export const ER_ROW = 28;
 
-export function fieldStyle(theme: ThemeName = 'clean'): string {
+export function fieldStyle(theme: ThemeArg = 'clean'): string {
   const t = palette(theme);
   return (
     'text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=0;spacingRight=0;overflow=fill;' +
@@ -518,16 +750,19 @@ export function fieldStyle(theme: ThemeName = 'clean'): string {
   );
 }
 
+/** Styles whose groups are outlines: a colored one changes its line, never gains a fill. */
+const OUTLINED = new Set<BuiltinTheme>(['blueprint', 'sketch', 'mono', 'bold']);
+
 /** Left inset of a group's title. */
 export const GROUP_INSET = 14;
 
-export function groupStyle(theme: ThemeName = 'clean', look: Look = {}, depth = 0): string {
+export function groupStyle(theme: ThemeArg = 'clean', look: Look = {}, depth = 0): string {
   const t = palette(theme);
   let { fill, stroke, text } = t.group;
   if (depth > 0 && t.group.nested) fill = t.group.nested;
   if (look.color || look.highlight) {
-    const p = t.paint(look.color ?? t.accent, false);
-    fill = baseOf(theme) === 'blueprint' || baseOf(theme) === 'sketch' ? 'none' : p.fill;
+    const p = look.color ? t.paint(look.color, false) : accentTint(t);
+    fill = OUTLINED.has(t.base) ? 'none' : p.fill;
     // A colored ground carries the color; only a highlight adds an outline.
     stroke = look.highlight ? t.edgePaint(look.color, true).stroke : t.group.stroke === 'none' ? 'none' : p.stroke;
     text = p.sub;
@@ -542,14 +777,14 @@ export function groupStyle(theme: ThemeName = 'clean', look: Look = {}, depth = 
 }
 
 /** Group title HTML: sentence case, except blueprint's drafting capitals. */
-export function groupLabel(label: string, theme: ThemeName = 'clean'): string {
+export function groupLabel(label: string, theme: ThemeArg = 'clean'): string {
   return typeface(theme).upperGroups ? `<span style="text-transform:uppercase;letter-spacing:0.06em">${esc(label)}</span>` : esc(label);
 }
 
 const ARROW = 'endArrow=block;endFill=1;endSize=5;';
 const START_ARROW = 'startArrow=block;startFill=1;startSize=5;';
 
-export function edgeStyle(style: EdgeStyle, theme: ThemeName = 'clean', look: Look = {}, labelBg?: string): string {
+export function edgeStyle(style: EdgeStyle, theme: ThemeArg = 'clean', look: Look = {}, labelBg?: string): string {
   const t = palette(theme);
   const p = t.edgePaint(look.color, !!look.highlight);
   const ends = style === 'line' ? 'endArrow=none;startArrow=none;' : style === 'bidir' ? `${ARROW}${START_ARROW}` : `${ARROW}startArrow=none;`;
@@ -563,7 +798,7 @@ export function edgeStyle(style: EdgeStyle, theme: ThemeName = 'clean', look: Lo
 
 const ER_END: Record<Card, string> = { one: 'ERmandOne', zero_or_one: 'ERzeroToOne', many: 'ERzeroToMany', one_or_many: 'ERoneToMany' };
 
-export function erEdgeStyle(card: { from: Card; to: Card; identifying: boolean }, theme: ThemeName = 'clean', look: Look = {}): string {
+export function erEdgeStyle(card: { from: Card; to: Card; identifying: boolean }, theme: ThemeArg = 'clean', look: Look = {}): string {
   const t = palette(theme);
   const p = t.edgePaint(look.color, !!look.highlight);
   return (
@@ -574,11 +809,47 @@ export function erEdgeStyle(card: { from: Card; to: Card; identifying: boolean }
   );
 }
 
+/** A class relationship: UML's hollow triangle, diamonds and open arrows. The first four carry their mark at the start. */
+export function classEdgeStyle(rel: ClassRel, theme: ThemeArg = 'clean', look: Look = {}, labelBg?: string): string {
+  const t = palette(theme);
+  const p = t.edgePaint(look.color, !!look.highlight);
+  const ends: Record<ClassRel, string> = {
+    inherits: 'startArrow=block;startFill=0;startSize=10;endArrow=none;',
+    implements: 'startArrow=block;startFill=0;startSize=10;endArrow=none;',
+    composition: 'startArrow=diamondThin;startFill=1;startSize=14;endArrow=none;',
+    aggregation: 'startArrow=diamondThin;startFill=0;startSize=14;endArrow=none;',
+    association: 'endArrow=open;endFill=0;endSize=8;startArrow=none;',
+    dependency: 'endArrow=open;endFill=0;endSize=8;startArrow=none;',
+  };
+  return (
+    'edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=16;html=1;' +
+    `strokeColor=${p.stroke};strokeWidth=${p.width};${ends[rel]}` +
+    (rel === 'implements' || rel === 'dependency' ? dashes(t) : '') +
+    `${fontPart(t, t.type.size.edge, p.text)}${look.highlight ? 'fontStyle=1;' : ''}labelBackgroundColor=${labelBg ?? t.canvas};labelPadding=1 5;${t.extra}`
+  );
+}
+
+/** The relationship an edge's arrows draw, for a file with no linework metadata on it. */
+export function relFromArrows(s: Record<string, string>): ClassRel | undefined {
+  const dashed = s.dashed === '1';
+  if (s.startArrow === 'block' && s.startFill === '0') return dashed ? 'implements' : 'inherits';
+  if (s.startArrow === 'diamondThin' || s.startArrow === 'diamond') return s.startFill === '0' ? 'aggregation' : 'composition';
+  if (s.endArrow === 'open') return dashed ? 'dependency' : 'association';
+  return undefined;
+}
+
+/** A table's heading: its name, after «interface» or the like when the kind has one. */
+export function tableLabel(label: string, mark: string | undefined, theme: ThemeArg = 'clean'): string {
+  if (!mark) return label;
+  const t = palette(theme);
+  return `<span style="font-weight:400;font-size:${t.type.size.sub}px;color:${t.muted}">«${mark}»</span> ${esc(label)}`;
+}
+
 export function cardFromArrow(arrow: string | undefined): Card | undefined {
   return (Object.entries(ER_END).find(([, v]) => v === arrow)?.[0] as Card | undefined) ?? undefined;
 }
 
-export function lifelineStyle(kind: string, theme: ThemeName = 'clean', headH = 48, look: Look = {}): string {
+export function lifelineStyle(kind: string, theme: ThemeArg = 'clean', headH = 48, look: Look = {}): string {
   const t = palette(theme);
   const c = paintFor('sequence', kind, theme, look);
   const k = kindDef('sequence', kind);
@@ -595,17 +866,17 @@ export function lifelineStyle(kind: string, theme: ThemeName = 'clean', headH = 
   );
 }
 
-export function activationStyle(kind: string, theme: ThemeName = 'clean', look: Look = {}): string {
+export function activationStyle(kind: string, theme: ThemeArg = 'clean', look: Look = {}): string {
   const t = palette(theme);
   // A highlighted participant's bar is tinted, not solid: the head already shouts.
-  const c = look.highlight ? t.paint(look.color ?? (t.base === 'sketch' ? 'red' : t.accent), false) : paintFor('sequence', kind, theme, look);
+  const c = look.highlight ? (look.color ? t.paint(look.color, false) : accentTint(t, t.base === 'sketch' ? 'red' : t.accent)) : paintFor('sequence', kind, theme, look);
   const neutral = c.stroke === t.paint('neutral', false).stroke && c.fill === t.paint('neutral', false).fill;
   const fill = neutral ? t.well : c.fill;
   const stroke = c.stroke === 'none' ? fill : neutral ? t.edge : c.stroke;
   return `html=1;points=[];perimeter=orthogonalPerimeter;outlineConnect=0;targetShapes=umlLifeline;portConstraint=eastwest;fillColor=${fill};strokeColor=${stroke};strokeWidth=1;${t.extra}${c.extra ?? ''}`;
 }
 
-export function messageStyle(style: MessageStyle, theme: ThemeName = 'clean', self = false, look: Look = {}): string {
+export function messageStyle(style: MessageStyle, theme: ThemeArg = 'clean', self = false, look: Look = {}): string {
   const t = palette(theme);
   const p = t.edgePaint(look.color, !!look.highlight);
   const arrow = style === 'sync' ? 'endArrow=block;endFill=1;' : 'endArrow=open;endFill=0;';
@@ -620,7 +891,7 @@ export function messageStyle(style: MessageStyle, theme: ThemeName = 'clean', se
 /** Padding of a sequence frame's operator tab, and its inset from the frame's corner. */
 export const FRAME_TAB_X = 9, FRAME_TAB_Y = 3, FRAME_TAB_INSET = 4;
 
-export function frameStyle(theme: ThemeName = 'clean'): string {
+export function frameStyle(theme: ThemeArg = 'clean'): string {
   const t = palette(theme);
   // The operator (alt, loop, opt) sits in a small tab in the frame's corner: UML's
   // pentagon, drawn as a chip, inset the same from both sides so its square corner
@@ -633,17 +904,17 @@ export function frameStyle(theme: ThemeName = 'clean'): string {
   );
 }
 
-export function guardStyle(theme: ThemeName = 'clean'): string {
+export function guardStyle(theme: ThemeArg = 'clean'): string {
   const t = palette(theme);
   return `text;html=1;align=left;verticalAlign=middle;labelBackgroundColor=${t.canvas};${fontPart(t, t.type.size.edge, t.muted)}`;
 }
 
-export function separatorStyle(theme: ThemeName = 'clean'): string {
+export function separatorStyle(theme: ThemeArg = 'clean'): string {
   const t = palette(theme);
   return `endArrow=none;dashed=1;dashPattern=4 4;html=1;strokeColor=${t.edge};`;
 }
 
-export function noteStyle(theme: ThemeName = 'clean'): string {
+export function noteStyle(theme: ThemeArg = 'clean'): string {
   const t = palette(theme);
   const shape = t.base === 'sketch' ? 'shape=note;size=10;' : `rounded=1;absoluteArcSize=1;arcSize=${t.radius};`;
   return `${shape}whiteSpace=wrap;html=1;fillColor=${t.note.fill};strokeColor=${t.note.stroke};strokeWidth=1;${fontPart(t, t.type.size.edge, t.note.text)}align=left;spacingLeft=10;spacingRight=10;${t.extra}`;
@@ -652,7 +923,7 @@ export function noteStyle(theme: ThemeName = 'clean'): string {
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 export interface LabelOpts extends Look {
-  theme?: ThemeName;
+  theme?: ThemeArg;
   type?: DiagramType;
   kind?: string;
 }
@@ -672,7 +943,7 @@ export function nodeLabel(label: string, tech?: string, opts: LabelOpts = {}): s
 }
 
 /** One ER field row: name on the left, type and key markers on the right. */
-export function fieldLabel(name: string, type: string | undefined, flags: string[], theme: ThemeName = 'clean'): string {
+export function fieldLabel(name: string, type: string | undefined, flags: string[], theme: ThemeArg = 'clean'): string {
   const t = palette(theme);
   const keys = flags.filter((f) => f === 'pk' || f === 'fk').map((f) => f.toUpperCase());
   const rest = flags.filter((f) => f !== 'pk' && f !== 'fk');

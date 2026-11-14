@@ -98,7 +98,7 @@ edges:
 npx -y @itsthecsguy/linework build spec.yaml -o docs/checkout.drawio.svg --png /tmp/preview.png
 ```
 
-Linework lays it out with ELK and draws it with draw.io's own renderer. It draws architecture, flow, state, sequence and ER diagrams, with AWS, GCP, Kubernetes and Azure icons, and it converts Mermaid.
+Linework lays it out with ELK and draws it with draw.io's own renderer. It draws architecture, flow, state, sequence, ER and class diagrams and timelines, with AWS, Google Cloud, Azure and Kubernetes icons, and it converts Mermaid.
 
 To change a diagram, the agent runs `linework show` to get the spec back, hand edits included, edits it and rebuilds. The rebuild merges into your layout. Your boxes stay where you put them, new ones go next to their neighbours, and only the edges that need it get rerouted (with draw.io's libavoid router).
 
@@ -110,6 +110,10 @@ These are first builds of the specs in [`examples/`](examples), with no hand edi
 <tr>
 <td width="50%" valign="top">Architecture, with AWS icons<br><br><a href="examples/serverless-aws.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/serverless-aws-dark.drawio.svg"><img alt="Architecture diagram: an uploader posts to an API Gateway, a Lambda presigns an S3 upload, and S3 events queue resize jobs for a second Lambda." src="docs/gallery/serverless-aws-light.drawio.svg" width="100%"></picture></a></td>
 <td width="50%" valign="top">Flow<br><br><a href="examples/refund-flow.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/refund-flow-dark.drawio.svg"><img alt="Flowchart of a refund: look up the order, check the 30-day window and the amount, then auto-approve, queue for review or deny, and email the customer." src="docs/gallery/refund-flow-light.drawio.svg" width="100%"></picture></a></td>
+</tr>
+<tr>
+<td width="50%" valign="top">Architecture, with Google Cloud icons<br><br><a href="examples/gcp-ingest.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/gcp-ingest-dark.drawio.svg"><img alt="Architecture diagram: sensors send telemetry through a load balancer to a Cloud Run API, which publishes to Pub/Sub; a Dataflow job streams it into BigQuery and archives it to Cloud Storage." src="docs/gallery/gcp-ingest-light.drawio.svg" width="100%"></picture></a></td>
+<td width="50%" valign="top">Architecture, with Azure icons<br><br><a href="examples/orders-azure.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/orders-azure-dark.drawio.svg"><img alt="Architecture diagram: customers reach an Azure Functions API through an application gateway; it writes to Cosmos DB, reads Key Vault and publishes to Service Bus for a legacy VM and its SQL ledger." src="docs/gallery/orders-azure-light.drawio.svg" width="100%"></picture></a></td>
 </tr>
 </table>
 
@@ -125,6 +129,104 @@ ER
 
 <a href="examples/shop-er.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/shop-er-dark.drawio.svg"><img alt="Entity relationship diagram of a shop: customers, addresses, orders, order items, products, inventory and payments, with keys and crow's-foot cardinality." src="docs/gallery/shop-er-light.drawio.svg"></picture></a>
 
+Class
+
+<a href="examples/billing-class.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/billing-class-dark.drawio.svg"><img alt="Class diagram of a billing model: an invoice made of line items, owned by a customer, paid through a payment method interface that cards and bank transfers implement." src="docs/gallery/billing-class-light.drawio.svg"></picture></a>
+
+Timeline
+
+<a href="examples/launch-timeline.yaml"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/gallery/launch-timeline-dark.drawio.svg"><img alt="Timeline of a rollout from January to April: design review, then a build lane with API, UI and migration work ending in a code freeze, then a rollout lane with a beta, general availability and cleanup." src="docs/gallery/launch-timeline-light.drawio.svg"></picture></a>
+
+## Excalidraw
+
+Linework goes both ways with Excalidraw. Write a copy of a diagram in its format, edit it there, and bring the edits back:
+
+```bash
+linework render docs/arch.drawio.svg -o arch.excalidraw   # out to Excalidraw
+linework import arch.excalidraw -o docs/arch.drawio.svg   # and back
+```
+
+Open the `.excalidraw` file at excalidraw.com, or with an Excalidraw extension in your editor. Boxes, arrows, labels and cloud icons are where linework put them, hand edits included. Arrows are Excalidraw's own right-angle arrows, attached to their boxes, so they follow when you drag one. The parts of a node (shape, icon, label) are grouped and move together.
+
+`import` reads what changed and merges it into the `.drawio.svg`, the same way a spec edit is merged:
+
+| in Excalidraw | in the diagram |
+|---|---|
+| retype a name, a second line, a group title or an arrow label | the label changes |
+| draw a box and type in it | a new node; a diamond in a flow is a decision |
+| duplicate a box | a new node of the same kind, icon and color |
+| draw an arrow between two boxes | a new edge |
+| drag an arrow's end to another box | the edge connects there |
+| delete a box, an arrow or a group | it's removed; a group's boxes stay |
+| move or resize boxes, or drag one into or out of a group | they sit where you put them, and their arrows are routed again |
+| pick a fill or stroke color | the nearest of linework's colors (`color: red`); back to none clears it |
+| make an arrow dashed, or give it a second head or none | `async`, two-way, or a plain line |
+| drag a segment of an arrow, or draw one with bends | that path is kept |
+| **sequence:** draw a box level with the participants | a new participant, in that position |
+| **sequence:** draw an arrow between two lifelines | a new message at that height; dashed is a reply |
+| **sequence:** drag a message up or down, or into a frame | the order changes |
+| **sequence:** delete a message, a note, a frame or a participant | it's removed, a participant with its messages |
+| **ER, class:** type a line of text in a table, or under its last row | a new column or member |
+| **ER, class:** retype, delete or reorder a row | the column changes, goes, or moves |
+| **ER, class:** draw a box with rows of text in it | a new table |
+| **timeline:** drag or stretch a bar | new dates |
+
+It prints each change it found. Then `linework show` gives you the updated spec (or pass `--spec arch.yaml` to have `import` write it). If the `.drawio.svg` is gone, `import` rebuilds it: the Excalidraw file carries the spec.
+
+**Importing on every save.** `--watch` keeps running and imports each time the file is saved, so the diagram and its spec follow along while you draw:
+
+```bash
+linework import arch.excalidraw -o docs/arch.drawio.svg --spec docs/arch.yaml --watch
+```
+
+The same file can be imported any number of times. A box you drew is added once, not once per save.
+
+**One file that is both a picture and a drawing.** Excalidraw can keep a scene inside an image. `.excalidraw.svg` and `.excalidraw.png` show in a README like any image, and open for editing in Excalidraw (and in its VS Code extension). `import` reads them too.
+
+```bash
+linework render docs/arch.drawio.svg -o docs/arch.excalidraw.svg
+```
+
+**A link.** `linework share docs/arch.drawio.svg` prints an excalidraw.com link that opens the diagram there. It works the way Excalidraw's own "Shareable link" does: the drawing is encrypted on your machine and the ciphertext is stored on excalidraw.com; the key is only in the link. Anyone you give the link to can open the drawing, and it can't be taken back.
+
+**A library.** `linework library` writes an `.excalidrawlib` of ready-made nodes to drop into a drawing: linework's own shapes, or cloud icons.
+
+```bash
+linework library shapes -o linework.excalidrawlib --style sketch
+linework library aws lambda s3 sqs dynamodb -o aws.excalidrawlib
+```
+
+A node dropped from one of these comes back through `import` as the right kind of node with its icon, not as an anonymous box. A provider has hundreds of icons (AWS over a thousand), so name the ones you use.
+
+What doesn't come back:
+
+- **Exact shades, fonts and widths.** A color you pick becomes the nearest of linework's nine, drawn in the diagram's style. Fonts and line widths stay as the style has them.
+- **Frames in a sequence diagram** can be deleted, moved and renamed, but not drawn from scratch; add an `alt` or `loop` in the spec.
+- **A class relationship's kind.** Inheritance, composition and the rest keep the kind the spec gives them; a new arrow drawn in Excalidraw is a plain association.
+
+Excalidraw also draws a few things its own way. It has one text weight, so names aren't bold. It has no database, table or lifeline shape, so each is built from grouped parts; double-click twice to edit text in a grouped node (the first enters the group). Share links and libraries can't hold images, so there the icons are drawn as shapes. And once Excalidraw reroutes an arrow (when you drag a box), that arrow gets its larger arrowhead and a path that may cross other boxes; importing routes it cleanly again. On a very short arrow, a double-click on the label can land on one of Excalidraw's segment handles instead: select the arrow and press Enter.
+
+## Keeping diagrams in step with their specs
+
+If you keep the YAML next to the diagram (`docs/arch.yaml` beside `docs/arch.drawio.svg`), `linework sync` rebuilds every diagram whose spec changed and leaves the rest alone:
+
+```bash
+linework sync docs          # rebuild what's out of date, keeping each layout
+linework sync docs --check  # change nothing; exit 1 if anything is out of date
+```
+
+Each build records which spec it came from, so "out of date" means the YAML changed since. Moving boxes in draw.io doesn't count. `--check` needs no browser, which makes it cheap in a pre-commit hook.
+
+In GitHub Actions:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: itsthecsguy/linework@v0.6.0
+  with:
+    paths: docs
+    mode: check        # or "update" to rebuild in the workspace for a later step to commit
+```
+
 ## Styles
 
 Set `theme:` in the spec.
@@ -133,7 +235,11 @@ Set `theme:` in the spec.
 |---|---|
 | `clean` (default) | docs and READMEs. White boxes with hairline borders on gray group grounds, IBM Plex Sans. |
 | `soft` | slides. Borderless pastel cards, tinted by kind. |
+| `paper` | long reads and blogs. Warm cream ground, brown ink, earth-toned colors. |
 | `dark` | dark-mode pages |
+| `midnight` | dark slides and dashboards. Navy ground, softer contrast than `dark`. |
+| `mono` | print, papers and RFCs. Black ink only: a color becomes a gray ground, a highlight solid black. |
+| `bold` | slides and social posts. Thick outlines, bright flat fills, hard shadows. |
 | `sketch` | early drafts. Hand-drawn lines and a handwriting font. |
 | `blueprint` | technical deep dives. Blue ink on pale drafting paper, monospace. |
 | `c4` | C4-model diagrams, in quiet blues and grays |
@@ -144,16 +250,26 @@ The same spec in each style:
 <tr>
 <td width="33%" align="center" valign="top"><code>clean</code><br><br><img alt="A web app, checkout API and orders database in the clean style" src="docs/gallery/style-clean.drawio.svg"></td>
 <td width="33%" align="center" valign="top"><code>soft</code><br><br><img alt="A web app, checkout API and orders database in the soft style" src="docs/gallery/style-soft.drawio.svg"></td>
-<td width="33%" align="center" valign="top"><code>dark</code><br><br><img alt="A web app, checkout API and orders database in the dark style" src="docs/gallery/style-dark.drawio.svg"></td>
+<td width="33%" align="center" valign="top"><code>paper</code><br><br><img alt="A web app, checkout API and orders database in the paper style" src="docs/gallery/style-paper.drawio.svg"></td>
 </tr>
 <tr>
+<td width="33%" align="center" valign="top"><code>dark</code><br><br><img alt="A web app, checkout API and orders database in the dark style" src="docs/gallery/style-dark.drawio.svg"></td>
+<td width="33%" align="center" valign="top"><code>midnight</code><br><br><img alt="A web app, checkout API and orders database in the midnight style" src="docs/gallery/style-midnight.drawio.svg"></td>
+<td width="33%" align="center" valign="top"><code>mono</code><br><br><img alt="A web app, checkout API and orders database in the mono style" src="docs/gallery/style-mono.drawio.svg"></td>
+</tr>
+<tr>
+<td width="33%" align="center" valign="top"><code>bold</code><br><br><img alt="A web app, checkout API and orders database in the bold style" src="docs/gallery/style-bold.drawio.svg"></td>
 <td width="33%" align="center" valign="top"><code>sketch</code><br><br><img alt="A web app, checkout API and orders database in the sketch style" src="docs/gallery/style-sketch.drawio.svg"></td>
 <td width="33%" align="center" valign="top"><code>blueprint</code><br><br><img alt="A web app, checkout API and orders database in the blueprint style" src="docs/gallery/style-blueprint.drawio.svg"></td>
+</tr>
+<tr>
 <td width="33%" align="center" valign="top"><code>c4</code><br><br><img alt="A web app, checkout API and orders database in the c4 style" src="docs/gallery/style-c4.drawio.svg"></td>
 </tr>
 </table>
 
 Color is for meaning. Nodes stay neutral by default, and errors and successes are red and green in every style. Mark the part the doc is about with `highlight: true` on a node or `==>` on an edge, and it's drawn in the style's accent color. Use `color: red` (or blue, violet, pink, orange, amber, green, teal, gray) for categories.
+
+To match a brand, set `accent:` beside `theme:`. It takes one of those color names or a hex color in quotes, such as `accent: "#E11D48"`, and every highlight in the diagram is drawn in it. Text on the color and lines against the page are adjusted to stay readable, so a pale brand color works too.
 
 Linework sizes every box from the real width of its text in the font it renders with, wrapping long labels instead of widening boxes. Each SVG carries a subset of that font (about 10 to 15KB), so text fits the same way on GitHub, in a browser or in a doc. `check` flags labels that overflow, overlap a box, another label, another edge or a group border, and `build` moves edge labels until they're clear.
 
@@ -192,7 +308,7 @@ Everything else takes the same JSON block in its MCP config file:
 | Claude Desktop | `claude_desktop_config.json` (Settings > Developer > Edit Config) |
 | VS Code | `.vscode/mcp.json`, with `"servers"` in place of `"mcpServers"` and `"type": "stdio"` added |
 
-Relative paths in tool calls resolve against the folder the server starts in. Add `"--root", "/path/to/docs"` to the args to pin it. The tools are `build_diagram`, `show_diagram`, `check_diagram`, `render_diagram`, `tidy_diagram`, `import_mermaid`, `list_icons`, `edit_diagram`, `publish_diagram`, and `linework_guide`, which hands the model the spec format and style rules. `build_diagram` returns a PNG preview, so a model that can see images checks its own work.
+Relative paths in tool calls resolve against the folder the server starts in. Add `"--root", "/path/to/docs"` to the args to pin it. The tools are `build_diagram`, `show_diagram`, `check_diagram`, `render_diagram`, `tidy_diagram`, `import_mermaid`, `import_excalidraw`, `list_icons`, `edit_diagram`, `publish_diagram`, and `linework_guide`, which hands the model the spec format and style rules. `build_diagram` returns a PNG preview, so a model that can see images checks its own work.
 
 ### Installing the skill by hand
 
@@ -266,7 +382,7 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 | command | does |
 |---|---|
 | `linework build <spec\|-> -o out.drawio.svg [--png p.png] [--relayout]` | layout (or merge into an existing file), write, lint |
-| `linework set <file> id.field=value...` | change a label, kind, color, theme or title in place |
+| `linework set <file> id.field=value...` | change a label, kind, color, theme, accent or title in place |
 | `linework add <file> "id: {...}" "a -> b: label"...` | add boxes, groups and edges in place |
 | `linework rm <file> id "a -> b"...` | remove boxes, groups and edges in place |
 | `linework config [init]` | print the team settings that apply here, or write a starter `linework.yaml` |
@@ -277,8 +393,13 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 | `linework edit <file> [--no-open]` | edit in the bundled draw.io, in your browser; saves write the file |
 | `linework check <file>` | lint: overlaps, edges through nodes, labels that don't fit, too wide |
 | `linework render <file> -o out.png [--scale 2]` | preview image |
+| `linework render <file> -o out.excalidraw` | a copy to open and edit in Excalidraw; `.excalidraw.svg` or `.excalidraw.png` for a picture that also opens there |
+| `linework import <file.excalidraw> -o <file.drawio.svg> [--spec s.yaml] [--watch]` | bring edits made in Excalidraw back into the diagram, once or on every save |
+| `linework share <file>` | an excalidraw.com link to the diagram |
+| `linework library <shapes\|aws\|gcp\|azure\|k8s> [filter...] -o x.excalidrawlib` | an Excalidraw library of linework nodes |
+| `linework sync [paths...] [--check]` | rebuild diagrams whose YAML spec changed, or fail if any is out of date |
 | `linework tidy <file>` | after hand edits: reroute stale edges and move colliding labels; boxes stay |
-| `linework import <file.mmd\|doc.md> [-o out.drawio.svg]` | convert a Mermaid diagram |
+| `linework import <file.mmd\|doc.md> [-o out.drawio.svg]` | convert a Mermaid diagram (flowchart, state, sequence, ER, class, gantt) |
 | `linework publish <file...> [--to dir] [--pull]` | copy diagrams into Google Drive for the Docs add-on |
 | `linework icons <aws\|gcp\|k8s\|azure> [filter]` | list icon names |
 | `linework git-setup` | `git diff` shows diagram changes as spec changes |
@@ -291,7 +412,7 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 
 ## Status
 
-All four phases of [PLAN.md](PLAN.md) are built. Two paths haven't been tried yet, because they need a real account or app: the Google Docs add-on round trip, and saving from the VS Code Draw.io Integration extension. Both use the same file format and protocol that the tests cover with draw.io's own editor.
+All five phases of [PLAN.md](PLAN.md) are built. Two paths haven't been tried yet, because they need a real account or app: the Google Docs add-on round trip, and saving from the VS Code Draw.io Integration extension. Both use the same file format and protocol that the tests cover with draw.io's own editor.
 
 ## Development
 
@@ -301,5 +422,21 @@ npm test             # unit, round-trip, MCP and end-to-end tests (needs Chromiu
 npm run build        # compile to dist/
 npm run dev -- build examples/checkout.yaml -o out/checkout.drawio.svg --png out/checkout.png
 ```
+
+Every push to `main` and every pull request runs the typecheck and the tests on Node 22 and 24 in GitHub Actions. To run the suite with a browser that isn't in one of the usual places, set `LINEWORK_CHROME=/path/to/chromium`.
+
+After a change to layout or rendering, rebuild the README gallery and look at what moved:
+
+```bash
+npm run build && node docs/gallery/build.mjs
+```
+
+### Releasing
+
+```bash
+npm run release            # patch; or: npm run release -- minor | major | 1.2.3
+```
+
+That bumps the version, commits it as `Release x.y.z`, tags `vx.y.z` and pushes both. The tag starts the release workflow, which runs the tests again, publishes to npm and opens a GitHub release with generated notes. Nobody logs in to npm: the workflow publishes through npm's [trusted publishing](https://docs.npmjs.com/trusted-publishers), which is set up once in the package's settings on npmjs.com (GitHub Actions, repository `itsthecsguy/linework`, workflow `release.yml`).
 
 `assets/drawio` holds the parts of the draw.io web app that linework runs: the renderer it uses headless, and the editor behind `linework edit`. draw.io is Apache-2.0; see [NOTICE](NOTICE). To update it, check out a jgraph/drawio tag in `vendor/drawio` and run `npm run assets`.

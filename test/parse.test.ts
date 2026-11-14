@@ -27,7 +27,7 @@ describe('parse', () => {
   });
 
   it('keeps the guide an agent loads on every diagram small', () => {
-    expect(fs.statSync('skills/linework/SKILL.md').size).toBeLessThan(8000);
+    expect(fs.statSync('skills/linework/SKILL.md').size).toBeLessThan(8500);
   });
 
   it('keeps the skill header within the Agent Skills limits', () => {

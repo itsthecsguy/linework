@@ -8,7 +8,7 @@ export type PatchOp = { op: 'set'; args: string[] } | { op: 'add'; args: string[
 
 export class PatchError extends Error {}
 
-const TOP = new Set(['title', 'theme', 'direction']);
+const TOP = new Set(['title', 'theme', 'accent', 'direction']);
 const TEXT = new Set(['label', 'tech', 'title']);
 // "from ARROW to" or "from ARROW to: label". ER cardinalities count as arrows too.
 const EDGE = /^(\S+)\s+(\S*(?:->|=>|--|\.\.)\S*|<->)\s+([^\s:]+)(?::\s*(.*))?$/;
@@ -65,7 +65,7 @@ export function patchSpec(yaml: string, ops: PatchOp[]): string {
         const field = dot < 0 ? path : path.slice(dot + 1);
         const value = TEXT.has(field) ? raw : (YAML.parse(raw) as unknown);
         if (dot < 0) {
-          if (!TOP.has(path)) throw new PatchError(`"${path}" isn't a diagram setting. Settings: title, theme, direction. For a box, write id.field=value.`);
+          if (!TOP.has(path)) throw new PatchError(`"${path}" isn't a diagram setting. Settings: title, theme, accent, direction. For a box, write id.field=value.`);
           if (raw === '') doc.delete(path);
           else doc.set(path, value);
           continue;

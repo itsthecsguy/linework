@@ -20,7 +20,7 @@ Linework handles the layout and the look. These rules are about content, which i
 - **Label edges in architecture diagrams with the protocol or the verb**: `HTTPS`, `gRPC`, `SQL`, `publishes OrderPlaced`, `reads session`. An unlabeled arrow makes the reader guess.
 - **Use `-.->` for async**: events, queues, webhooks, fire-and-forget. Readers rely on the solid/dashed distinction to see where latency and failure modes change.
 - **Point the arrow the way the request goes**, not the way data comes back. Only show a return edge when the reply is interesting.
-- **Label every edge out of a decision** in a flow (`yes`/`no`, or the condition).
+- **Label every edge out of a decision** in a flow (`yes`/`no`, or the condition). Keep those labels to a word or two: each one sits right beside its diamond, where the branch leaves it.
 - In state diagrams, label transitions with the event that triggers them (`payment_succeeded`), not the resulting state.
 
 ## Groups
@@ -34,6 +34,7 @@ Linework handles the layout and the look. These rules are about content, which i
 - **Start neutral.** The default style draws every node the same, so whatever you color stands out. Add color only when it tells the reader something.
 - **Highlight one thing.** Put `highlight: true` on the component the section is about and `==>` on the 2 or 3 edges that make up its path. A reader's eye goes there first. If everything is highlighted, nothing is.
 - **Color marks a category, and the doc says which.** Red for failure paths, green for what this proposal adds, gray for what's being removed. Write one sentence under the diagram that explains it, e.g. "New components are green."
+- **Match a brand with `accent:`, not with color on every node.** `accent: "#E11D48"` at the top of the spec changes what highlights are drawn in and nothing else.
 - **Use at most 2 or 3 colors** besides the highlight. More turns color back into noise.
 - **Keep error and success kinds for real errors and successes.** They're red and green in every style.
 - **Pick the style for the medium**: `clean` for docs and READMEs, `dark` for dark-mode pages, `soft` for slides, `sketch` for early drafts, `blueprint` for technical deep dives. Use one style across all the diagrams in a doc.

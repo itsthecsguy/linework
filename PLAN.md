@@ -84,15 +84,15 @@ hints:
 ## CLI
 
 ```
-Linework build spec.yaml -o docs/arch.drawio.svg   # create, or merge into an existing file
-Linework show docs/arch.drawio.svg                  # print the spec; the AI edits this
-Linework check docs/arch.drawio.svg                 # lint layout and style
-Linework render docs/arch.drawio.svg -o preview.png # preview for agents that can see images
-Linework export docs/arch.drawio.svg --png --scale 2 --theme dark
-Linework import flow.mmd -o docs/flow.drawio.svg
-Linework edit docs/arch.drawio.svg                  # local draw.io in the browser, saves back
-Linework git-setup                                  # textconv so `git diff` shows spec changes
-Linework mcp                                        # stdio MCP server, same operations
+linework build spec.yaml -o docs/arch.drawio.svg   # create, or merge into an existing file
+linework show docs/arch.drawio.svg                  # print the spec; the AI edits this
+linework check docs/arch.drawio.svg                 # lint layout and style
+linework render docs/arch.drawio.svg -o preview.png # preview for agents that can see images
+linework export docs/arch.drawio.svg --png --scale 2 --theme dark
+linework import flow.mmd -o docs/flow.drawio.svg
+linework edit docs/arch.drawio.svg                  # local draw.io in the browser, saves back
+linework git-setup                                  # textconv so `git diff` shows spec changes
+linework mcp                                        # stdio MCP server, same operations
 ```
 
 `build` reads stdin too. Editing an existing diagram is `show`, change the YAML, `build` back into the same file.
@@ -117,11 +117,15 @@ The theme:
 - Neutral surfaces with one hue per kind family. Labels meet WCAG AA contrast. Light and dark variants.
 - Groups get a light tint, a label in the top-left corner and 24px padding.
 - Edges are 1.5px, orthogonal with rounded bends, small arrowheads, labels on a background halo. Async edges are dashed.
-- Three themes to start: clean as the default, c4, and sketch.
+- **Excalidraw.** `render -o x.excalidraw` writes a copy from draw.io's rendered geometry, and `import x.excalidraw -o x.drawio.svg` reads the edits back. Every exported element records the cell it draws, so an edited file is matched to the diagram again; the edits become a changed spec plus box positions, and the ordinary merge does the rest. The `.drawio.svg` stays the source of truth. A sequence diagram is read differently: its edits are made to the draw.io cells and the spec is read off the result, and a stale file is diffed against the spec it carries, because message cells are numbered by row. The same scene also travels inside an SVG or PNG (`.excalidraw.svg`, `.excalidraw.png`), as an excalidraw.com link (`share`), and as a library of nodes (`library`), where icons are converted from SVG paths to polygons because neither can hold images.
+- **Class diagrams and timelines.** A class is the ER table with UML relationships. A timeline is drawn by rule, like a sequence diagram; its axis is recorded on the diagram so a dragged bar reads back as dates.
+- **`sync`.** Each build stamps the diagram with a hash of its spec (`aiviz_spec`), so a diagram is out of date exactly when the YAML beside it changed. `action.yml` runs it in GitHub Actions.
+- Three themes to start: clean as the default, c4, and sketch. There are ten now (soft, paper, dark, midnight, mono, bold and blueprint came later), and `accent:` swaps the highlight color for a brand's.
 
 Layout per diagram type:
 
 - **Architecture and flow.** ELK layered with orthogonal routing, compound nodes for groups, and ports so edges leave from sensible sides.
+- **Decisions in a flow.** Each branch leaves from its own point of the diamond, with its label right beside that point. Branches that join above a decision meet at one height. A diamond is only as tall as its text needs, so a decision is never the biggest thing in the flow.
 - **State.** ELK layered plus start and end pseudo-states, self-loops, composite states as groups.
 - **Sequence.** A custom layouter with lifelines as columns, messages as rows, activation bars, and alt/loop frames. ELK doesn't help here.
 - **ER.** draw.io table shapes placed by ELK.
@@ -191,7 +195,7 @@ Dependencies: elkjs, zod, a bundled draw.io viewer, and Playwright for rendering
 
 **3. Breadth.** Done. Sequence diagrams use draw.io's UML shapes, with activation bars inferred from call and reply pairs and frames that rebuild from vertical position. ER diagrams use crow's-foot notation. Mermaid import covers flowchart, state, sequence and ER. Icons cover AWS, GCP, Kubernetes and Azure from draw.io's bundled stencils. Themes: dark, sketch and C4. `build` also now slides colliding edge labels apart.
 
-**4. Distribution.** Built; not yet published to npm. `linework mcp` serves the same operations over MCP stdio (official v2 SDK), and `build_diagram` returns a PNG preview. A headless Claude with only those tools and no shell drew and then edited two diagrams with no lint errors. `linework edit` serves the bundled draw.io editor on 127.0.0.1 and writes saves through the embed protocol. A save after someone else changed the file goes to a side copy. Google Docs goes through Drive: `linework publish` copies files into the Google Drive for desktop folder at a fixed path for draw.io's Docs add-on, and `--pull` brings edits made from Docs back. `linework skill install` copies the skill. The tarball is 8 MB and installs and runs from a clean folder. Still unverified: the add-on round trip on a real Google account, and the VS Code extension.
+**4. Distribution.** Built and published to npm as `@itsthecsguy/linework`. GitHub Actions runs the tests on every push, and a version tag publishes the release (`npm run release`). `linework mcp` serves the same operations over MCP stdio (official v2 SDK), and `build_diagram` returns a PNG preview. A headless Claude with only those tools and no shell drew and then edited two diagrams with no lint errors. `linework edit` serves the bundled draw.io editor on 127.0.0.1 and writes saves through the embed protocol. A save after someone else changed the file goes to a side copy. Google Docs goes through Drive: `linework publish` copies files into the Google Drive for desktop folder at a fixed path for draw.io's Docs add-on, and `--pull` brings edits made from Docs back. `linework skill install` copies the skill. The tarball is 8 MB and installs and runs from a clean folder. Still unverified: the add-on round trip on a real Google account, and the VS Code extension.
 
 **5. Look.** Built. Six styles: `clean` (new default: neutral boxes, hairline borders, groups as gray grounds, IBM Plex Sans), `soft`, `dark` (GitHub's dark colors), `sketch` (Kalam handwriting), `blueprint` (IBM Plex Mono) and `c4`. Color now follows rules: nodes stay neutral, error and success kinds keep red and green, `highlight: true` and `==>` draw the important path in the accent color, and `color:` marks categories. Boxes are sized from word-wrapped text measured in the bundled font, and each SVG embeds a subset of that font, so text fits wherever it renders. Edge labels sit mid-run on their edge, and `check` also flags labels on other edges or group borders. Sequence labels and guards move off lifelines.
 

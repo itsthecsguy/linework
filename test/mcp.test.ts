@@ -24,6 +24,8 @@ beforeAll(async () => {
       command: process.execPath,
       args: ['--import', 'tsx', path.resolve('src/cli.ts'), 'mcp', '--root', tmp],
       stderr: 'inherit',
+      // The transport passes only a short list of variables by default, which drops LINEWORK_CHROME.
+      env: Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined)),
     }),
   );
 }, 60000);
@@ -35,7 +37,7 @@ describe.runIf(run)('mcp server', () => {
   it('lists the tools and gives instructions', async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ['build_diagram', 'check_diagram', 'edit_diagram', 'import_mermaid', 'linework_guide', 'list_icons', 'publish_diagram', 'render_diagram', 'show_diagram', 'tidy_diagram'],
+      ['build_diagram', 'check_diagram', 'edit_diagram', 'import_excalidraw', 'import_mermaid', 'linework_guide', 'list_icons', 'publish_diagram', 'render_diagram', 'show_diagram', 'tidy_diagram'],
     );
     expect(client.getInstructions()).toContain('show_diagram');
     const guide = await call('linework_guide', { topic: 'spec' });
