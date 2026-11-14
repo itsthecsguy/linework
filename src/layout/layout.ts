@@ -1,8 +1,8 @@
 // Diagram -> absolute geometry, via ELK layered.
 import ElkModule from 'elkjs/lib/elk.bundled.js';
 import type { ElkNode, ElkExtendedEdge, ELK as ElkApi } from 'elkjs/lib/elk-api.js';
-import { kindDef, type Diagram, type Direction, type ThemeName } from '../spec/model.js';
-import { ER_HEAD, ER_ROW, FIELD_PAD, GROUP_INSET, LINE, PAD_X, PAD_Y, typeface } from '../drawio/theme.js';
+import { kindDef, stereotype, type Diagram, type Direction, type ThemeName } from '../spec/model.js';
+import { type ThemeArg, ER_HEAD, ER_ROW, FIELD_PAD, GROUP_INSET, LINE, PAD_X, PAD_Y, typeface } from '../drawio/theme.js';
 import { TextMeasurer, type FontSpec } from './text.js';
 import { ICON_PAD } from '../drawio/icons.js';
 import { polish } from './polish.js';
@@ -49,7 +49,7 @@ export interface Fonts {
   maxText: number;
 }
 
-export function fontsFor(theme: ThemeName): Fonts {
+export function fontsFor(theme: ThemeArg): Fonts {
   const t = typeface(theme);
   const f = (size: number, weight = 400, tracking?: number): FontSpec => ({ size, weight, family: t.family, tracking });
   return {
@@ -69,7 +69,8 @@ export async function layout(d: Diagram, measure: Measure = estimateMeasure): Pr
   const tm = new TextMeasurer(measure);
   await tm.prepare([
     ...d.nodes.flatMap((n): Array<[string | undefined, FontSpec]> => [
-      [n.label, kindDef(d.type, n.kind).shape === 'table' ? fonts.label : fonts.label],
+      [stereotype(d.type, n.kind) ? `«${stereotype(d.type, n.kind)}» ${n.label}` : n.label, fonts.label],
+      [n.label, fonts.label],
       [n.tech, fonts.sub],
       ...(n.fields ?? []).flatMap((fl): Array<[string | undefined, FontSpec]> => [
         [fl.name, fl.flags.includes('pk') ? fonts.fieldKey : fonts.field],
@@ -143,6 +144,8 @@ export async function layout(d: Diagram, measure: Measure = estimateMeasure): Pr
   if (d.direction !== 'auto') return go(d.direction);
   // Relationships attach to rows, on a table's sides, so tables read left to right.
   if (d.type === 'er') return go('LR');
+  // A class diagram is a hierarchy: parents and owners above what extends or belongs to them.
+  if (d.type === 'class') return go('TB');
   // Pick the direction whose result fits a document page best.
   const [tb, lr] = await Promise.all([go('TB'), go('LR')]);
   return score(tb) <= score(lr) ? tb : lr;
@@ -180,7 +183,8 @@ function nodeSizes(d: Diagram, tm: TextMeasurer, fonts: Fonts) {
   for (const n of d.nodes) {
     const shape = kindDef(d.type, n.kind).shape;
     if (shape === 'table') {
-      let w = tm.width(n.label, fonts.label) + 2 * FIELD_PAD + 8;
+      const mark = stereotype(d.type, n.kind);
+      let w = tm.width(mark ? `«${mark}» ${n.label}` : n.label, fonts.label) + 2 * FIELD_PAD + 8;
       for (const f of n.fields ?? []) {
         const nameW = tm.width(f.name, f.flags.includes('pk') ? fonts.fieldKey : fonts.field);
         w = Math.max(w, nameW + tm.width(fieldRight(f), fonts.field) + 2 * FIELD_PAD + 28);
@@ -199,7 +203,10 @@ function nodeSizes(d: Diagram, tm: TextMeasurer, fonts: Fonts) {
       let t = textOf(n, fonts.maxText * 0.7);
       if (t.lines > 2) t = textOf(n, fonts.maxText);
       const w = snap(Math.max(128, t.width * 1.5 + 40));
-      sizes.set(n.id, { w, h: snap(Math.max(72, w * 0.5, t.lines * fonts.line * 2 + 24)) });
+      // The text takes about 0.6 of the width, which leaves it 0.4 of the height.
+      // Only that tall, and no taller: a diamond at half its width for a two-line
+      // question is the biggest thing in the flow, bigger than any step.
+      sizes.set(n.id, { w, h: snap(Math.max(72, w * 0.36, t.lines * fonts.line * 2.5 + 24)) });
       continue;
     }
     const extra = shapeExtra(shape, !!n.icon);

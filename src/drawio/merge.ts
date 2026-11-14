@@ -70,7 +70,7 @@ export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specI
   const handEdits = new Map(manualEdits(old).map((e) => [e.id, e.what]));
   // A theme change restyles everything; positions still stay.
   // So does a restyle: colors and fonts someone changed by hand go back to the theme's.
-  const themeChanged = shown.diagram.theme !== d.theme || !!opts.restyle;
+  const themeChanged = shown.diagram.theme !== d.theme || (shown.diagram.accent ?? '') !== (d.accent ?? '') || !!opts.restyle;
   const isTable = (n: Node) => kindDef(d.type, n.kind).shape === 'table';
 
   const abs = new Map<string, Box>(); // final absolute boxes for nodes
@@ -249,7 +249,7 @@ export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specI
     if (oc && (prev?.label ?? '') === (e.label ?? '') && oc.attrs.label != null) attrs.label = oc.attrs.label;
     let style: string;
     const unstyledEdge = oc && !oc.attrs.aiviz_edge && !oc.style.strokeColor;
-    const sameLook = prev?.style === e.style && JSON.stringify(prev?.card) === JSON.stringify(e.card) && sameLookOf(prev, e);
+    const sameLook = prev?.style === e.style && prev?.rel === e.rel && JSON.stringify(prev?.card) === JSON.stringify(e.card) && sameLookOf(prev, e);
     if (oc && sameLook && !unstyledEdge && !themeChanged) style = oc.styleRaw;
     else {
       // Arrow style or theme changed: take the theme style, keep where the edge attaches.
@@ -375,6 +375,6 @@ function freeSpot(
 
 
 function withoutTheme(meta: Record<string, string>) {
-  const { aiviz_theme: _t, ...rest } = meta;
+  const { aiviz_theme: _t, aiviz_accent: _a, ...rest } = meta;
   return rest;
 }

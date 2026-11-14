@@ -7,14 +7,14 @@ import { fileURLToPath } from 'node:url';
 import * as z from 'zod';
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
-import { build, checkFile, listIcons, show, tidy } from '../api.js';
+import { build, checkFile, importExcalidraw, listIcons, render, show, tidy } from '../api.js';
 import { readDrawio } from '../drawio/read.js';
 import { DrawioBrowser } from '../render/browser.js';
 import { SpecError } from '../spec/parse.js';
 import { buildLines, checkLines } from '../report.js';
 import { PROVIDERS, type Provider } from '../drawio/icons.js';
 
-const INSTRUCTIONS = `linework draws software diagrams (architecture, flow, state, sequence, ER) as .drawio.svg files. They render in Markdown, HTML and GitHub like any SVG, and people can open them in draw.io and edit them by hand.
+const INSTRUCTIONS = `linework draws software diagrams (architecture, flow, state, sequence, ER, class, timeline) as .drawio.svg files. They render in Markdown, HTML and GitHub like any SVG, and people can open them in draw.io and edit them by hand.
 
 You write a small YAML spec; linework does layout and styling. Never write coordinates, SVG or draw.io XML.
 - Call linework_guide once before your first diagram. It has the spec format and the style rules.
@@ -32,7 +32,7 @@ const PKG = (() => {
   throw new Error('linework: bundled skill not found. Reinstall linework.');
 })();
 
-const TOOL_NAMES = `In this MCP server the CLI commands in the guide are tools: build -> build_diagram, show -> show_diagram, check -> check_diagram, render -> render_diagram, tidy -> tidy_diagram, import -> import_mermaid, icons -> list_icons, edit -> edit_diagram, publish -> publish_diagram. Pass the spec text to build_diagram directly instead of writing a file. There are no set, add or rm tools: for a small change, call show_diagram, edit its output and pass that to build_diagram, which keeps the layout the same way.\n\n`;
+const TOOL_NAMES = `In this MCP server the CLI commands in the guide are tools: build -> build_diagram, show -> show_diagram, check -> check_diagram, render -> render_diagram, tidy -> tidy_diagram, import -> import_mermaid (or import_excalidraw for an .excalidraw, .excalidraw.svg or .excalidraw.png file), icons -> list_icons, edit -> edit_diagram, publish -> publish_diagram. Pass the spec text to build_diagram directly instead of writing a file. There are no set, add or rm tools: for a small change, call show_diagram, edit its output and pass that to build_diagram, which keeps the layout the same way.\n\n`;
 
 type Content = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
 type Result = { content: Content[]; isError?: boolean };
@@ -149,8 +149,8 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
     'render_diagram',
     {
       title: 'Render a diagram to PNG',
-      description: 'Returns a PNG of a .drawio.svg so you can look at it. Optionally also writes the PNG to a file, e.g. for Google Docs or slides.',
-      inputSchema: z.object({ path: pathArg, out: z.string().optional().describe('Also write the PNG here.') }),
+      description: 'Returns a PNG of a .drawio.svg so you can look at it. Optionally also writes the PNG to a file, e.g. for Google Docs or slides, or an Excalidraw copy for someone who works in Excalidraw.',
+      inputSchema: z.object({ path: pathArg, out: z.string().optional().describe('Also write the PNG here. A path ending in .excalidraw writes an Excalidraw copy of the diagram instead (.excalidraw.svg or .excalidraw.png for a picture that also opens in Excalidraw); import_excalidraw brings edits to it back.') }),
       annotations: { readOnlyHint: false },
     },
     (args) =>
@@ -159,7 +159,8 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
         if (args.out) {
           const out = resolvePath(args.out);
           fs.mkdirSync(path.dirname(out), { recursive: true });
-          fs.writeFileSync(out, Buffer.from((img as { data: string }).data, 'base64'));
+          if (/\.excalidraw(\.svg|\.png|\.json)?$/i.test(out)) await render(resolvePath(args.path), out, await getBrowser());
+          else fs.writeFileSync(out, Buffer.from((img as { data: string }).data, 'base64'));
         }
         return { content: [img, ...(args.out ? [text(`wrote ${resolvePath(args.out)}`)] : [])] };
       })(),
@@ -184,8 +185,8 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
   server.registerTool(
     'import_mermaid',
     {
-      title: 'Convert Mermaid to an linework spec',
-      description: 'Converts a Mermaid diagram (flowchart, stateDiagram, sequenceDiagram, erDiagram) to an linework spec. Returns the spec; review the guessed node kinds, then build it. With path, builds it straight away.',
+      title: 'Convert Mermaid to a linework spec',
+      description: 'Converts a Mermaid diagram (flowchart, stateDiagram, sequenceDiagram, erDiagram) to a linework spec. Returns the spec; review the guessed node kinds, then build it. With path, builds it straight away.',
       inputSchema: z.object({ source: z.string().describe('Mermaid source, without the ``` fence.'), path: pathArg.optional() }),
     },
     (args) =>
@@ -203,6 +204,23 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
           content.push(text(lines.join('\n')), await preview(out));
         } else content.push(text(lines.join('\n')));
         return { content };
+      })(),
+  );
+
+  server.registerTool(
+    'import_excalidraw',
+    {
+      title: 'Bring Excalidraw edits back into a diagram',
+      description: 'Merges edits made in Excalidraw into a .drawio.svg. `source` is an Excalidraw file (.excalidraw, .excalidraw.svg or .excalidraw.png) that render_diagram wrote and someone then edited; `path` is the diagram it was exported from. Reads text, colors, boxes and arrows added or deleted, arrows moved or reshaped, sequence messages and participants, table columns, and positions. Returns what changed and a preview.',
+      inputSchema: z.object({ source: z.string().describe('The edited Excalidraw file.'), path: pathArg }),
+      annotations: { readOnlyHint: false },
+    },
+    (args) =>
+      wrap(async () => {
+        const out = resolvePath(args.path);
+        const res = await importExcalidraw(resolvePath(args.source), out, { browser: await getBrowser() });
+        const lines = [res.changes.length ? `${res.changes.length} change${res.changes.length === 1 ? '' : 's'} from Excalidraw:` : 'The diagram already matches the Excalidraw file.', ...res.changes.map((c) => `  ${c}`), ...res.notes.map((n) => `note: ${n}`)];
+        return { content: [text(lines.join('\n')), await preview(out)] };
       })(),
   );
 

@@ -6,18 +6,23 @@ import { isTheme, themeNames } from '../drawio/theme.js';
 import { activeConfig } from '../config.js';
 import { z } from 'zod';
 import {
+  CLASS_RELS,
+  dayOf,
+  kindDef,
   DEFAULT_KIND,
   DIAGRAM_TYPES,
   DIRECTIONS,
   FRAME_OPS,
   KINDS,
   COLORS,
+  normalAccent,
   type ColorName,
   type Card,
   type Diagram,
   type Direction,
   type DiagramType,
   type Edge,
+  type ClassRel,
   type EdgeStyle,
   type Field,
   type FrameOp,
@@ -48,6 +53,10 @@ const NodeInput = z.union([
     in: z.string().optional(),
     icon: z.string().optional(),
     fields: z.array(FieldInput).optional(),
+    members: z.array(FieldInput).optional(),
+    start: scalar.optional(),
+    end: scalar.optional(),
+    at: scalar.optional(),
     color: ColorInput.optional(),
     status: z.string().optional(),
     highlight: HighlightInput.optional(),
@@ -70,6 +79,7 @@ const EdgeObject = z.strictObject({
   to: z.string(),
   label: scalar.optional(),
   style: z.enum(['sync', 'async', 'bidir', 'line']).optional(),
+  rel: z.enum(CLASS_RELS).optional(),
   color: ColorInput.optional(),
   status: z.string().optional(),
   highlight: HighlightInput.optional(),
@@ -88,6 +98,7 @@ export const SpecInput = z.strictObject({
   direction: z.enum(DIRECTIONS).optional(),
   // Checked by hand: a team's linework.yaml can add themes.
   theme: z.string().optional(),
+  accent: z.union([scalar, z.null()]).optional(),
   groups: z.record(z.string(), GroupInput).optional(),
   nodes: z.record(z.string(), NodeInput).optional(),
   edges: z.array(EdgeInput).optional(),
@@ -136,6 +147,15 @@ export function parseSpecText(text: string): ParseResult {
   return parseSpec(raw);
 }
 
+/** The spec's accent, checked. Unquoted, `accent: #E11D48` is a YAML comment and arrives as null. */
+function accentOf(raw: string | null | undefined): { accent?: string } {
+  if (raw === undefined) return {};
+  const accent = normalAccent(raw ?? undefined);
+  if (accent) return { accent };
+  const hint = raw === null ? 'YAML reads an unquoted # as a comment, so quote it' : `got "${raw}"`;
+  throw new SpecError([{ path: 'accent', message: `accent is a color name (${COLORS.join(', ')}) or a hex color in quotes, like accent: "#E11D48" (${hint}).` }]);
+}
+
 export function parseSpec(raw: unknown): ParseResult {
   const res = SpecInput.safeParse(raw);
   if (!res.success) throw new SpecError(res.error.issues.map(zodIssue));
@@ -169,15 +189,34 @@ export function parseSpec(raw: unknown): ParseResult {
       issues.push({ path: `${path}.kind`, message: `unknown kind "${kind}" for a ${type} diagram. Use one of: ${Object.keys(KINDS[type]).join(', ')}.` });
     }
     const node: Node = { id, label: obj.label ?? humanize(id), kind, tech: obj.tech, parent: obj.in, ...look(obj, path, issues) };
+    if (type === 'timeline') {
+      const o = obj as { start?: string; end?: string; at?: string };
+      const day = (key: 'start' | 'end' | 'at') => {
+        if (o[key] == null) return undefined;
+        if (dayOf(o[key]) == null) issues.push({ path: `${path}.${key}`, message: `"${o[key]}" isn't a date. Write dates as YYYY-MM-DD, e.g. 2026-03-09.` });
+        return o[key]!.trim();
+      };
+      const [start, end, at] = [day('start'), day('end'), day('at')];
+      const single = kindDef(type, kind).shape === 'diamond' || (at != null && start == null);
+      if (single && obj.kind == null) node.kind = 'milestone';
+      node.start = single ? (at ?? start ?? end) : start;
+      if (!single) node.end = end ?? start;
+      if (node.start == null) issues.push({ path, message: single ? 'a milestone needs a date: "at: 2026-03-09"' : 'a task needs dates: "start: 2026-03-02, end: 2026-03-20"' });
+      else if (!single && dayOf(node.end)! < dayOf(node.start)!) issues.push({ path: `${path}.end`, message: `ends (${node.end}) before it starts (${node.start})` });
+      if (!single && at != null) issues.push({ path: `${path}.at`, message: '"at" is for a milestone. Give a task "start" and "end".' });
+    } else if ('start' in obj || 'end' in obj || 'at' in obj) issues.push({ path, message: 'start, end and at are for type: timeline' });
     if ('icon' in obj && obj.icon) {
       const ic = parseIcon(obj.icon);
       if (type !== 'architecture') warnings.push({ path: `${path}.icon`, message: 'icons only show on architecture diagrams' });
       else if ('error' in ic) issues.push({ path: `${path}.icon`, message: ic.error });
       else node.icon = `${ic.provider}.${ic.name}`;
     }
-    if ('fields' in obj && obj.fields) {
-      if (type !== 'er') issues.push({ path: `${path}.fields`, message: 'fields are for type: er' });
-      else node.fields = obj.fields.map((f, i) => parseField(f, `${path}.fields[${i}]`, issues)).filter((f): f is Field => !!f);
+    const rows = 'fields' in obj && obj.fields ? obj.fields : 'members' in obj && obj.members ? obj.members : undefined;
+    if (rows) {
+      const key = 'fields' in obj && obj.fields ? 'fields' : 'members';
+      if (type === 'class') node.fields = rows.map((f, i) => memberOf(f, `${path}.${key}[${i}]`, issues)).filter((f): f is Field => !!f);
+      else if (type !== 'er') issues.push({ path: `${path}.${key}`, message: 'fields are for type: er, and members for type: class' });
+      else node.fields = rows.map((f, i) => parseField(f, `${path}.fields[${i}]`, issues)).filter((f): f is Field => !!f);
     }
     nodes.push(node);
   }
@@ -202,14 +241,18 @@ export function parseSpec(raw: unknown): ParseResult {
   }
 
   // Edges
+  if (type === 'timeline' && spec.edges?.length) issues.push({ path: 'edges', message: 'a timeline has no edges; when things happen is shown by where they sit' });
+  if (type === 'timeline' && !nodes.length) issues.push({ path: 'nodes', message: 'a timeline needs at least one task or milestone' });
   const edges: Edge[] = [];
   const counts = new Map<string, number>();
   let needStart = false;
   const endFor = new Set<string>(); // one end dot per source keeps edges from piling up
   (spec.edges ?? []).forEach((item, i) => {
     const path = `edges[${i}]`;
-    let parsed: { from: string; to: string; label?: string; style: EdgeStyle; color?: ColorName; highlight?: boolean } | null = null;
-    if (type === 'er') {
+    let parsed: { from: string; to: string; label?: string; style: EdgeStyle; color?: ColorName; highlight?: boolean; rel?: ClassRel } | null = null;
+    const oneLine = typeof item === 'string' ? item : !('from' in item) && Object.keys(item).length === 1 ? (Object.values(item)[0] == null ? Object.keys(item)[0]! : `${Object.keys(item)[0]}: ${Object.values(item)[0]}`) : null;
+    if (type === 'class' && oneLine != null && CLASS_RE.test(oneLine.split(':')[0]!)) parsed = parseClassEdge(oneLine);
+    else if (type === 'er') {
       let text: string | null = null;
       if (typeof item === 'string') text = item;
       else if (!('from' in item)) {
@@ -224,7 +267,7 @@ export function parseSpec(raw: unknown): ParseResult {
     } else if (typeof item === 'string') parsed = parseEdgeString(item, path, issues);
     else if ('from' in item && 'to' in item && typeof item.from === 'string') {
       const o = item as z.infer<typeof EdgeObject>;
-      parsed = { from: o.from, to: o.to, label: o.label, style: o.style ?? 'sync', ...look(o, path, issues) };
+      parsed = { from: o.from, to: o.to, label: o.label, style: o.style ?? 'sync', ...(o.rel && type === 'class' ? { rel: o.rel } : {}), ...look(o, path, issues) };
     } else {
       const entries = Object.entries(item);
       if (entries.length !== 1) {
@@ -278,9 +321,66 @@ export function parseSpec(raw: unknown): ParseResult {
   for (const n of real) if (edges.length && !linked.has(n.id)) warnings.push({ path: `nodes.${n.id}`, message: 'not connected to anything' });
 
   return {
-    diagram: { type, title: spec.title, direction: set.direction, theme: set.theme, groups, nodes, edges },
+    diagram: { type, title: spec.title, direction: set.direction, theme: set.theme, ...accentOf(spec.accent), groups, nodes, edges },
     warnings,
   };
+}
+
+/** Mermaid's class relationships. Each names which end carries the mark, so both spellings read the same. */
+const CLASS_OPS: Record<string, { rel: ClassRel; markLeft: boolean; from: 'left' | 'right' }> = {
+  '<|--': { rel: 'inherits', markLeft: true, from: 'left' },
+  '--|>': { rel: 'inherits', markLeft: false, from: 'right' },
+  '<|..': { rel: 'implements', markLeft: true, from: 'left' },
+  '..|>': { rel: 'implements', markLeft: false, from: 'right' },
+  '*--': { rel: 'composition', markLeft: true, from: 'left' },
+  '--*': { rel: 'composition', markLeft: false, from: 'right' },
+  'o--': { rel: 'aggregation', markLeft: true, from: 'left' },
+  '--o': { rel: 'aggregation', markLeft: false, from: 'right' },
+  '-->': { rel: 'association', markLeft: false, from: 'left' },
+  '<--': { rel: 'association', markLeft: true, from: 'right' },
+  '..>': { rel: 'dependency', markLeft: false, from: 'left' },
+  '<..': { rel: 'dependency', markLeft: true, from: 'right' },
+};
+const CLASS_RE = /^\s*(\S+)\s+(<\|--|--\|>|<\|\.\.|\.\.\|>|\*--|--\*|o--|--o|-->|<--|\.\.>|<\.\.)\s+(\S+)\s*$/;
+
+/** "Animal <|-- Duck", "Order *-- LineItem: lines", "Checkout ..> Gateway". */
+export function parseClassEdge(s: string): { from: string; to: string; label?: string; style: EdgeStyle; rel: ClassRel } | null {
+  const colon = s.indexOf(':');
+  const m = CLASS_RE.exec(colon >= 0 ? s.slice(0, colon) : s);
+  if (!m) return null;
+  const op = CLASS_OPS[m[2]!]!;
+  const [from, to] = op.from === 'left' ? [m[1]!, m[3]!] : [m[3]!, m[1]!];
+  return { from, to, label: (colon >= 0 ? s.slice(colon + 1).trim() : '') || undefined, style: 'sync', rel: op.rel };
+}
+
+/**
+ * A class member: "+ id: uuid", "- total(): Money", "# retry(times: int): bool",
+ * or just "name". The visibility mark stays on the name; what follows the last
+ * colon outside the brackets is the type.
+ */
+export function parseMember(raw: string): Field | null {
+  const text = raw.replace(/\s+/g, ' ').trim();
+  const m = /^([+\-#~])?\s*(.*)$/.exec(text)!;
+  let body = m[2]!, type: string | undefined;
+  const close = body.lastIndexOf(')');
+  const colon = body.indexOf(':', close >= 0 ? close : 0);
+  if (colon >= 0) {
+    type = body.slice(colon + 1).trim() || undefined;
+    body = body.slice(0, colon).trim();
+  }
+  if (!body) return null;
+  return { name: (m[1] ?? '') + body, type, flags: [] };
+}
+
+function memberOf(f: unknown, path: string, issues: Issue[]): Field | null {
+  let text: string | undefined;
+  if (typeof f === 'string' || typeof f === 'number' || typeof f === 'boolean') text = String(f);
+  else if (f && typeof f === 'object' && 'name' in f && Object.keys(f).length > 1) return { name: String((f as { name: string }).name), type: (f as { type?: string }).type, flags: [] };
+  // YAML reads "- + id: uuid" as a one-key map; put it back together.
+  else if (f && typeof f === 'object' && Object.keys(f).length === 1) text = Object.entries(f as Record<string, unknown>).map(([k, v]) => (v == null ? k : `${k}: ${v}`))[0];
+  const member = text == null ? null : parseMember(text);
+  if (!member) issues.push({ path, message: 'write a member as "+ name: Type" or "+ method(arg): Type". The mark is + public, - private, # protected, ~ package.' });
+  return member;
 }
 
 function parseErEdge(s: string, path: string, issues: Issue[]) {
@@ -420,7 +520,7 @@ function parseSequence(spec: z.infer<typeof SpecInput>): ParseResult {
   flat(seq);
   highlightWarning(nodes, msgs, warnings);
   if (nodes.length > 8) warnings.push({ path: 'participants', message: `${nodes.length} participants is wide; 6 or fewer fits a doc page` });
-  return { diagram: { type: 'sequence', title: spec.title, direction: 'auto', theme: set.theme, groups: [], nodes, edges: [], seq }, warnings };
+  return { diagram: { type: 'sequence', title: spec.title, direction: 'auto', theme: set.theme, ...accentOf(spec.accent), groups: [], nodes, edges: [], seq }, warnings };
 }
 
 function parseEdgeString(s: string, path: string, issues: Issue[]) {
@@ -489,7 +589,7 @@ function zodIssue(i: z.core.$ZodIssue): Issue {
   const path = i.path.map((p) => (typeof p === 'number' ? `[${p}]` : `.${String(p)}`)).join('').replace(/^\./, '');
   if (i.code === 'unrecognized_keys') {
     const known: Record<string, string> = {
-      '': 'type, title, direction, theme, groups, nodes, edges (or participants, messages for sequence)',
+      '': 'type, title, direction, theme, accent, groups, nodes, edges (or participants, messages for sequence)',
     };
     const where =
       path.startsWith('nodes') || path.startsWith('participants')

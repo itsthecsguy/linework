@@ -1,0 +1,45 @@
+type: class
+title: Billing model
+nodes:
+  PaymentMethod:
+    kind: interface
+    members:
+      - "+ charge(amount: Money): Receipt"
+      - "+ refund(receipt: Receipt): void"
+  Card:
+    members:
+      - "- token: string"
+      - "+ last4: string"
+      - "+ charge(amount: Money): Receipt"
+  BankTransfer:
+    label: Bank transfer
+    members:
+      - "- iban: string"
+      - "+ charge(amount: Money): Receipt"
+  Invoice:
+    highlight: true
+    members:
+      - "+ id: uuid"
+      - "+ status: InvoiceStatus"
+      - "+ total(): Money"
+      - "+ pay(method: PaymentMethod): Receipt"
+  LineItem:
+    label: Line item
+    members:
+      - "+ description: string"
+      - "+ quantity: int"
+      - "+ unitPrice: Money"
+  Customer:
+    members:
+      - "+ id: uuid"
+      - "+ email: string"
+  InvoiceStatus:
+    kind: enum
+    members: [draft, open, paid, void]
+edges:
+  - PaymentMethod <|.. Card
+  - PaymentMethod <|.. BankTransfer
+  - Invoice *-- LineItem: lines
+  - Customer o-- Invoice: invoices
+  - Invoice ..> PaymentMethod: pays with
+  - Invoice --> InvoiceStatus

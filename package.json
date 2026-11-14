@@ -1,6 +1,6 @@
 {
   "name": "@itsthecsguy/linework",
-  "version": "0.2.0",
+  "version": "0.6.0",
   "description": "Software diagrams an AI can write and a person can edit. YAML spec in, .drawio.svg out, editable in draw.io.",
   "keywords": [
     "diagram",
@@ -41,6 +41,7 @@
     "assets": "node scripts/copy-drawio-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepack": "npm run build",
+    "release": "node scripts/release.mjs",
     "fonts": "node scripts/copy-fonts.mjs"
   },
   "dependencies": {

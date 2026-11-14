@@ -1,6 +1,6 @@
 ---
 name: linework
-description: Draw software diagrams (architecture, system design, data flow, flowcharts, state machines, sequence diagrams, ER and database schemas) as .drawio.svg files that render in Markdown, HTML and GitHub and that people can edit by hand in draw.io. Use whenever a design doc, README, ADR, wiki page or PR needs a diagram, when asked to draw, visualize or diagram a system, when converting a Mermaid diagram, or when changing an existing .drawio.svg. Use it instead of writing Mermaid, PlantUML or ASCII art unless the user asks for one of those.
+description: Draw software diagrams (architecture, system design, data flow, flowcharts, state machines, sequence diagrams, ER and database schemas, class diagrams, timelines) as .drawio.svg files that render in Markdown, HTML and GitHub and that people can edit by hand in draw.io. Use whenever a design doc, README, ADR, wiki page or PR needs a diagram, when asked to draw, visualize or diagram a system, when converting a Mermaid diagram, or when changing an existing .drawio.svg. Use it instead of writing Mermaid, PlantUML or ASCII art unless the user asks for one of those.
 compatibility: Needs Node 20+, a Chromium-based browser (Chrome, Edge, or Playwright's Chromium via `linework install-browser`) and network access to fetch the package with npx.
 ---
 
@@ -12,7 +12,7 @@ You describe the diagram as a small YAML spec. Linework does the layout, styling
 
 ## New diagram
 
-1. **Read the team's settings.** Run `linework config`. If the repo has a `linework.yaml` it prints the theme, the shared components and statuses to use, naming rules and templates. Follow it: use those ids, write `status:` where it says to, and leave `theme:` out when it is locked. `linework new <template>` prints a team starter spec.
+1. **Read the team's settings.** Run `linework config`. If the repo has a `linework.yaml`, it lists the theme, shared component ids, statuses, naming rules and templates. Follow them, and leave `theme:` out when it is locked.
 2. **Look for existing diagrams.** Search for `*.drawio.svg`. If one already shows what you need, change it (next section). Save new ones where the others live, else `docs/diagrams/`.
 3. **Pick the type.** One diagram makes one point.
    - `architecture`: components and how they talk.
@@ -20,7 +20,7 @@ You describe the diagram as a small YAML spec. Linework does the layout, styling
    - `state`: the lifecycle of one thing.
    - `sequence`: who calls whom, in order, for one scenario.
    - `er`: tables, columns and relationships.
-4. **Write the spec**, starting from the closest file in `examples/` next to this guide: `checkout.yaml` and `platform.yaml` (architecture), `serverless-aws.yaml` and `gcp-ingest.yaml` (cloud icons), `refund-flow.yaml` and `deploy-flow.yaml` (flow), `payment-state.yaml` and `job-state.yaml` (state), `pay-sequence.yaml` and `auth-seq.yaml` (sequence), `billing-er.yaml` and `shop-er.yaml` (ER). A Mermaid block converts directly: `linework import doc.md --block 1 -o out.drawio.svg`.
+4. **Write the spec**, starting from the closest file in `examples/` next to this guide: `checkout.yaml` and `platform.yaml` (architecture), `serverless-aws.yaml`, `orders-azure.yaml` and `gcp-ingest.yaml` (cloud icons), `refund-flow.yaml` and `deploy-flow.yaml` (flow), `payment-state.yaml` and `job-state.yaml` (state), `pay-sequence.yaml` and `auth-seq.yaml` (sequence), `billing-er.yaml` and `shop-er.yaml` (ER), `billing-class.yaml` (class), `launch-timeline.yaml` (timeline). A Mermaid block converts directly: `linework import doc.md --block 1 -o out.drawio.svg`.
 5. **Build:** `linework build /tmp/spec.yaml -o docs/diagrams/checkout.drawio.svg --png /tmp/checkout.png`
 6. **Read the output.** `spec error` lines say exactly what to fix. `check:` lists layout problems. Fix every error and the warnings that matter, then rebuild. Look at the PNG if you can view images.
 7. **Embed the `.drawio.svg`**, never the PNG: `![Checkout API charges cards through Stripe and writes orders to Postgres](diagrams/checkout.drawio.svg)`. Write alt text that says what the diagram shows in one sentence.
@@ -33,7 +33,7 @@ The `.drawio.svg` is the source of truth. Every command below keeps what is alre
 For one or two changes, edit the file directly:
 
 ```bash
-linework set d.drawio.svg api.label="Checkout API v2" api.highlight=true   # id.field=value; empty value clears; also theme= title= direction=
+linework set d.drawio.svg api.label="Checkout API v2" api.highlight=true   # id.field=value; empty value clears; also theme= accent= title= direction=
 linework add d.drawio.svg "fraud: { label: Fraud check, in: vpc }" "api -> fraud: score"
 linework rm  d.drawio.svg cache "api -> stripe"                              # a box goes with its edges
 ```
@@ -54,10 +54,11 @@ linework build /tmp/spec.yaml -o d.drawio.svg --png /tmp/d.png
 ## Spec
 
 ```yaml
-type: architecture            # architecture | flow | state | sequence | er
+type: architecture            # architecture | flow | state | sequence | er | class | timeline
 title: Checkout               # optional
 direction: auto               # auto (default) | TB | LR | BT | RL
-theme: clean                  # clean (default) | soft | dark | sketch | blueprint | c4
+theme: clean                  # clean (default) | soft | paper | dark | midnight | mono | bold | sketch | blueprint | c4
+accent: "#E11D48"             # optional: the highlight color, a name or a quoted hex
 groups:                       # optional boxes around nodes; nest with `in`
   vpc: { label: Production VPC }
 nodes:                        # id: { label, kind, tech, in }, all optional
@@ -76,8 +77,8 @@ edges:                        # "from ARROW to: label"
 - Arrows: `->` call or flow, `==>` highlighted, `-.->` async, `<->` two-way, `--` no arrowhead. Spaces around the arrow. Quote an edge whose label contains `: ` or `#`.
 - List nodes and edges in reading order. Layout follows it, and an edge that points back at an earlier node is drawn as the loop.
 - `tech` is the quiet second line: the technology, not a description.
-- Color is for meaning. `highlight: true` or `==>` marks the one path the text is about. `color: red|green|blue|...` marks a category; say what it means in the doc. If `linework config` lists statuses, write `status: <name>` instead.
-- Cloud icons on architecture nodes: `icon: aws.lambda`, `gcp.cloud_run`, `k8s.pod`, `azure.<name>`. Search with `linework icons aws lambda`.
+- Color is for meaning. `highlight: true` or `==>` marks the one path the text is about. `color: red|green|blue|...` marks a category; say what it means in the doc. Where `linework config` lists statuses, write `status: <name>`.
+- Cloud icons on architecture nodes: `icon: aws.lambda`, `gcp.cloud_run`, `azure.functions`, `k8s.pod`. Search with `linework icons aws lambda`.
 
 | type | kinds (default first) |
 |---|---|
@@ -86,14 +87,17 @@ edges:                        # "from ARROW to: label"
 | state | `state`, `success`, `error`; start and end are `"[*] -> first"` and `"last -> [*]"`, quoted |
 | sequence | `participants:` and `messages:` instead of nodes and edges; `-->` is a reply |
 | er | `fields:` on nodes (`- id: uuid pk`), crow's-foot edges (`users }o--|| orgs: belongs to`) |
+| class | `members:` (`- "+ total(): Money"`), UML edges (`Animal <|-- Duck`, `Order *-- Line`) |
+| timeline | `start:`/`end:` dates, `at:` on a `milestone`; groups are lanes; no edges |
 
 In a flow, keep decision text to a short question and label every edge leaving it (`window -> refund: "yes"`).
 
 ## More
 
-- `references/spec.md`: every option, sequence blocks (`alt`, `loop`, notes), ER fields and cardinalities, themes, colors.
+- `references/spec.md`: every option, sequence blocks (`alt`, `loop`, notes), ER, class, timeline, themes, colors.
 - `references/style-guide.md`: what makes a diagram read well. Read it before anything non-trivial.
-- `references/team-config.md`: `linework.yaml`, for a team that wants one look: themes, fonts, statuses, shared components, `linework lint` and `linework restyle`.
+- `references/team-config.md`: `linework.yaml` for one look across a team, `linework lint` and `linework restyle`.
 - `references/troubleshooting.md`: download, browser and sandbox failures.
 - `references/google-docs.md`: putting a diagram in Google Docs with `linework publish`.
-- `linework help` lists every command, including `check`, `render`, `kinds`, `schema` and `git-setup` (readable `git diff` for diagrams).
+- Excalidraw: `linework render d.drawio.svg -o d.excalidraw` writes an editable copy; `linework import d.excalidraw -o d.drawio.svg` merges edits. `linework share` uploads it: only if asked.
+- `linework help` lists every command, including `check`, `sync` (rebuild diagrams whose YAML changed), `kinds`, `schema` and `git-setup` (readable `git diff` for diagrams).
