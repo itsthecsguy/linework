@@ -190,6 +190,37 @@ export class DrawioBrowser {
     }
   }
 
+  private fonts = new Set<string>();
+
+  /**
+   * Load a team's own font files into the page, so text is measured and drawn in
+   * them. Sent as data URLs: the page may not fetch anything but linework's assets.
+   */
+  async useFonts(faces: Array<{ family: string; weight: number; file: string }>): Promise<void> {
+    const fresh = faces.filter((f) => !this.fonts.has(`${f.family}|${f.weight}|${f.file}|${fs.statSync(f.file).mtimeMs}`));
+    if (!fresh.length) return;
+    const payload = fresh.map((f) => ({ family: f.family, weight: f.weight, data: fs.readFileSync(f.file).toString('base64') }));
+    const ok = await this.page.evaluate(async (list) => {
+      const out: boolean[] = [];
+      for (const f of list) {
+        const bytes = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
+        try {
+          const face = new FontFace(f.family, bytes.buffer, { weight: String(f.weight), style: 'normal' });
+          document.fonts.add(await face.load());
+          out.push(true);
+        } catch {
+          out.push(false);
+        }
+      }
+      return out;
+    }, payload);
+    const bad = fresh.filter((_, i) => !ok[i]);
+    if (bad.length) throw new Error(`linework: can't load ${bad.map((f) => f.file).join(', ')} as a font. Use a WOFF2, TTF or OTF file.`);
+    for (const f of fresh) this.fonts.add(`${f.family}|${f.weight}|${f.file}|${fs.statSync(f.file).mtimeMs}`);
+    // Text boxes measured before the font arrived are stale.
+    this.seen.clear();
+  }
+
   measure(reqs: Array<[string, number, number, string?]>): Promise<number[]> {
     return this.page.evaluate((r) => (window as any).aiviz.measure(r), reqs);
   }

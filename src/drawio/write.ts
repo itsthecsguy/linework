@@ -84,13 +84,14 @@ export function nodeAttrs(d: Diagram, n: Diagram['nodes'][number]): Record<strin
 
 /** color/highlight as cell attributes, so `show` gives them back. */
 export function lookAttrs(l: Look): Record<string, string> {
-  return { ...(l.color ? { aiviz_color: l.color } : {}), ...(l.highlight ? { aiviz_highlight: '1' } : {}) };
+  return { ...(l.color ? { aiviz_color: l.color } : {}), ...(l.highlight ? { aiviz_highlight: '1' } : {}), ...(l.status ? { aiviz_status: l.status } : {}) };
 }
 
 export function lookOf(attrs: Record<string, string | undefined>): Look {
   const out: Look = {};
   if (attrs.aiviz_color) out.color = attrs.aiviz_color as Look['color'];
   if (attrs.aiviz_highlight === '1') out.highlight = true;
+  if (attrs.aiviz_status) out.status = attrs.aiviz_status;
   return out;
 }
 

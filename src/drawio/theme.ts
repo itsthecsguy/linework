@@ -6,14 +6,14 @@
 //   start/end) always carry their color. `soft` and `sketch` also tint by kind.
 // - `color: <name>` tints a node, group or edge. `highlight: true` makes it the
 //   strongest thing on the page: a solid fill for nodes, a thick colored line for edges.
-import { kindDef, type Card, type ColorName, type DiagramType, type EdgeStyle, type Look, type MessageStyle, type ThemeName } from '../spec/model.js';
+import { kindDef, THEMES, type BuiltinTheme, type Card, type ColorName, type DiagramType, type EdgeStyle, type Look, type MessageStyle, type ThemeName } from '../spec/model.js';
 
 const SYSTEM = '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif';
 export const FONT_STACK = `IBM Plex Sans, ${SYSTEM}`;
 
 export interface Typeface {
   /** The bundled font. Embedded (subset) into every SVG that uses it. */
-  face: 'IBM Plex Sans' | 'Kalam' | 'IBM Plex Mono';
+  face: string;
   /** CSS font-family list, bundled font first. */
   family: string;
   size: { label: number; sub: number; edge: number; group: number; field: number };
@@ -37,7 +37,7 @@ const MONO: Typeface = {
 export const LINE = 1.2;
 
 export function typeface(theme: ThemeName = 'clean'): Typeface {
-  return theme === 'sketch' ? KALAM : theme === 'blueprint' ? MONO : SANS;
+  return palette(theme).type;
 }
 
 /** Back-compat: sizes of the default style. */
@@ -122,8 +122,10 @@ export interface Paint {
   extra?: string;
 }
 
-interface Theme {
+export interface Theme {
   name: ThemeName;
+  /** The built-in style this one is, or was derived from. Shape rules key off it. */
+  base: BuiltinTheme;
   type: Typeface;
   canvas: string;
   text: string;
@@ -161,6 +163,7 @@ function lightPaint(sw: Swatches, neutral: { fill: string; stroke: string }, tex
 
 const CLEAN: Theme = {
   name: 'clean',
+  base: 'clean',
   type: SANS,
   canvas: '#FFFFFF',
   text: '#17171C',
@@ -186,6 +189,7 @@ const CLEAN: Theme = {
 const SOFT: Theme = {
   ...CLEAN,
   name: 'soft',
+  base: 'soft',
   kindColors: true,
   radius: 12,
   group: { fill: '#F7F7F9', nested: '#EFEFF3', stroke: 'none', dashed: false, text: '#61616C' },
@@ -198,6 +202,7 @@ const SOFT: Theme = {
 
 const DARK: Theme = {
   name: 'dark',
+  base: 'dark',
   type: SANS,
   canvas: '#0D1117',
   text: '#E6EDF3',
@@ -232,6 +237,7 @@ const DARK: Theme = {
 const SKETCH_INK = '#1E1E1E';
 const SKETCH: Theme = {
   name: 'sketch',
+  base: 'sketch',
   type: KALAM,
   canvas: '#FFFFFF',
   text: SKETCH_INK,
@@ -271,6 +277,7 @@ const BP_LINE_INK = '#3F5F96';
 const BP_HI = '#1D4ED8';
 const BLUEPRINT: Theme = {
   name: 'blueprint',
+  base: 'blueprint',
   type: MONO,
   canvas: BP_PAPER,
   text: BP_INK,
@@ -305,12 +312,121 @@ const C4_KIND: Record<string, { fill: string; stroke: string; text: string; type
   external: { fill: '#626A7A', stroke: '#626A7A', text: '#FFFFFF', type: 'External system' },
 };
 const C4_CONTAINER = { fill: '#456A9E', stroke: '#456A9E', text: '#FFFFFF', type: 'Container' };
-const C4: Theme = { ...CLEAN, name: 'c4', group: { fill: 'none', stroke: '#444444', dashed: true, text: '#444444' }, edge: '#707070', edgeText: '#444444' };
+const C4: Theme = { ...CLEAN, name: 'c4', base: 'c4', group: { fill: 'none', stroke: '#444444', dashed: true, text: '#444444' }, edge: '#707070', edgeText: '#444444' };
 
-const THEMES_BY_NAME: Record<ThemeName, Theme> = { clean: CLEAN, soft: SOFT, dark: DARK, sketch: SKETCH, blueprint: BLUEPRINT, c4: C4 };
+const BUILTIN: Record<BuiltinTheme, Theme> = { clean: CLEAN, soft: SOFT, dark: DARK, sketch: SKETCH, blueprint: BLUEPRINT, c4: C4 };
+const custom = new Map<string, Theme>();
 
 export function palette(theme: ThemeName = 'clean'): Theme {
-  return THEMES_BY_NAME[theme] ?? CLEAN;
+  return custom.get(theme) ?? BUILTIN[theme as BuiltinTheme] ?? CLEAN;
+}
+
+/** The built-in style behind a theme name. */
+export const baseOf = (theme: ThemeName = 'clean'): BuiltinTheme => palette(theme).base;
+
+export const isTheme = (name: string): boolean => custom.has(name) || (THEMES as readonly string[]).includes(name);
+export const themeNames = (): string[] => [...THEMES, ...custom.keys()];
+
+/** What a team can change about a built-in style. Colors are hex. */
+export interface ThemeTokens {
+  canvas?: string;
+  text?: string;
+  muted?: string;
+  /** Fill and border of an ordinary box. */
+  box?: string;
+  border?: string;
+  edge?: string;
+  edgeText?: string;
+  groupFill?: string;
+  groupNested?: string;
+  groupBorder?: string;
+  groupText?: string;
+  /** Highlight color: a hex value, or one of the named colors. */
+  accent?: string;
+  radius?: number;
+  lineWidth?: number;
+  font?: { family: string; fallback?: string; strong?: number; size?: Partial<Typeface['size']> };
+}
+
+/** Text that reads on a fill: white or near-black, whichever contrasts more. */
+export function inkOn(fill: string): string {
+  return contrast('#FFFFFF', fill) >= contrast('#17171C', fill) ? '#FFFFFF' : '#17171C';
+}
+
+function luminance(hex: string): number {
+  const h = hex.replace('#', '');
+  const full = h.length === 3 ? [...h].map((c) => c + c).join('') : h;
+  const ch = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * ch[0]! + 0.7152 * ch[1]! + 0.0722 * ch[2]!;
+}
+
+/** WCAG contrast ratio between two hex colors. */
+export function contrast(a: string, b: string): number {
+  const [x, y] = [luminance(a), luminance(b)].sort((m, n) => n - m);
+  return (x! + 0.05) / (y! + 0.05);
+}
+
+/** A built-in style with a team's tokens laid over it. */
+export function deriveTheme(name: string, base: BuiltinTheme, k: ThemeTokens): Theme {
+  const b = BUILTIN[base];
+  const accentName = k.accent && !k.accent.startsWith('#') ? (k.accent as ColorName) : b.accent;
+  const accentHex = k.accent?.startsWith('#') ? k.accent : undefined;
+  const text = k.text ?? b.text, muted = k.muted ?? b.muted;
+  const width = k.lineWidth;
+  const type: Typeface = k.font
+    ? {
+        ...b.type,
+        face: k.font.family,
+        family: `${k.font.family}, ${k.font.fallback ?? SYSTEM}`,
+        strong: k.font.strong ?? b.type.strong,
+        size: { ...b.type.size, ...k.font.size },
+      }
+    : b.type;
+  const t: Theme = {
+    ...b,
+    name,
+    base,
+    type,
+    canvas: k.canvas ?? b.canvas,
+    text,
+    muted,
+    edge: k.edge ?? b.edge,
+    edgeText: k.edgeText ?? b.edgeText,
+    edgeWidth: width ?? b.edgeWidth,
+    accent: accentName,
+    radius: k.radius ?? b.radius,
+    group: {
+      ...b.group,
+      fill: k.groupFill ?? b.group.fill,
+      nested: k.groupNested ?? (k.groupFill ? undefined : b.group.nested),
+      stroke: k.groupBorder ?? b.group.stroke,
+      text: k.groupText ?? b.group.text,
+    },
+    paint: (color, hl) => {
+      const p = b.paint(hl && color === 'neutral' ? accentName : color, hl);
+      if (hl && accentHex && (color === 'neutral' || color === 'ink')) {
+        const ink = inkOn(accentHex);
+        return { ...p, fill: accentHex, stroke: accentHex, text: ink, sub: ink };
+      }
+      if (hl) return p;
+      if (color === 'neutral') return { ...p, fill: k.box ?? p.fill, stroke: k.border ?? p.stroke, text, sub: muted, strokeWidth: width ?? p.strokeWidth };
+      // Tinted boxes keep the base style's tints; only the text follows the team's ink.
+      return { ...p, text: p.text === b.text ? text : p.text, strokeWidth: width ?? p.strokeWidth };
+    },
+    edgePaint: (color, hl) => {
+      const p = b.edgePaint(color ?? (hl ? accentName : undefined), hl);
+      if (!color && hl && accentHex) return { ...p, stroke: accentHex, text: accentHex };
+      if (!color && !hl) return { stroke: k.edge ?? p.stroke, text: k.edgeText ?? p.text, width: width ?? p.width };
+      return p;
+    },
+  };
+  return t;
+}
+
+/** Replace the team-defined themes. Built-in names can't be redefined. */
+export function setCustomThemes(themes: Theme[] = []): void {
+  custom.clear();
+  for (const t of themes) if (!(THEMES as readonly string[]).includes(t.name)) custom.set(t.name, t);
 }
 
 const fontPart = (t: Theme, size: number, color: string) => `fontFamily=${t.type.family};fontSize=${size};fontColor=${color};`;
@@ -318,7 +434,7 @@ const fontPart = (t: Theme, size: number, color: string) => `fontFamily=${t.type
 /** How a node of this kind looks. */
 export function paintFor(type: DiagramType, kind: string, theme: ThemeName, look: Look = {}): Paint {
   const t = palette(theme);
-  if (theme === 'c4' && type === 'architecture' && !look.highlight && !look.color) {
+  if (baseOf(theme) === 'c4' && type === 'architecture' && !look.highlight && !look.color) {
     const c = C4_KIND[kind] ?? C4_CONTAINER;
     return { fill: c.fill, stroke: c.stroke, text: c.text, sub: 'rgba(255,255,255,0.92)', strokeWidth: 1 };
   }
@@ -329,7 +445,7 @@ export function paintFor(type: DiagramType, kind: string, theme: ThemeName, look
   return t.paint(base, false);
 }
 
-const dashes = (t: Theme) => (t.name === 'sketch' ? 'dashed=1;dashPattern=8 6;' : 'dashed=1;dashPattern=5 4;');
+const dashes = (t: Theme) => (t.base === 'sketch' ? 'dashed=1;dashPattern=8 6;' : 'dashed=1;dashPattern=5 4;');
 
 export function nodeStyle(type: DiagramType, kind: string, theme: ThemeName = 'clean', look: Look = {}): string {
   const k = kindDef(type, kind);
@@ -411,7 +527,7 @@ export function groupStyle(theme: ThemeName = 'clean', look: Look = {}, depth = 
   if (depth > 0 && t.group.nested) fill = t.group.nested;
   if (look.color || look.highlight) {
     const p = t.paint(look.color ?? t.accent, false);
-    fill = theme === 'blueprint' || theme === 'sketch' ? 'none' : p.fill;
+    fill = baseOf(theme) === 'blueprint' || baseOf(theme) === 'sketch' ? 'none' : p.fill;
     // A colored ground carries the color; only a highlight adds an outline.
     stroke = look.highlight ? t.edgePaint(look.color, true).stroke : t.group.stroke === 'none' ? 'none' : p.stroke;
     text = p.sub;
@@ -482,7 +598,7 @@ export function lifelineStyle(kind: string, theme: ThemeName = 'clean', headH = 
 export function activationStyle(kind: string, theme: ThemeName = 'clean', look: Look = {}): string {
   const t = palette(theme);
   // A highlighted participant's bar is tinted, not solid: the head already shouts.
-  const c = look.highlight ? t.paint(look.color ?? (theme === 'sketch' ? 'red' : t.accent), false) : paintFor('sequence', kind, theme, look);
+  const c = look.highlight ? t.paint(look.color ?? (t.base === 'sketch' ? 'red' : t.accent), false) : paintFor('sequence', kind, theme, look);
   const neutral = c.stroke === t.paint('neutral', false).stroke && c.fill === t.paint('neutral', false).fill;
   const fill = neutral ? t.well : c.fill;
   const stroke = c.stroke === 'none' ? fill : neutral ? t.edge : c.stroke;
@@ -529,7 +645,7 @@ export function separatorStyle(theme: ThemeName = 'clean'): string {
 
 export function noteStyle(theme: ThemeName = 'clean'): string {
   const t = palette(theme);
-  const shape = t.name === 'sketch' ? 'shape=note;size=10;' : `rounded=1;absoluteArcSize=1;arcSize=${t.radius};`;
+  const shape = t.base === 'sketch' ? 'shape=note;size=10;' : `rounded=1;absoluteArcSize=1;arcSize=${t.radius};`;
   return `${shape}whiteSpace=wrap;html=1;fillColor=${t.note.fill};strokeColor=${t.note.stroke};strokeWidth=1;${fontPart(t, t.type.size.edge, t.note.text)}align=left;spacingLeft=10;spacingRight=10;${t.extra}`;
 }
 
@@ -548,7 +664,7 @@ export function nodeLabel(label: string, tech?: string, opts: LabelOpts = {}): s
   const main = `<span style="font-weight:${tf.strong}">${esc(label)}</span>`;
   const sub = (text: string, color: string) => `${main}<br><span style="font-size:${tf.size.sub}px;color:${color}">${esc(text)}</span>`;
   const p = paintFor(opts.type ?? 'architecture', opts.kind ?? '', theme, opts);
-  if (theme === 'c4' && opts.type === 'architecture' && !opts.highlight && !opts.color) {
+  if (baseOf(theme) === 'c4' && opts.type === 'architecture' && !opts.highlight && !opts.color) {
     const t = (C4_KIND[opts.kind ?? ''] ?? C4_CONTAINER).type;
     return sub(`[${tech ? `${t}: ${tech}` : t}]`, p.sub);
   }

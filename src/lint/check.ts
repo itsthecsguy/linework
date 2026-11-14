@@ -1,6 +1,7 @@
 // Layout lint, computed from geometry draw.io itself produced (see DrawioBrowser.inspect),
 // so it also works on files people edited by hand.
 import type { InspectCell } from '../render/browser.js';
+import { activeConfig, type Severity } from '../config.js';
 
 type Box = { x: number; y: number; w: number; h: number };
 type P = { x: number; y: number };
@@ -46,8 +47,11 @@ function segsCross(a: P, b: P, c: P, d: P): boolean {
   return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0;
 }
 
-export function check(cells: InspectCell[]): CheckResult {
+export function check(all: InspectCell[]): CheckResult {
   const findings: Finding[] = [];
+  // The legend is drawn outside the diagram and isn't part of its layout.
+  const cells = all.filter((c) => c.aivizType !== 'legend');
+  const limits = activeConfig().limits;
   const byId = new Map(cells.map((c) => [c.id, c]));
   const name = (c: InspectCell) => (c.label ? `"${c.label.slice(0, 40)}"` : c.id);
   // Sequence scaffolding (lifelines, frames, activation bars, guards) isn't an obstacle.
@@ -187,17 +191,17 @@ export function check(cells: InspectCell[]): CheckResult {
     return !!p && p.shape === 'swimlane';
   };
   const real = nodes.filter((n) => (n.box.w > 30 || n.box.h > 30) && !isRow(n));
-  if (real.length > 20) findings.push({ level: 'warning', rule: 'too-big', message: `${real.length} nodes; consider splitting into two diagrams` });
+  if (real.length > limits.nodes) findings.push({ level: 'warning', rule: 'too-big', message: `${real.length} nodes; consider splitting into two diagrams` });
   if (crossings > Math.max(3, edges.length / 3)) findings.push({ level: 'warning', rule: 'crossings', message: `${crossings} edge crossings; try direction: LR/TB, reordering nodes, or splitting` });
 
-  const all = cells.filter((c) => c.vertex).map((c) => c.box);
-  const minX = Math.min(...all.map((b) => b.x)), maxX = Math.max(...all.map((b) => b.x + b.w));
-  const minY = Math.min(...all.map((b) => b.y)), maxY = Math.max(...all.map((b) => b.y + b.h));
+  const boxes = cells.filter((c) => c.vertex).map((c) => c.box);
+  const minX = Math.min(...boxes.map((b) => b.x)), maxX = Math.max(...boxes.map((b) => b.x + b.w));
+  const minY = Math.min(...boxes.map((b) => b.y)), maxY = Math.max(...boxes.map((b) => b.y + b.h));
   // A doc column is ~800px; past this, text shrinks below readable size when embedded.
-  if (maxX - minX > 1400)
+  if (maxX - minX > limits.width)
     findings.push({ level: 'warning', rule: 'too-wide', message: `${Math.round(maxX - minX)}px wide; embedded in a doc, its text shrinks to about ${Math.round((800 / (maxX - minX)) * 13)}px. Try direction: TB, fewer nodes per row, or splitting it` });
   return {
-    findings: dedupe(findings),
+    findings: applyRules(dedupe(findings)),
     stats: { nodes: nodes.filter((n) => !ancestors(n.id).size || !nodes.some((p) => ancestors(n.id).has(p.id))).length + cells.filter((c) => c.shape === 'umlLifeline').length, edges: edges.length, crossings, width: Math.round(maxX - minX), height: Math.round(maxY - minY) },
   };
 }
@@ -215,4 +219,14 @@ function dedupe(f: Finding[]) {
 /** Edge cell ids whose routes are broken in a way rerouting fixes. */
 export function brokenEdges(res: CheckResult): string[] {
   return [...new Set(res.findings.filter((f) => f.edge).map((f) => f.edge!))];
+}
+
+/** Apply the team's rule levels: a rule can be turned off, or made a warning or an error. */
+export function applyRules(findings: Finding[]): Finding[] {
+  const rules = activeConfig().rules;
+  return findings.flatMap((f) => {
+    const level: Severity | undefined = rules[f.rule];
+    if (!level) return [f];
+    return level === 'off' ? [] : [{ ...f, level: level === 'error' ? ('error' as const) : ('warning' as const) }];
+  });
 }

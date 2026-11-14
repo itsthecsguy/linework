@@ -204,6 +204,35 @@ npx -y @itsthecsguy/linework skill install .claude/skills   # Claude Code
 npx -y @itsthecsguy/linework skill install .grok/skills     # Grok Build
 ```
 
+## One look across a team
+
+Check a `linework.yaml` into a repo and every diagram in it uses the same theme, names and rules, whoever or whatever draws it. Linework finds the file by walking up from the diagram.
+
+```yaml
+extends: "@acme/linework-config"   # share one config across repos: an npm package or a ./path
+theme: acme
+lockTheme: true
+themes:
+  acme:
+    extends: clean
+    accent: "#0A6E5C"
+    font: { family: Acme Sans, regular: fonts/AcmeSans-Regular.woff2, bold: fonts/AcmeSans-SemiBold.woff2 }
+statuses: { new: green, deprecated: gray, failure: red }   # specs write "status: new", not "color: green"
+legend: true
+components:
+  stripe: { label: Stripe, kind: external, tech: Payments }   # a spec writes "stripe: {}"
+naming: { case: sentence, maxLength: 28 }
+rules: { raw-color: error }
+```
+
+- **Your own theme and font.** A theme starts from a built-in one and overrides colors, corner radius, line width and the font. Linework rejects a theme whose text falls under 4.5:1 contrast, and names the pair.
+- **One meaning per color.** Statuses map a meaning to a color once. A legend for the ones a diagram uses is drawn under it.
+- **Shared components.** Systems many diagrams draw get one label, kind and icon.
+- **Checked, not hoped for.** `linework lint docs` checks every diagram against the layout rules and the config, and exits non-zero for CI. `linework restyle docs` brings old diagrams to the current theme without moving a box.
+- **Agents follow it.** The skill tells the agent to run `linework config` first, which prints the settings that apply.
+
+`linework config init` writes a starter file. Every option, a GitHub Actions step and a pre-commit hook are in [skills/linework/references/team-config.md](skills/linework/references/team-config.md).
+
 ## Small changes
 
 Once a diagram exists, a change to it keeps everything else where it is. That holds whether a person arranged the layout in draw.io or nobody has touched it.
@@ -240,6 +269,10 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 | `linework set <file> id.field=value...` | change a label, kind, color, theme or title in place |
 | `linework add <file> "id: {...}" "a -> b: label"...` | add boxes, groups and edges in place |
 | `linework rm <file> id "a -> b"...` | remove boxes, groups and edges in place |
+| `linework config [init]` | print the team settings that apply here, or write a starter `linework.yaml` |
+| `linework lint [dir...] [--strict]` | check every diagram against layout rules and the team config |
+| `linework restyle <dir...>` | bring existing diagrams to the team theme; boxes stay put |
+| `linework new [template]` | print a team template or a built-in example spec |
 | `linework show <file> [--geometry]` | print the spec of a diagram, including hand edits |
 | `linework edit <file> [--no-open]` | edit in the bundled draw.io, in your browser; saves write the file |
 | `linework check <file>` | lint: overlaps, edges through nodes, labels that don't fit, too wide |

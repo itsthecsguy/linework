@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import subsetFont from 'subset-font';
 import { assetsDir } from './browser.js';
+import { activeConfig } from '../config.js';
 
 export interface Face {
   family: string;
@@ -33,10 +34,15 @@ export function fontFaceCss(url: (file: string) => string): string {
   return FACES.map((f) => `@font-face{font-family:"${f.family}";font-weight:${f.weight};font-style:normal;src:url(${url(f.file)}) format("woff2");}`).join('\n');
 }
 
+/** The bundled faces plus the ones the team's linework.yaml brings. Those name their file by full path. */
+const faces = (): Face[] => [...FACES, ...activeConfig().fonts];
+
 const cache = new Map<string, Buffer>();
 const read = (f: Face) => {
-  let b = cache.get(f.file);
-  if (!b) cache.set(f.file, (b = fs.readFileSync(path.join(fontsDir(), f.file))));
+  const file = path.isAbsolute(f.file) ? f.file : path.join(fontsDir(), f.file);
+  const key = path.isAbsolute(f.file) ? `${file}:${fs.statSync(file).mtimeMs}` : file;
+  let b = cache.get(key);
+  if (!b) cache.set(key, (b = fs.readFileSync(file)));
   return b;
 };
 
@@ -52,7 +58,7 @@ const STYLE_RE = /<style id="aiviz-fonts"[^>]*>[\s\S]*?<\/style>/g;
 export function familiesIn(svg: string): string[] {
   const used = new Set<string>();
   for (const m of svg.matchAll(/font-family(?:\s*:\s*|=")(?:&quot;|["'])?([^,;"'&<]+)/g)) used.add(m[1]!.trim());
-  return [...new Set(FACES.map((f) => f.family))].filter((f) => used.has(f));
+  return [...new Set(faces().map((f) => f.family))].filter((f) => used.has(f));
 }
 
 /**
@@ -68,7 +74,7 @@ export async function embedFonts(svg: string): Promise<string> {
   // Blueprint's group titles use CSS text-transform, so they need the capitals too.
   text = [...new Set(text + text.toUpperCase() + ' ')].join('');
   const rules: string[] = [];
-  for (const f of FACES.filter((x) => families.includes(x.family))) {
+  for (const f of faces().filter((x) => families.includes(x.family))) {
     const sub = await subset(f, text);
     rules.push(`@font-face{font-family:"${f.family}";font-weight:${f.weight};font-style:normal;src:url(data:font/woff2;base64,${sub.toString('base64')}) format("woff2");}`);
   }
@@ -105,8 +111,9 @@ function cacheDir(): string | undefined {
 
 async function subset(f: Face, text: string): Promise<Buffer> {
   const font = read(f);
-  let fh = fileHash.get(f.file);
-  if (!fh) fileHash.set(f.file, (fh = crypto.createHash('sha256').update(font).digest('hex')));
+  const fk = path.isAbsolute(f.file) ? `${f.file}:${font.length}:${fs.statSync(f.file).mtimeMs}` : f.file;
+  let fh = fileHash.get(fk);
+  if (!fh) fileHash.set(fk, (fh = crypto.createHash('sha256').update(font).digest('hex')));
   const chars = [...new Set(text)].sort().join('');
   const key = crypto.createHash('sha256').update(`${fh}\0${chars}`).digest('hex').slice(0, 32);
   const hit = memo.get(key);
