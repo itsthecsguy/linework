@@ -45,7 +45,8 @@ After a change to layout or rendering, rebuild the README gallery and look at th
 | `src/layout/` | ELK layout, plus the hand-written sequence and timeline layouts |
 | `src/drawio/` | writing draw.io XML (`write.ts`, `theme.ts`), reading it back to a spec (`read.ts`, `show.ts`), merging a spec into a hand-edited file (`merge.ts`) |
 | `src/render/browser.ts` | headless draw.io: measure text, render, inspect geometry, reroute edges; also finds the browser |
-| `src/lint/` | `check` (layout lint, from the geometry draw.io produced) and label fixing |
+| `src/config.ts` | the team's `linework.yaml`: one look and one set of rules for every diagram in a repo |
+| `src/lint/` | `check` (layout lint, from the geometry draw.io produced), label fixing, and the team's conventions (`conventions.ts`, behind `linework lint`) |
 | `src/excalidraw/` | export to and import from Excalidraw |
 | `src/mcp/server.ts` | the MCP server: the same operations as tools |
 | `src/doctor.ts` | `linework doctor` |
