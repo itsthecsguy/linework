@@ -222,7 +222,7 @@ In GitHub Actions:
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: itsthecsguy/linework@v0.7.0
+- uses: itsthecsguy/linework@v0.8.0
   with:
     paths: docs
     mode: check        # or "update" to rebuild in the workspace for a later step to commit
