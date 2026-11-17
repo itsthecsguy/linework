@@ -51,6 +51,10 @@ function withGraph(xml, fn) {
   graph.setEnabled(false);
   try { decodeInto(graph, xml); return fn(graph); } finally { graph.destroy(); c.remove(); }
 }
+// The text of an HTML label as a person reads it: tags gone, entities decoded.
+function plain(html) {
+  return html.replace(/<\\/?[a-zA-Z][^<>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/\\s+/g, ' ').trim();
+}
 var ctx = document.createElement('canvas').getContext('2d');
 window.aiviz = {
   measure: function (reqs) {
@@ -84,10 +88,16 @@ window.aiviz = {
     });
   },
   // Names of stencils in a bundled set, e.g. stencilNames('aws4.xml').
+  // A set loads once. Asked again (the background process and the MCP server keep
+  // one page for many commands), the answer is the one remembered, not "nothing new".
+  stencilSets: {},
   stencilNames: function (set) {
-    var before = Object.keys(mxStencilRegistry.stencils);
-    mxStencilRegistry.loadStencilSet(STENCIL_PATH + '/' + set, null, null, false);
-    return Object.keys(mxStencilRegistry.stencils).filter(function (k) { return before.indexOf(k) < 0; });
+    if (!this.stencilSets[set]) {
+      var before = Object.keys(mxStencilRegistry.stencils);
+      mxStencilRegistry.loadStencilSet(STENCIL_PATH + '/' + set, null, null, false);
+      this.stencilSets[set] = Object.keys(mxStencilRegistry.stencils).filter(function (k) { return before.indexOf(k) < 0; });
+    }
+    return this.stencilSets[set];
   },
   // Each cell drawn alone, as SVG text: how an icon leaves draw.io for another tool.
   cellSvgs: function (xml, ids) {
@@ -201,7 +211,7 @@ window.aiviz = {
           target: cell.edge && cell.target ? cell.target.id : null,
           box: { x: st.x, y: st.y, w: st.width, h: st.height },
           textBox: tb ? { x: tb.x, y: tb.y, w: tb.width, h: tb.height } : null,
-          label: graph.getLabel(cell) ? String(graph.getLabel(cell)).split(/<br\\s*\\/?>/i)[0].replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim() : '',
+          label: graph.getLabel(cell) ? plain(String(graph.getLabel(cell)).split(/<br\\s*\\/?>/i)[0]) : '',
           points: st.absolutePoints ? st.absolutePoints.filter(Boolean).map(function (p) { return { x: p.x, y: p.y }; }) : null,
         });
       }
@@ -245,11 +255,11 @@ export interface IconOutline {
 }
 
 export class DrawioBrowser {
-  private constructor(private browser: Browser, private page: Page, private server: http.Server) {}
+  private constructor(private browser: Browser, private page: Page, private server: http.Server, /** Which browser is drawing, and its version: "Google Chrome 141.0.7390.37". */ readonly engine: string) {}
 
   static async launch(opts: { scale?: number } = {}): Promise<DrawioBrowser> {
     // Chromium starts while the asset server binds.
-    const [browser, server] = await Promise.all([launchChromium(), serveAssets()]);
+    const [{ browser, via }, server] = await Promise.all([launchChromium(), serveAssets()]);
     const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     try {
       const page = await browser.newPage({ deviceScaleFactor: opts.scale ?? 2 });
@@ -264,7 +274,7 @@ export class DrawioBrowser {
         FACES.map(({ family, weight }) => ({ family, weight })),
       );
       if (ok.includes(false)) throw new Error('linework: bundled fonts failed to load (assets/fonts). Reinstall linework.');
-      return new DrawioBrowser(browser, page, server);
+      return new DrawioBrowser(browser, page, server, `${via} ${browser.version()}`);
     } catch (e) {
       await browser.close().catch(() => {});
       server.close();
@@ -362,7 +372,17 @@ export class DrawioBrowser {
     return this.page.evaluate(([x, i, p]) => (window as any).aiviz.labelBoxes(x, i, p), [xml, id, xs] as const);
   }
 
+  /** Run `fn` once if the browser goes away on its own (it crashed, or something killed it). */
+  onGone(fn: () => void): void {
+    this.browser.once('disconnected', () => {
+      if (!this.closing) fn();
+    });
+  }
+
+  private closing = false;
+
   async close() {
+    this.closing = true;
     await this.browser.close();
     this.server.closeAllConnections();
     this.server.close();
@@ -411,16 +431,51 @@ function installHint(): string {
   return 'linework install-browser';
 }
 
-async function launchChromium(): Promise<Browser> {
+/** What a Chromium-family browser is called on PATH, most common first. */
+const PATH_NAMES = ['chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable', 'chrome', 'brave', 'brave-browser', 'microsoft-edge', 'microsoft-edge-stable', 'vivaldi', 'vivaldi-stable'];
+
+/**
+ * Chromium-family browsers installed where Playwright's own channels don't look:
+ * anything on PATH (a distro's `chromium`, Brave, a snap), and the usual app
+ * folders on macOS and Windows. Playwright only knows Chrome and Edge in their
+ * vendor locations, so without this a Linux machine with `chromium` installed
+ * is told it has no browser.
+ */
+export function systemBrowsers(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  isFile: (p: string) => boolean = (p) => fs.statSync(p, { throwIfNoEntry: false })?.isFile() ?? false,
+): string[] {
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  const found: string[] = [];
+  const add = (p: string) => {
+    if (!found.includes(p) && isFile(p)) found.push(p);
+  };
+  const dirs = (env.PATH ?? env.Path ?? '').split(platform === 'win32' ? ';' : ':').filter(Boolean);
+  for (const name of PATH_NAMES) for (const d of dirs) add(join(d, platform === 'win32' ? `${name}.exe` : name));
+  if (platform === 'darwin') {
+    const apps = ['Chromium.app/Contents/MacOS/Chromium', 'Brave Browser.app/Contents/MacOS/Brave Browser', 'Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary', 'Vivaldi.app/Contents/MacOS/Vivaldi', 'Arc.app/Contents/MacOS/Arc'];
+    for (const root of ['/Applications', ...(env.HOME ? [join(env.HOME, 'Applications')] : [])]) for (const a of apps) add(join(root, a));
+  }
+  if (platform === 'win32') {
+    const apps = ['Chromium\\Application\\chrome.exe', 'BraveSoftware\\Brave-Browser\\Application\\brave.exe', 'Vivaldi\\Application\\vivaldi.exe'];
+    for (const root of [env.LOCALAPPDATA, env.PROGRAMFILES, env['PROGRAMFILES(X86)']]) if (root) for (const a of apps) add(join(root, a));
+  }
+  return found;
+}
+
+async function launchChromium(): Promise<{ browser: Browser; via: string }> {
   const errors: string[] = [];
-  const attempts: Array<() => Promise<Browser>> = [];
-  if (process.env.LINEWORK_CHROME) attempts.push(() => chromium.launch({ executablePath: process.env.LINEWORK_CHROME }));
-  attempts.push(() => chromium.launch());
-  attempts.push(() => chromium.launch({ channel: 'chrome' }));
-  attempts.push(() => chromium.launch({ channel: 'msedge' }));
+  const attempts: Array<{ via: string; launch: () => Promise<Browser> }> = [];
+  const custom = process.env.LINEWORK_CHROME;
+  if (custom) attempts.push({ via: `LINEWORK_CHROME (${custom})`, launch: () => chromium.launch({ executablePath: custom }) });
+  attempts.push({ via: "Playwright's Chromium", launch: () => chromium.launch() });
+  attempts.push({ via: 'Google Chrome', launch: () => chromium.launch({ channel: 'chrome' }) });
+  attempts.push({ via: 'Microsoft Edge', launch: () => chromium.launch({ channel: 'msedge' }) });
+  for (const p of systemBrowsers()) attempts.push({ via: p, launch: () => chromium.launch({ executablePath: p }) });
   for (const a of attempts) {
     try {
-      return await a();
+      return { browser: await a.launch(), via: a.via };
     } catch (e) {
       errors.push((e as Error).message.split('\n')[0]!);
     }
@@ -432,7 +487,7 @@ async function launchChromium(): Promise<Browser> {
     // Playwright's headless shell still starts under macOS seatbelt (Codex's sandbox)
     // when it runs as one process. Only as a fallback: single-process mode is less robust.
     try {
-      return await chromium.launch({ args: ['--single-process', '--no-zygote'] });
+      return { browser: await chromium.launch({ args: ['--single-process', '--no-zygote'] }), via: "Playwright's Chromium (single process)" };
     } catch (e) {
       errors.push((e as Error).message.split('\n')[0]!);
     }
@@ -443,7 +498,7 @@ async function launchChromium(): Promise<Browser> {
           `Fix: run this command outside the sandbox, or allow it to launch a browser. Linework can start inside some sandboxes (Codex's included) if Playwright's own Chromium is installed: run \`${installHint()}\` once, outside the sandbox.\n` +
           `(tried: ${errors.join(' | ')})`
       : 'linework needs a Chromium-based browser to lay out and render diagrams, and none was found.\n' +
-          `Fix one of these ways:\n  ${installHint()}\n  install Google Chrome\n  set LINEWORK_CHROME=/path/to/chrome\n` +
+          `Fix one of these ways:\n  ${installHint()}\n  install Google Chrome or Chromium\n  set LINEWORK_CHROME=/path/to/chrome\n` +
           `(tried: ${errors.join(' | ')})`,
   );
 }

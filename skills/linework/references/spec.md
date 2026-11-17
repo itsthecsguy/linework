@@ -266,7 +266,8 @@ messages:
 | async | `a -.-> b: text` (open arrow) |
 | self call | `a -> a: text` |
 | note | `note over a: text`, `note over a, b: text`, `note left of a: text`, `note right of a: text` |
-| branches | `- alt:` or `- par:` with a list of `{ when: condition, do: [items] }` |
+| colored message | `- { from: a, to: b, label: text, style: reply, color: red }` (`style`: `sync`, `reply` or `async`; `highlight: true` works here too) |
+| branches | `- alt:` or `- par:` with a list of `{ when: condition, do: [items] }`; `- critical:` takes the same list when it has fallback parts |
 | block | `- loop: label`, `- opt: label`, `- critical: label` or `- break: label`, each with `do: [items]` |
 
 Frames nest. Keep it to 6 participants or fewer, so it fits a page.

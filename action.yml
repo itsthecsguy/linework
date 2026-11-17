@@ -26,7 +26,10 @@ runs:
         node-version: 22
     - name: Install linework
       shell: bash
-      run: npm install --global "@itsthecsguy/linework@${{ inputs.version }}"
+      # Inputs reach the shell as variables, never as script text.
+      env:
+        LINEWORK_VERSION: ${{ inputs.version }}
+      run: npm install --global "@itsthecsguy/linework@$LINEWORK_VERSION"
     # Checking only reads files. Rebuilding draws, which needs a browser: GitHub's
     # runners come with Chrome; anywhere else, fetch the headless build linework uses.
     - name: Find a browser
@@ -41,10 +44,13 @@ runs:
       shell: bash
       env:
         LINEWORK_NO_DAEMON: '1'
+        LINEWORK_MODE: ${{ inputs.mode }}
+        LINEWORK_PATHS: ${{ inputs.paths }}
       run: |
-        if [ "${{ inputs.mode }}" = "check" ]; then
-          linework sync ${{ inputs.paths }} --check
+        read -r -a paths <<< "$LINEWORK_PATHS"
+        if [ "$LINEWORK_MODE" = "check" ]; then
+          linework sync "${paths[@]}" --check
         else
-          linework sync ${{ inputs.paths }}
+          linework sync "${paths[@]}"
           if [ -n "$(git status --porcelain -- '*.drawio.svg' 2>/dev/null)" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "changed=false" >> "$GITHUB_OUTPUT"; fi
         fi

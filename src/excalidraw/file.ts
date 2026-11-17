@@ -137,7 +137,9 @@ export function readScene(file: string): ExcalidrawFile {
     if (/\.png$/i.test(file)) text = sceneFromPng(fs.readFileSync(file));
     else if (/\.svg$/i.test(file)) text = sceneFromSvg(fs.readFileSync(file, 'utf8'));
     else text = fs.readFileSync(file, 'utf8');
-    return JSON.parse(text) as ExcalidrawFile;
+    const scene = JSON.parse(text) as ExcalidrawFile;
+    if (scene?.type !== 'excalidraw' || !Array.isArray(scene.elements)) throw new Error(scene && (scene as { type?: string }).type === 'excalidrawlib' ? 'it is an Excalidraw library, not a drawing' : 'expected {"type": "excalidraw", "elements": [...]}');
+    return scene;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`${file} doesn't exist`);
     throw new Error(`${file} isn't an Excalidraw file: ${(e as Error).message}`);

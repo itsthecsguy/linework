@@ -8,17 +8,25 @@ import { parseArgs } from 'node:util';
 (module as { enableCompileCache?: () => unknown }).enableCompileCache?.();
 
 async function main(argv: string[]): Promise<void> {
-  const { OPTIONS, USAGE, needsBrowser, run, report, processIO } = await import('./commands.js');
+  const { OPTIONS, USAGE, needsBrowser, renderScale, run, report, processIO } = await import('./commands.js');
   const [cmd, ...rest] = argv;
   if (cmd === 'daemon') return daemon(rest[0]);
+  if (cmd === '--version' || cmd === '-v' || cmd === '-V') return void console.log((await import('./commands.js')).packageVersion());
   let parsed;
   try {
     parsed = parseArgs({ args: rest, allowPositionals: true, options: OPTIONS });
   } catch (e) {
-    process.exitCode = report(e);
+    process.exitCode = report(e, processIO, rest.includes('--json'));
     return;
   }
   const { values, positionals } = parsed;
+  let scale = 2;
+  try {
+    if (cmd === 'render' && values.scale !== undefined) scale = renderScale(values.scale);
+  } catch (e) {
+    process.exitCode = report(e, processIO, values.json);
+    return;
+  }
   if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h' || values.help) return void process.stdout.write(USAGE);
 
   const draws = needsBrowser(cmd, values);
@@ -36,7 +44,7 @@ async function main(argv: string[]): Promise<void> {
 
   // Commands that draw start Chromium first and load the rest of linework while it
   // boots and loads draw.io: the two take about the same time, so they overlap.
-  const launching = draws ? import('./render/browser.js').then((m) => m.DrawioBrowser.launch({ scale: cmd === 'render' && values.scale ? Number(values.scale) : 2 })) : undefined;
+  const launching = draws ? import('./render/browser.js').then((m) => m.DrawioBrowser.launch({ scale })) : undefined;
   // A failure here surfaces where the browser is awaited; don't report it twice.
   launching?.catch(() => {});
   let failed = false;
@@ -44,7 +52,7 @@ async function main(argv: string[]): Promise<void> {
     await run(cmd, values, positionals, launching);
   } catch (e) {
     failed = true;
-    process.exitCode = report(e);
+    process.exitCode = report(e, processIO, values.json);
   } finally {
     if (launching) await (await launching.catch(() => undefined))?.close();
   }
@@ -61,8 +69,7 @@ async function daemon(sub: string | undefined): Promise<void> {
   if (sub === 'stop') return void console.log((await d.stopDaemon()) ? 'stopped' : 'not running');
   if (sub === 'status' || !sub) {
     const sock = d.daemonAllowed() ? d.socketPath() : undefined;
-    const fs = await import('node:fs');
-    return void console.log(!sock ? 'off (LINEWORK_NO_DAEMON, CI or Windows)' : fs.existsSync(sock) ? `running at ${sock}` : 'not running; the next build starts it');
+    return void console.log(!sock ? 'off (LINEWORK_NO_DAEMON, CI or Windows)' : (await d.daemonAlive()) ? `running at ${sock}` : 'not running; the next build starts it');
   }
   console.error('usage: linework daemon [status|stop]');
   process.exitCode = 2;
@@ -78,6 +85,6 @@ function exitWhenFlushed(code: number): Promise<never> {
 }
 
 main(process.argv.slice(2)).catch(async (e) => {
-  const { report } = await import('./commands.js');
-  process.exit(report(e));
+  const { report, processIO } = await import('./commands.js');
+  process.exit(report(e, processIO, process.argv.includes('--json')));
 });

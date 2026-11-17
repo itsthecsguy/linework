@@ -97,7 +97,14 @@ function flowchart(lines: string[]): ImportResult {
     }
   };
 
+  // A quoted label may run over several lines: put it back on one, with the break it had.
+  const whole: string[] = [];
   for (const raw of lines.slice(1)) {
+    const open = whole.length > 0 && (whole[whole.length - 1]!.match(/"/g)?.length ?? 0) % 2 === 1;
+    if (open) whole[whole.length - 1] += `<br>${raw.trim()}`;
+    else whole.push(raw);
+  }
+  for (const raw of whole) {
     for (const stmt of splitStatements(raw.trim())) {
       if (!stmt) continue;
       let m: RegExpExecArray | null;
@@ -121,6 +128,26 @@ function flowchart(lines: string[]): ImportResult {
       if (/^direction\s+/.test(stmt)) continue;
       parseChain(stmt, touch, edges, warnings);
     }
+  }
+
+  // Mermaid lets an edge end at a subgraph. Linework edges join nodes, so such an
+  // edge goes to the subgraph's first node, not to a new box that happens to share its name.
+  const within = (group: string | undefined, raw: string): boolean => {
+    for (let g = group, i = 0; g && i < 50; g = groups.find((x) => x.raw === g)?.parent, i++) if (g === raw) return true;
+    return false;
+  };
+  for (const g of groups) {
+    const ghost = nodes.get(g.raw);
+    if (!ghost || ghost.text != null || ghost.shape) continue;
+    const first = order.find((id) => id !== g.raw && within(nodes.get(id)!.group, g.raw));
+    if (!first) continue;
+    for (const e of edges) {
+      if (e.from === g.raw) e.from = first;
+      if (e.to === g.raw) e.to = first;
+    }
+    nodes.delete(g.raw);
+    order.splice(order.indexOf(g.raw), 1);
+    warnings.add(`an edge to the subgraph "${g.label}" now goes to its first node, "${nodes.get(first)!.text ?? first}"; move it if another node is meant`);
   }
 
   // Pick a type: diamonds mean a process; cylinders or subgraphs mean architecture.
@@ -210,10 +237,12 @@ function parseNodeAt(s: string, pos: number): { node: FNode; end: number } | nul
 function parseEdgeAt(s: string, pos: number): { style: EdgeStyle; label?: string; end: number; thick?: boolean } | null {
   const rest = s.slice(pos);
   // "-- text -->", "== text ==>", "-. text .->"
-  let m = /^\s*(<)?(--|==|-\.)\s+([^>|]+?)\s+(-{2,}|={2,}|\.+-)(>|o|x)?(?=\s|[\w"])/.exec(rest);
+  let m = /^\s*(<|[xo](?=-|=))?(--|==|-\.)\s+([^>|]+?)\s+(-{2,}|={2,}|\.+-)(>|o|x)?(?=\s|[\w"])/.exec(rest);
+  // The same with no spaces, for one word: "--Yes-->", "-.retry.->".
+  m ??= /^\s*(<|[xo](?=-|=))?(--|==|-\.)(?![-=.>\s])([^>|\s]+?)(-{2,}|={2,}|\.+-)(>|o|x)?(?=\s|[\w"])/.exec(rest);
   if (m) return { style: styleOf(m[1], m[2]! + m[4]!, m[5]), label: clean(m[3]!), end: pos + m[0].length, thick: m[2] === '==' };
   // "-->", "---", "-.->", "==>", "<-->", "--o", "--x", with optional "|text|"
-  m = /^\s*(<)?(-{2,}|={2,}|-\.+-?|\.-+)(>|o|x)?\s*(?:\|([^|]*)\|)?/.exec(rest);
+  m = /^\s*(<|[xo](?=-|=))?(-{2,}|={2,}|-\.+-?|\.-+)(>|o|x)?\s*(?:\|([^|]*)\|)?/.exec(rest);
   if (m && /[-=.]/.test(m[2]!) && m[0].trim()) return { style: styleOf(m[1], m[2]!, m[3]), label: m[4] != null ? clean(m[4]) : undefined, end: pos + m[0].length, thick: m[2]!.startsWith('=') };
   return null;
 }
@@ -394,7 +423,15 @@ function sequenceDiagram(lines: string[]): ImportResult {
       const f = stack.pop();
       if (!f) continue;
       if (f.op === 'rect') cur().push(...f.branches[0]!.items);
-      else cur().push({ kind: 'frame', op: f.op, branches: f.branches });
+      else {
+        // alt, par and critical have branches in a linework spec; the rest have one part.
+        if (f.op !== 'alt' && f.op !== 'par' && f.op !== 'critical' && f.branches.length > 1) {
+          const lost = f.branches.slice(1).reduce((n, b) => n + b.items.length, 0);
+          warnings.add(`"${f.op}" keeps its first part only: ${lost} message${lost === 1 ? '' : 's'} in its later parts ${lost === 1 ? 'was' : 'were'} dropped. Add them by hand, or use an alt frame`);
+          f.branches.length = 1;
+        }
+        cur().push({ kind: 'frame', op: f.op, branches: f.branches });
+      }
       continue;
     }
     if ((m = /^note\s+(over|left of|right of)\s+([^:]+):\s*(.*)$/i.exec(l))) {
@@ -405,9 +442,13 @@ function sequenceDiagram(lines: string[]): ImportResult {
     }
     if (/^(activate|deactivate|autonumber|box|end box|title|create|destroy|links?|properties|details)\b/.test(l)) continue;
     let matched = false;
+    // The arrow is in the part before the message text, and it is the first one
+    // there: "A->B: retry with -x flag" is an arrow from A to B, not one ending in "x".
+    const head = l.includes(':') ? l.slice(0, l.indexOf(':')) : l;
+    const leftmost = Math.min(...SEQ_ARROWS.map(([tok]) => head.indexOf(tok)).filter((i) => i > 0));
     for (const [tok, style] of SEQ_ARROWS) {
-      const i = l.indexOf(tok);
-      if (i <= 0) continue;
+      const i = head.indexOf(tok);
+      if (i <= 0 || i !== leftmost) continue;
       const from = l.slice(0, i).trim();
       const after = l.slice(i + tok.length);
       const mm = /^\s*[+-]?\s*([^:]+?)\s*:\s*(.*)$/.exec(after) ?? /^\s*[+-]?\s*(\S+)\s*$/.exec(after);
@@ -628,6 +669,6 @@ function gantt(lines: string[]): ImportResult {
     const nid = safeId(id ?? label.toLowerCase(), used);
     nodes.push({ id: nid, label, kind: milestone ? 'milestone' : tags.has('done') ? 'done' : tags.has('crit') ? 'risk' : 'task', parent: lane, start: isoOf(start), ...(milestone ? {} : { end: isoOf(end) }), ...(tags.has('active') ? { highlight: true } : {}) });
   }
-  if (!nodes.length) throw new Error('this gantt chart has no tasks linework could read');
+  if (!nodes.length) throw new Error(['this gantt chart has no tasks linework could read', ...warnings].join('\n  '));
   return { diagram: { type: 'timeline', title, direction: 'auto', theme: 'clean', groups: groups.filter((g) => nodes.some((n) => n.parent === g.id)), nodes, edges: [] }, warnings: [...warnings] };
 }

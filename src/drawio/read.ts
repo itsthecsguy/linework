@@ -170,7 +170,8 @@ export function labelLines(html: string): string[] {
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(div|p|li)>/gi, '\n')
     .replace(/<\/t[dh]>/gi, ' ')
-    .replace(/<[^>]+>/g, '')
+    // Tags only. "x < 10 && y > 2", typed into draw.io as plain text, is not one.
+    .replace(/<\/?[a-zA-Z][^<>]*>/g, '')
     .replace(/&nbsp;/g, ' ')
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
     .split('\n')

@@ -5,7 +5,7 @@
 import type { Diagram, FrameOp, SeqItem } from '../spec/model.js';
 import { fontsFor, type Measure } from './layout.js';
 import { TextMeasurer } from './text.js';
-import { type ThemeArg, FRAME_TAB_INSET, FRAME_TAB_X, FRAME_TAB_Y, LINE, PAD_X, PAD_Y, activationStyle, frameStyle, guardStyle, lifelineStyle, messageStyle, nodeLabel, noteStyle, palette, separatorStyle } from '../drawio/theme.js';
+import { type ThemeArg, FRAME_TAB_INSET, FRAME_TAB_X, FRAME_TAB_Y, LINE, PAD_X, PAD_Y, activationStyle, frameStyle, guardStyle, htmlEsc, lifelineStyle, messageStyle, nodeLabel, noteStyle, palette, separatorStyle } from '../drawio/theme.js';
 import { autoAttr, diagramMeta, lookAttrs, type Scene, type SceneEdge, type SceneVertex } from '../drawio/write.js';
 
 const TOP = 24, BAR_W = 10, NOTE_W = 220;
@@ -247,7 +247,7 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
       vertices.push({
         id: `${f.id}_g${k}`,
         parent: '1',
-        attrs: { label: `[${when}]`, aiviz_type: 'guard', aiviz_guard: `${f.id}:${k}` },
+        attrs: { label: htmlEsc(`[${when}]`), aiviz_type: 'guard', aiviz_guard: `${f.id}:${k}` },
         style: guardStyle(theme),
         box: { x: gx, y: gy, w: gw, h: guardH },
       });
@@ -285,7 +285,7 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
       vertices.push({
         id: `note_${i}`,
         parent: '1',
-        attrs: { label: it.text, aiviz_type: 'note', aiviz_note: it.side, aiviz_over: it.over.join(',') },
+        attrs: { label: htmlEsc(it.text), aiviz_type: 'note', aiviz_note: it.side, aiviz_over: it.over.join(',') },
         style: noteStyle(theme),
         box: { x, y: r.y - 4, w: Math.ceil(width / 8) * 8, h: r.h },
       });
@@ -295,7 +295,7 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
     if (r.t !== 'msg') return;
     const { from, to, style, label } = r.item;
     const self = from === to;
-    const attrs = { label: label ?? '', aiviz_msg: style, ...lookAttrs(r.item) };
+    const attrs = { label: htmlEsc(label ?? ''), aiviz_msg: style, ...lookAttrs(r.item) };
     const id = `m_${i}`;
     if (self) {
       const c = cx(from), lh = lifeH;

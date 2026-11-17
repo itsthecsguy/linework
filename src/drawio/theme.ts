@@ -840,7 +840,7 @@ export function relFromArrows(s: Record<string, string>): ClassRel | undefined {
 
 /** A table's heading: its name, after «interface» or the like when the kind has one. */
 export function tableLabel(label: string, mark: string | undefined, theme: ThemeArg = 'clean'): string {
-  if (!mark) return label;
+  if (!mark) return esc(label);
   const t = palette(theme);
   return `<span style="font-weight:400;font-size:${t.type.size.sub}px;color:${t.muted}">«${mark}»</span> ${esc(label)}`;
 }
@@ -920,7 +920,9 @@ export function noteStyle(theme: ThemeArg = 'clean'): string {
   return `${shape}whiteSpace=wrap;html=1;fillColor=${t.note.fill};strokeColor=${t.note.stroke};strokeWidth=1;${fontPart(t, t.type.size.edge, t.note.text)}align=left;spacingLeft=10;spacingRight=10;${t.extra}`;
 }
 
-const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+/** Text for an HTML label. draw.io draws labels as HTML, so a bare "List<T>" would be read as a tag and vanish. */
+export const htmlEsc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const esc = htmlEsc;
 
 export interface LabelOpts extends Look {
   theme?: ThemeArg;

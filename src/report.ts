@@ -34,3 +34,28 @@ export function checkLines(res: CheckResult): string[] {
     ...res.findings.map((f) => `  ${f.level}: ${f.message} [${f.rule}]`),
   ];
 }
+
+/** The same results as data, for --json. Field names are a contract: add, don't rename. */
+export function checkJson(res: CheckResult) {
+  return {
+    errors: res.findings.filter((f) => f.level === 'error').length,
+    warnings: res.findings.filter((f) => f.level === 'warning').length,
+    findings: res.findings,
+  };
+}
+
+export function buildJson(res: BuildResult, png?: string) {
+  return {
+    ok: true,
+    out: res.out,
+    ...(png ? { png } : {}),
+    mode: res.mode,
+    direction: res.direction,
+    stats: res.check.stats,
+    check: checkJson(res.check),
+    specWarnings: res.warnings,
+    ...(res.merge ? { merge: res.merge } : {}),
+    labelsMoved: res.labelsMoved,
+    ...(res.discardedLayout ? { discardedLayout: true } : {}),
+  };
+}
