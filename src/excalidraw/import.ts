@@ -19,6 +19,7 @@ import { datesOn, parseFieldRight, parseFieldText, stripMark, toDiagram, type Sh
 import { parseMember } from '../spec/parse.js';
 import type { InspectCell } from '../render/browser.js';
 import { DEFAULT_KIND, FRAME_OPS, KINDS, type Card, type ColorName, type Diagram, type Edge, type EdgeStyle, type Field, type FrameOp, type Look, type Node } from '../spec/model.js';
+import { PAD } from '../drawio/merge.js';
 import { drawnText, type ExcalidrawElement, type ExcalidrawFile, type Origin } from './export.js';
 
 export type Box = { x: number; y: number; w: number; h: number };
@@ -39,10 +40,41 @@ export interface Edits {
   notes: string[];
 }
 
+/**
+ * Groups whose box, as drawn, has no room for what is in them, each with the
+ * box a build would grow it to. The drawn size can't be kept, so it is the grown
+ * one that counts: otherwise a box dropped near a group's edge would read as
+ * the group being resized again on every later import.
+ */
+export function grownGroups(d: Diagram, boxes: Map<string, Box>): Map<string, Box> {
+  const out = new Map<string, Box>();
+  const depth = (g: Diagram['groups'][number]): number => {
+    let n = 0;
+    for (let p = g.parent; p && n < 50; p = d.groups.find((x) => x.id === p)?.parent) n++;
+    return n;
+  };
+  // Innermost first: a group that grows may push out the one it sits in.
+  for (const g of [...d.groups].sort((p, q) => depth(q) - depth(p))) {
+    const b = boxes.get(g.id);
+    if (!b) continue;
+    let [x0, y0, x1, y1] = [b.x, b.y, b.x + b.w, b.y + b.h];
+    for (const m of [...d.nodes, ...d.groups]) {
+      const mb = m.parent === g.id ? (out.get(m.id) ?? boxes.get(m.id)) : undefined;
+      if (!mb) continue;
+      x0 = Math.min(x0, mb.x - PAD.left);
+      y0 = Math.min(y0, mb.y - PAD.top);
+      x1 = Math.max(x1, mb.x + mb.w + PAD.right);
+      y1 = Math.max(y1, mb.y + mb.h + PAD.bottom);
+    }
+    if (x0 < b.x - 1 || y0 < b.y - 1 || x1 > b.x + b.w + 1 || y1 > b.y + b.h + 1) out.set(g.id, { x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+  }
+  return out;
+}
+
 /** What an exported file carries about the diagram it was made from, if any of the shapes holding it survive. */
 export function embeddedDoc(file: ExcalidrawFile): NonNullable<Origin['doc']> | undefined {
   for (const e of file.elements) {
-    const doc = (e.customData as { lw?: Origin } | undefined)?.lw?.doc;
+    const doc = (e?.customData as { lw?: Origin } | undefined)?.lw?.doc;
     if (doc?.spec && !e.isDeleted) return doc;
   }
   return undefined;
@@ -121,7 +153,13 @@ export function tidyPath(pts: P[]): P[] {
 
 export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: InspectCell[], pristine?: ExcalidrawFile): Edits {
   if (file?.type !== 'excalidraw' || !Array.isArray(file.elements)) throw new Error('not an Excalidraw file: expected {"type": "excalidraw", "elements": [...]}');
-  const live = file.elements.filter((e) => !e.isDeleted);
+  // Excalidraw always writes these lists. A file some other tool wrote may not.
+  for (const e of file.elements) {
+    if (!e || typeof e !== 'object') continue;
+    if (!Array.isArray(e.groupIds)) e.groupIds = [];
+    if (!Array.isArray(e.boundElements)) e.boundElements = [];
+  }
+  const live = file.elements.filter((e) => e && typeof e === 'object' && !e.isDeleted);
   const byId = new Map(live.map((e) => [e.id, e]));
   const originOf = (e: ExcalidrawElement) => (e.customData as { lw?: Origin } | undefined)?.lw;
   const ownId = (o: Origin) => (o.part === 'shape' ? `lw-${o.cell}` : `lw-${o.cell}-${o.part}`);
@@ -407,22 +445,35 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
   const kept: Edge[] = [];
   const taken = new Set<string>();
   const pathOf = new Map<Edge, P[]>();
+  // An arrow export wrote for an edge the diagram no longer has under that name:
+  // an earlier import of this file moved one of its ends, and the edge is named after its ends.
+  const renamed = (a: ExcalidrawElement) => isOriginal(a) && !m.byId.has(originOf(a)!.cell);
+  // Which way an arrow runs: toward its head. One with a head only at its start runs backwards.
+  const backward = (a: ExcalidrawElement) => !!a.startArrowhead && !a.endArrowhead && type !== 'er';
+  const runsFrom = (a: ExcalidrawElement) => endOf(a, backward(a) ? 'end' : 'start');
+  const runsTo = (a: ExcalidrawElement) => endOf(a, backward(a) ? 'start' : 'end');
   for (const e of d.edges) {
-    if (!nodeIds.has(e.from) || !nodeIds.has(e.to)) continue; // went with its node
     const cellId = shown.edgeCells.get(e.id);
     const c = cellId ? m.byId.get(cellId) : undefined;
+    if (!nodeIds.has(e.from) || !nodeIds.has(e.to)) {
+      // It went with its node, unless its arrow was dragged onto another box first.
+      const own = cellId ? shapeOf(cellId) : undefined;
+      if (!own || !endOf(own, 'start') || !endOf(own, 'end')) continue;
+    }
     if (!cellId || !c) {
       kept.push(e);
       continue;
     }
     // An arrow this file added on an earlier import is that arrow, not one more.
-    const el = shapeOf(cellId) ?? live.find((a) => a.type === 'arrow' && !isOriginal(a) && !taken.has(a.id) && endOf(a, 'start') === e.from && endOf(a, 'end') === e.to);
+    const own = shapeOf(cellId);
+    const el = own ?? live.find((a) => a.type === 'arrow' && (!isOriginal(a) || renamed(a)) && !taken.has(a.id) && runsFrom(a) === e.from && runsTo(a) === e.to);
     if (!el) {
       changes.push(`removed the arrow from "${name(e.from)}" to "${name(e.to)}"`);
       continue;
     }
     taken.add(el.id);
-    const from = endOf(el, 'start') ?? e.from, to = endOf(el, 'end') ?? e.to;
+    // An arrow found by where it runs is already this edge, ends and direction both.
+    const from = own ? (endOf(el, 'start') ?? e.from) : e.from, to = own ? (endOf(el, 'end') ?? e.to) : e.to;
     if (from !== e.from || to !== e.to) {
       changes.push(`the arrow from "${name(e.from)}" to "${name(e.to)}" now runs from "${name(from)}" to "${name(to)}"`);
       e.from = from;
@@ -462,11 +513,13 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
     const label = arrowLabel(el);
     const picked = source ? undefined : colorName(el.strokeColor);
     const start = !!el.startArrowhead, end = !!el.endArrowhead;
+    // The edge runs toward the arrowhead, whichever end the person started drawing from.
+    const backwards = start && !end && type !== 'er';
     const edge: Edge = {
       id: '',
-      from,
-      to,
-      style: source?.style ?? (type === 'er' ? 'line' : !start && !end ? 'line' : start && end ? 'bidir' : el.strokeStyle === 'dashed' ? 'async' : 'sync'),
+      from: backwards ? to : from,
+      to: backwards ? from : to,
+      style: source?.style ?? (type === 'er' ? 'line' : !start && !end ? 'line' : start && end ? 'bidir' : el.strokeStyle === 'dashed' || el.strokeStyle === 'dotted' ? 'async' : 'sync'),
       ...(label ? { label } : {}),
       ...(source?.color ? { color: source.color } : picked && picked !== 'none' ? { color: picked } : {}),
       ...(source?.rel ? { rel: source.rel } : {}),
@@ -474,7 +527,7 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
     };
     kept.push(edge);
     if (shaped(el)) pathOf.set(edge, tidyPath(absPoints(el)));
-    changes.push(`added an arrow from "${name(from)}" to "${name(to)}"${label ? `: ${label}` : ''}`);
+    changes.push(`added an arrow from "${name(edge.from)}" to "${name(edge.to)}"${label ? `: ${label}` : ''}`);
   }
   if (loose) notes.push(`${loose} arrow${loose === 1 ? '' : 's'} drawn in Excalidraw ${loose === 1 ? "doesn't" : "don't"} start and end on a box, so ${loose === 1 ? 'it was' : 'they were'} left out.`);
   // Ids follow the ends: "a->b", then "a->b#2" for a second arrow between the same two.
@@ -493,9 +546,13 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
 
   // A moved box is not news line by line; say how many.
   let moved = 0;
-  for (const [id, b] of boxes) {
+  const grown = grownGroups(d, boxes);
+  for (const [id, drawnBox] of boxes) {
+    const b = grown.get(id) ?? drawnBox;
     const before = drawn.get(cellOf.get(id) ?? '')?.box;
-    if (before && (Math.abs(before.x - b.x) > 1 || Math.abs(before.y - b.y) > 1 || Math.abs(before.w - b.w) > 1 || Math.abs(before.h - b.h) > 1)) moved++;
+    // A table is as tall as its rows make it, so its size is never the file's to set.
+    const sized = !tabular;
+    if (before && (Math.abs(before.x - b.x) > 1 || Math.abs(before.y - b.y) > 1 || (sized && (Math.abs(before.w - b.w) > 1 || Math.abs(before.h - b.h) > 1)))) moved++;
   }
   if (moved) changes.push(`moved or resized ${moved} box${moved === 1 ? '' : 'es'}`);
 
@@ -564,19 +621,24 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
         const rowCells = m.cells.filter((r) => r.vertex && r.parent === cellId).sort((a, b) => (a.geom?.y ?? 0) - (b.geom?.y ?? 0));
         (n.fields ?? []).forEach((f, i) => {
           const row = rowCells[i];
-          const nameEl = row ? byId.get(`lw-${row.id}-name`) : undefined;
+          const nameIn = (el: ExcalidrawElement) => (type === 'class' ? textOf(el).replace(/^([+\-#~])\s+/, '$1') : textOf(el).replace(/\s+/g, '_'));
+          // A row's cell is named after its column. Once an earlier import of this file
+          // renamed the column, the file's text for it still carries the old cell's name.
+          const stale = row && !byId.has(`lw-${row.id}-name`) ? live.find((e) => originOf(e)?.part === 'name' && isOriginal(e) && originOf(e)!.cell.startsWith(`${cellId}__`) && !m.byId.has(originOf(e)!.cell) && nameIn(e) === f.name) : undefined;
+          const partId = (part: string) => (stale ? `lw-${originOf(stale)!.cell}-${part}` : `lw-${row?.id}-${part}`);
+          const nameEl = row ? byId.get(partId('name')) : undefined;
           if (!row || !nameEl || !textOf(nameEl)) {
             changes.push(`removed column "${f.name}" from "${n.label}"`);
             return;
           }
           const field: Field = { ...f, flags: [...f.flags] };
-          const nameNow = type === 'class' ? textOf(nameEl).replace(/^([+\-#~])\s+/, '$1') : textOf(nameEl).replace(/\s+/g, '_');
+          const nameNow = nameIn(nameEl);
           if (nameNow !== f.name) {
             changes.push(`renamed column "${f.name}" to "${nameNow}" in "${n.label}"`);
             field.name = nameNow;
           }
-          const rightThen = textOf(was.get(`lw-${row.id}-type`)) || [f.type, ...f.flags.filter((x) => x !== 'pk' && x !== 'fk'), ...f.flags.filter((x) => x === 'pk' || x === 'fk').map((x) => x.toUpperCase())].filter(Boolean).join(' ');
-          const rightNow = textOf(byId.get(`lw-${row.id}-type`));
+          const rightThen = textOf(was.get(partId('type'))) || [f.type, ...f.flags.filter((x) => x !== 'pk' && x !== 'fk'), ...f.flags.filter((x) => x === 'pk' || x === 'fk').map((x) => x.toUpperCase())].filter(Boolean).join(' ');
+          const rightNow = textOf(byId.get(partId('type')));
           if (rightNow !== norm(rightThen)) {
             const right = type === 'class' ? { type: rightNow || undefined, flags: [] } : parseFieldRight(rightNow);
             field.type = right.type;
@@ -1071,6 +1133,23 @@ export function setBoxes(xml: string, want: Map<string, Box>, now: Map<string, B
       geom.setAttribute('width', round(box.w));
       geom.setAttribute('height', round(box.h));
     }
+  }
+  // A box inside a group that moved, and that was itself already in place, must
+  // not ride along with the group: it is rewritten against the group's new
+  // corner. (Rows ride with their table and an icon with its node; those parents are not groups.)
+  for (const [id, at] of now) {
+    if (want.has(id)) continue;
+    const hit = cellElement(doc, id);
+    const parentId = hit?.cell.getAttribute('parent') ?? '';
+    const to = want.get(parentId), from = now.get(parentId);
+    if (!hit || !to || !from || (Math.abs(to.x - from.x) < 0.01 && Math.abs(to.y - from.y) < 0.01)) continue;
+    if (hit.cell.getAttribute('vertex') !== '1') continue;
+    const parentStyle = cellElement(doc, parentId)?.cell.getAttribute('style') ?? '';
+    if (!/(^|;)container=1/.test(parentStyle) || /shape=swimlane/.test(parentStyle)) continue;
+    const geom = hit.cell.getElementsByTagName('mxGeometry')[0] as Element | undefined;
+    if (!geom) continue;
+    geom.setAttribute('x', round(at.x - to.x));
+    geom.setAttribute('y', round(at.y - to.y));
   }
   return new XMLSerializer().serializeToString(doc);
 }

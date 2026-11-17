@@ -13,7 +13,7 @@ import { merge, type MergeStats } from './drawio/merge.js';
 import { sequenceScene } from './layout/sequence.js';
 import { PROVIDERS, resolveIcon, stencilSets, type Provider } from './drawio/icons.js';
 import { toExcalidraw, type ExcalidrawFile } from './excalidraw/export.js';
-import { cellsNamed, embeddedDoc, embeddedSpec, readEdits, setBoxes, setRoutes, type Box } from './excalidraw/import.js';
+import { cellsNamed, grownGroups, embeddedDoc, embeddedSpec, readEdits, setBoxes, setRoutes, type Box } from './excalidraw/import.js';
 import { readScene, sceneKind, writeScene } from './excalidraw/file.js';
 import { DrawioBrowser, type InspectCell } from './render/browser.js';
 import { brokenEdges, check, type CheckResult } from './lint/check.js';
@@ -175,7 +175,7 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
     xml = fixed.xml;
     xml = await withLegend(b, stampEdgeRoutes(xml), diagram, cfg);
     // Stamping routes and adding a legend below the diagram changes attributes, not geometry: the cells fixLabels read still hold.
-    return finish(b, xml, { mode, warnings, direction: mode === 'merge' ? (old!.meta.aiviz_direction ?? l.direction) : l.direction, edits, old, stats, cells: fixed.cells, labelsMoved: fixed.moved });
+    return finish(b, xml, { mode, warnings, direction: mode === 'merge' ? keptDirection(old!, l.direction) : l.direction, edits, old, stats, cells: fixed.cells, labelsMoved: fixed.moved });
   });
 
   async function finish(
@@ -200,6 +200,12 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
       discardedLayout: !!(opts.relayout && r.old && (r.old.meta.aiviz_layout === 'manual' || r.edits.length > 0)),
     };
   }
+}
+
+/** The direction a merged diagram runs in. The file records what the spec asked for, and "auto" isn't a direction. */
+function keptDirection(old: DrawioModel, laidOut: string): string {
+  const d = old.meta.aiviz_direction;
+  return d && d !== 'auto' ? d : laidOut;
 }
 
 /**
@@ -309,6 +315,7 @@ export async function render(file: string, out: string, browser?: DrawioBrowser)
   await withBrowser(browser, async (b) => {
     await b.useFonts(cfg.fonts);
     const scene = sceneKind(out);
+    if (scene || /\.(png|svg)$/.test(out)) fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
     if (scene) fs.writeFileSync(out, await writeScene(scene, await toExcalidraw(m, b), m, b));
     else if (out.endsWith('.png')) await b.renderPng(m.xml, out);
     else if (out.endsWith('.svg')) fs.writeFileSync(out, await b.renderSvg(m.xml));
@@ -380,7 +387,9 @@ export async function importExcalidraw(file: string, out: string, opts: { browse
     // read its edits against that, and let the file have the last word.
     const doc = embeddedDoc(data);
     if (current.meta.aiviz_type === 'sequence' && doc && doc.base !== fingerprint(current)) {
-      const tmp = path.join(os.tmpdir(), `linework-import-${process.pid}-${Date.now()}.drawio`);
+      // A folder of its own: a fixed name in the shared temp folder could be someone else's file, or a link to one.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-import-'));
+      const tmp = path.join(dir, 'base.drawio');
       try {
         await build(doc.spec, { out: tmp, browser: b });
         const then = readDrawio(fs.readFileSync(tmp, 'utf8'));
@@ -388,7 +397,7 @@ export async function importExcalidraw(file: string, out: string, opts: { browse
       } catch {
         // The carried spec doesn't build any more: fall back to matching against the diagram as it is.
       } finally {
-        fs.rmSync(tmp, { force: true });
+        fs.rmSync(dir, { recursive: true, force: true });
       }
     }
     // The file as export would write it now: what a colour, a line style or a path is compared with.
@@ -397,6 +406,7 @@ export async function importExcalidraw(file: string, out: string, opts: { browse
     // Nothing to bring across: leave the diagram exactly as it is.
     const same = base !== current && toYaml(edits.diagram) === toYaml(toDiagram(current).diagram);
     if (!edits.changes.length || same) return { out, changes: [], notes: edits.notes, check: check(await b.inspect(current.xml)), created };
+    if (!edits.diagram.nodes.length) throw new Error(`every box is gone from ${file}, which would leave ${out} empty. Nothing was changed. To drop the diagram, delete ${out} itself.`);
     const edited = readDrawio(edits.xml);
     let res = await build(specOf(edited, edits.diagram), { out, base: edits.xml, keepLayout: true, browser: b, png: opts.png });
 
@@ -407,13 +417,20 @@ export async function importExcalidraw(file: string, out: string, opts: { browse
       const built = readDrawio(fs.readFileSync(out, 'utf8'));
       const cells = await b.inspect(built.xml);
       const now = new Map(cells.map((c) => [c.id, c.box as Box]));
-      const cellOf = new Map([...toDiagram(built).idMap].map(([cell, spec]) => [spec, cell]));
+      const shownBuilt = toDiagram(built);
+      const cellOf = new Map([...shownBuilt.idMap].map(([cell, spec]) => [spec, cell]));
+      const grown = grownGroups(shownBuilt.diagram, edits.boxes);
       const want = new Map<string, Box>();
-      for (const [specId, box] of edits.boxes) {
+      const tables = new Set(built.cells.filter((c) => c.vertex && c.style.shape === 'swimlane').map((c) => c.id));
+      for (const [specId, drawnBox] of edits.boxes) {
+        // A group too small for what is in it goes straight to the size the build would grow it to.
+        const box = grown.get(specId) ?? drawnBox;
         const cellId = cellOf.get(specId);
         const at = cellId ? now.get(cellId) : undefined;
         if (!cellId || !at) continue;
-        if (Math.abs(at.x - box.x) > 0.75 || Math.abs(at.y - box.y) > 0.75 || Math.abs(at.w - box.w) > 0.75 || Math.abs(at.h - box.h) > 0.75) want.set(cellId, box);
+        // A table's size follows its rows; only where it sits is the file's to say.
+        const sized = !tables.has(cellId);
+        if (Math.abs(at.x - box.x) > 0.75 || Math.abs(at.y - box.y) > 0.75 || (sized && (Math.abs(at.w - box.w) > 0.75 || Math.abs(at.h - box.h) > 0.75))) want.set(cellId, box);
       }
       if (want.size || edits.routes.size) {
         let xml = want.size ? setBoxes(built.xml, want, now) : built.xml;

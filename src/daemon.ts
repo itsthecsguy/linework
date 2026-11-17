@@ -88,6 +88,20 @@ export function viaDaemon(req: Request, out: (t: string) => void, err: (t: strin
   });
 }
 
+/** Whether a background process answers. A socket left behind by one that died is removed. */
+export function daemonAlive(): Promise<boolean> {
+  const sock = daemonAllowed() ? socketPath() : undefined;
+  if (!sock || !fs.existsSync(sock)) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const c = net.createConnection(sock);
+    c.once('connect', () => (c.destroy(), resolve(true)));
+    c.once('error', () => {
+      fs.rmSync(sock, { force: true });
+      resolve(false);
+    });
+  });
+}
+
 /** Start the background process, detached, unless one is already listening. */
 export function startDaemon(): void {
   if (!daemonAllowed()) return;
@@ -141,8 +155,11 @@ export async function serve(): Promise<void> {
     idle = setTimeout(() => void shutdown(), IDLE_MS);
   };
 
+  // Without its browser this process can only fail every command it is handed.
+  // Leave, and the next command starts a new one.
+  browser.onGone(() => void shutdown());
+
   server.on('connection', (c) => {
-    clearTimeout(idle);
     c.setEncoding('utf8');
     c.on('error', () => {});
     let buf = '';
@@ -152,6 +169,9 @@ export async function serve(): Promise<void> {
       if (nl < 0) return;
       const line = buf.slice(0, nl);
       buf = '';
+      // Only a command holds the process open. A connection that says nothing
+      // (another process checking whether this one is alive) leaves the timer running.
+      clearTimeout(idle);
       const send = (m: Reply) => void (c.writable && c.write(JSON.stringify(m) + '\n'));
       // One command at a time: they share the page and the working directory.
       queue = queue.then(async () => {
@@ -171,7 +191,7 @@ export async function serve(): Promise<void> {
             await run(cmd!, values, positionals, Promise.resolve(browser), io);
             code = io.code;
           } catch (e) {
-            code = report(e, io);
+            code = report(e, io, req.argv.includes('--json'));
           }
         } catch {
           code = 1;

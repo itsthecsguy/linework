@@ -18,6 +18,7 @@ git('fetch', 'origin', 'main')
 if (git('rev-list', '--count', 'HEAD..origin/main') !== '0') fail('main is behind origin/main; pull first')
 
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-const tag = execFileSync(npm, ['version', bump, '-m', 'Release %s'], { encoding: 'utf8' }).trim()
+// Node won't start a .cmd file without a shell.
+const tag = execFileSync(npm, ['version', bump, '-m', 'Release %s'], { encoding: 'utf8', shell: process.platform === 'win32' }).trim()
 execFileSync('git', ['push', 'origin', 'main', tag], { stdio: 'inherit' })
 console.log(`pushed ${tag}; GitHub Actions publishes it to npm once the tests pass`)

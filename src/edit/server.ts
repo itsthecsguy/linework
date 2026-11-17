@@ -105,6 +105,16 @@ export async function startEditor(file: string, opts: { port?: number } = {}): P
   let finished = false;
 
   const server = http.createServer((req, res) => {
+    // One bad request (a malformed URL, the file moved away) must not take the
+    // process down: under the MCP server that would end every other tool too.
+    try {
+      handle(req, res);
+    } catch (e) {
+      if (!res.headersSent) res.writeHead(e instanceof URIError ? 400 : 500, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end(e instanceof URIError ? 'bad request' : `linework edit: ${(e as Error).message}`);
+    }
+  });
+  const handle = (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const json = (code: number, body: unknown) => {
       res.writeHead(code, { 'content-type': 'application/json' });
@@ -184,7 +194,7 @@ export async function startEditor(file: string, opts: { port?: number } = {}): P
     }
     res.writeHead(404);
     res.end();
-  });
+  };
 
   function finish() {
     if (finished) return;
@@ -214,16 +224,23 @@ function conflictPath(abs: string): string {
   return m ? `${m[1]}.edited-${stamp}${m[2]}` : `${abs}.edited-${stamp}`;
 }
 
-/** Opens a URL in the user's default browser. Best effort. */
-export function openInBrowser(url: string): boolean {
+/**
+ * Opens a URL in the user's default browser. Resolves false when there is no
+ * way to (no xdg-open: a container, an SSH session, an agent's sandbox), so the
+ * caller can tell the user to open the link themselves.
+ */
+export function openInBrowser(url: string): Promise<boolean> {
   const [cmd, args] =
     process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', url]] : ['xdg-open', [url]];
-  try {
-    const child = spawn(cmd as string, args as string[], { stdio: 'ignore', detached: true });
-    child.on('error', () => {});
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
+  return new Promise((resolve) => {
+    try {
+      const child = spawn(cmd as string, args as string[], { stdio: 'ignore', detached: true });
+      // A missing opener arrives as an 'error' event, not a throw.
+      child.once('error', () => resolve(false));
+      child.once('spawn', () => resolve(true));
+      child.unref();
+    } catch {
+      resolve(false);
+    }
+  });
 }

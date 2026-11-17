@@ -9,13 +9,14 @@ import { chromium, type Browser } from 'playwright-core';
 import { build, show } from '../src/api.js';
 import { startEditor } from '../src/edit/server.js';
 import { absBox, readDrawio } from '../src/drawio/read.js';
+import { systemBrowsers } from '../src/render/browser.js';
 
 const run = process.env.LINEWORK_SKIP_E2E !== '1';
 
 async function launch(): Promise<Browser> {
-  // Same order as the tool: LINEWORK_CHROME first, then Playwright's Chromium, Chrome, Edge.
+  // Same order as the tool: LINEWORK_CHROME first, then Playwright's Chromium, Chrome, Edge, then whatever is on PATH.
   const own = process.env.LINEWORK_CHROME ? [{ executablePath: process.env.LINEWORK_CHROME }] : [];
-  for (const o of [...own, {}, { channel: 'chrome' }, { channel: 'msedge' }]) {
+  for (const o of [...own, {}, { channel: 'chrome' }, { channel: 'msedge' }, ...systemBrowsers().map((executablePath) => ({ executablePath }))]) {
     try {
       return await chromium.launch(o);
     } catch {}

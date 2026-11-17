@@ -122,7 +122,13 @@ export function toDiagram(m: DrawioModel): ShowResult {
       const rows = vertices.filter((r) => r.parent === c.id).sort((a, b) => (a.geom?.y ?? 0) - (b.geom?.y ?? 0));
       const fields = rows.map((r) => (type === 'class' ? parseMemberRow(r) : parseFieldRow(r))).filter((f): f is Field => !!f);
       if (fields.length) node.fields = fields;
-    } else if (lines.length > 1) node.tech = lines.slice(1).join(' ');
+    } else if (lines.length > 1) {
+      const sub = lines.slice(1).join(' ');
+      // c4 draws the element type around the tech: "[Container: Go]", or "[Person]" alone. Only the tech is the spec's.
+      const c4 = m.meta.aiviz_theme === 'c4' && type === 'architecture' ? /^\[[^:\]]+(?::\s*(.*))?\]$/.exec(sub) : null;
+      if (!c4) node.tech = sub;
+      else if (c4[1]) node.tech = c4[1];
+    }
     if (c.attrs.aiviz_icon) node.icon = c.attrs.aiviz_icon;
     nodes.push(node);
   }
@@ -497,7 +503,8 @@ export function toYaml(d: Diagram, header?: string): string {
   if (d.type === 'sequence') {
     out.push('participants:');
     for (const n of d.nodes) out.push(`  ${n.id}: { ${nodeParts(d, n).join(', ')} }`.replace('{  }', '{}'));
-    out.push('messages:');
+    // A bare "messages:" is null to YAML, and a spec that show printed has to build.
+    out.push(d.seq?.length ? 'messages:' : 'messages: []');
     writeSeq(d.seq ?? [], '  ', out);
     return out.join('\n') + '\n';
   }
@@ -562,11 +569,19 @@ export function toYaml(d: Diagram, header?: string): string {
 function writeSeq(items: SeqItem[], ind: string, out: string[]) {
   const arrow: Record<MessageStyle, string> = { sync: '->', reply: '-->', async: '-.->' };
   for (const it of items) {
-    if (it.kind === 'msg') out.push(lineItem(ind, `${it.from} ${it.highlight && it.style === 'sync' ? '==>' : arrow[it.style]} ${it.to}`, it.label));
+    if (it.kind === 'msg' && (it.color || (it.highlight && it.style !== 'sync'))) {
+      // No arrow says "red", or "a highlighted reply": those take the long form.
+      const parts = [`from: ${it.from}`, `to: ${it.to}`];
+      if (it.label) parts.push(`label: ${q(it.label, true)}`);
+      if (it.style !== 'sync') parts.push(`style: ${it.style}`);
+      if (it.color) parts.push(`color: ${it.color}`);
+      if (it.highlight) parts.push('highlight: true');
+      out.push(`${ind}- { ${parts.join(', ')} }`);
+    } else if (it.kind === 'msg') out.push(lineItem(ind, `${it.from} ${it.highlight && it.style === 'sync' ? '==>' : arrow[it.style]} ${it.to}`, it.label));
     else if (it.kind === 'note') {
       const side = it.side === 'over' ? 'over' : it.side === 'left' ? 'left of' : 'right of';
       out.push(lineItem(ind, `note ${side} ${it.over.join(', ')}`, it.text || ' '));
-    } else if (it.op === 'alt' || it.op === 'par') {
+    } else if (it.op === 'alt' || it.op === 'par' || it.branches.length > 1) {
       out.push(`${ind}- ${it.op}:`);
       for (const b of it.branches) {
         out.push(`${ind}    - when: ${b.when == null ? '""' : q(b.when)}`);

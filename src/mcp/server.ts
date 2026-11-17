@@ -40,11 +40,26 @@ type Result = { content: Content[]; isError?: boolean };
 export interface McpOptions {
   /** Relative paths resolve against this folder. */
   root: string;
+  /**
+   * The root was asked for (--root or LINEWORK_ROOT), so it is a boundary: no
+   * tool reads or writes outside it. Without one, the root is only where relative
+   * paths start, as for any command run in a folder.
+   */
+  pinned?: boolean;
 }
 
 export function createServer(opts: McpOptions): { server: McpServer; dispose: () => Promise<void> } {
   let browser: Promise<DrawioBrowser> | undefined;
-  const getBrowser = () => (browser ??= DrawioBrowser.launch({ scale: 2 }));
+  // A browser that failed to start, or died later, is forgotten: the next call tries again.
+  const getBrowser = () => {
+    if (browser) return browser;
+    const mine: Promise<DrawioBrowser> = DrawioBrowser.launch({ scale: 2 });
+    const forget = () => {
+      if (browser === mine) browser = undefined;
+    };
+    mine.then((b) => b.onGone(forget), forget);
+    return (browser = mine);
+  };
   // One page does all the work, so calls run one at a time.
   let queue: Promise<unknown> = Promise.resolve();
   const serial = <T>(fn: () => Promise<T>): Promise<T> => {
@@ -54,7 +69,24 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
   };
   const editors = new Map<string, { url: string; close: () => Promise<void> }>();
 
-  const resolvePath = (p: string) => (path.isAbsolute(p) ? p : path.resolve(opts.root, p));
+  // Where a path really is: links followed as far as the path exists.
+  const real = (p: string): string => {
+    for (let dir = p, rest = ''; ; rest = path.join(path.basename(dir), rest), dir = path.dirname(dir)) {
+      try {
+        return path.join(fs.realpathSync(dir), rest);
+      } catch {
+        if (path.dirname(dir) === dir) return p;
+      }
+    }
+  };
+  const resolvePath = (p: string) => {
+    const full = path.resolve(opts.root, p);
+    if (opts.pinned) {
+      const root = real(opts.root), at = real(full);
+      if (at !== root && !at.startsWith(root + path.sep)) throw new Error(`${p} is outside ${opts.root}, the folder this server was started for (--root). Use a path inside it.`);
+    }
+    return full;
+  };
   const text = (t: string): Content => ({ type: 'text', text: t });
   const wrap = (fn: () => Promise<Result>) => async (): Promise<Result> => {
     try {
@@ -159,8 +191,9 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
         if (args.out) {
           const out = resolvePath(args.out);
           fs.mkdirSync(path.dirname(out), { recursive: true });
-          if (/\.excalidraw(\.svg|\.png|\.json)?$/i.test(out)) await render(resolvePath(args.path), out, await getBrowser());
-          else fs.writeFileSync(out, Buffer.from((img as { data: string }).data, 'base64'));
+          // render writes by extension (.svg, .excalidraw, ...). Anything else here would be PNG bytes under the wrong name.
+          if (/\.png$/i.test(out) && !/\.excalidraw\.png$/i.test(out)) fs.writeFileSync(out, Buffer.from((img as { data: string }).data, 'base64'));
+          else await render(resolvePath(args.path), out, await getBrowser());
         }
         return { content: [img, ...(args.out ? [text(`wrote ${resolvePath(args.out)}`)] : [])] };
       })(),
@@ -253,14 +286,14 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
         const file = resolvePath(args.path);
         const existing = editors.get(file);
         if (existing) {
-          if (args.open) openInBrowser(existing.url);
+          if (args.open) await openInBrowser(existing.url);
           return { content: [text(`already open at ${existing.url}`)] };
         }
         const session = await startEditor(file);
         editors.set(file, session);
         void session.done.then(() => editors.delete(file));
-        const opened = args.open && openInBrowser(session.url);
-        return { content: [text(`${opened ? 'Opened' : 'Open'} ${session.url} to edit ${file}. Saving in the editor (Ctrl/Cmd+S) writes the file.`)] };
+        const opened = args.open && (await openInBrowser(session.url));
+        return { content: [text(`${opened ? 'Opened' : args.open ? "Couldn't open a browser here. Ask the user to open" : 'Open'} ${session.url} to edit ${file}. Saving in the editor (Ctrl/Cmd+S) writes the file.`)] };
       })(),
   );
 
@@ -313,12 +346,15 @@ export async function runStdio(opts: McpOptions): Promise<void> {
     disposers.push(dispose);
     return server;
   });
-  const shutdown = async () => {
-    const d = disposers;
-    disposers = [];
-    await Promise.allSettled(d.map((f) => f()));
-    process.exit(0);
-  };
+  // stdin's 'end' and 'close' both arrive: the second must wait for the first's cleanup, not exit under it.
+  let stopping: Promise<void> | undefined;
+  const shutdown = () =>
+    (stopping ??= (async () => {
+      const d = disposers;
+      disposers = [];
+      await Promise.allSettled(d.map((f) => f()));
+      process.exit(0);
+    })());
   process.stdin.on('end', shutdown);
   process.stdin.on('close', shutdown);
   process.on('SIGINT', shutdown);

@@ -39,8 +39,9 @@ const importKey = (k: string, use: 'encrypt' | 'decrypt') =>
 
 /** What a share link stores: the scene without its images (those are kept elsewhere, and linework has no access to it). */
 export function shareable(scene: ExcalidrawFile): { text: string; images: number } {
-  const elements = scene.elements.filter((e) => e.type !== 'image' && !e.isDeleted);
-  return { text: JSON.stringify({ ...scene, elements, files: {} }), images: scene.elements.length - elements.length };
+  const live = scene.elements.filter((e) => !e.isDeleted);
+  const elements = live.filter((e) => e.type !== 'image');
+  return { text: JSON.stringify({ ...scene, elements, files: {} }), images: live.length - elements.length };
 }
 
 export async function seal(text: string): Promise<{ payload: Uint8Array; key: string }> {

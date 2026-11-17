@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
+import type { BuildResult } from './api.js';
 import type { CheckResult } from './lint/check.js';
 import type { DrawioBrowser } from './render/browser.js';
 import type { DiagramType } from './spec/model.js';
@@ -11,8 +12,9 @@ import type { SpecError } from './spec/parse.js';
 export const USAGE = `linework: AI-written, hand-editable diagrams (YAML spec -> .drawio.svg)
 
 Usage:
-  linework build <spec.yaml|-> -o <out.drawio.svg> [--png preview.png] [--relayout]
+  linework build <spec.yaml|-> -o <out.drawio.svg> [--png preview.png] [--relayout] [--watch]
       Lay out and write the diagram, then lint it. "-" reads the spec from stdin.
+      --watch keeps running and rebuilds every time the spec file is saved.
       If the file exists and someone edited it by hand, the spec is merged in:
       existing positions stay, new nodes are placed next to their neighbours.
       --relayout throws the existing layout away (hand edits included).
@@ -44,8 +46,9 @@ Usage:
       out.excalidraw.svg and out.excalidraw.png are pictures that also open in
       Excalidraw: one file to show in a README and to edit.
       Bring Excalidraw edits back with: linework import <file.excalidraw> -o <file.drawio.svg>
-  linework check <file.drawio.svg>
+  linework check <file.drawio.svg> [--strict]
       Lint layout: overlaps, edges through nodes, labels that don't fit.
+      Exits 1 on errors; with --strict, on warnings too.
   linework tidy <file.drawio.svg>
       Reroute edges that check flags as broken (e.g. after moving nodes by hand).
       Nothing else in the file changes.
@@ -87,6 +90,7 @@ Usage:
   linework mcp [--root DIR]
       Run as an MCP server over stdio, for chat apps and agents without a shell.
       Relative paths resolve against --root (default: the current folder).
+      With --root, tools read and write only inside that folder.
   linework git-setup
       Make git diff show .drawio.svg changes as spec changes (this repo only).
   linework kinds [architecture|flow|state|sequence|er|class|timeline]
@@ -101,7 +105,20 @@ Usage:
 
   linework install-browser
       Download the headless Chromium build that matches this version. Needed only
-      when no Chrome or Edge is installed, or to run inside an agent's sandbox.
+      when no Chrome, Edge or Chromium is installed, or to run inside an agent's sandbox.
+  linework doctor
+      Check this machine: Node, the browser linework draws with, the bundled
+      draw.io and fonts, and a test build. Says what to fix. Exits 1 if it can't draw.
+  linework version
+      Print the version.
+
+Options for scripts and agents:
+  --json   One JSON document on stdout instead of text, errors included
+           ({ "ok": false, "error": { ... } }). For build, set, add, rm, check,
+           tidy, show, render, import, sync, icons, kinds and doctor.
+  -q       show, sync: leave out the notes.
+
+Exit codes: 0 done; 1 the command failed, or check/sync found a problem; 2 bad usage.
 `;
 
 
@@ -169,26 +186,79 @@ export class Exit extends Error {
 }
 
 /** Print an error the way the CLI does and return the exit code for it. */
-export function report(e: unknown, io: IO = processIO): number {
+export function report(e: unknown, io: IO = processIO, json = false): number {
+  const fail = (kind: 'usage' | 'spec' | 'error', code: number, message: string, issues?: SpecError['issues']) => {
+    // With --json, stdout still carries exactly one document; the text goes to stderr as usual.
+    if (json) io.out(JSON.stringify({ ok: false, error: { kind, message, ...(issues ? { issues } : {}) } }, null, 2) + '\n');
+    return code;
+  };
   if (e instanceof Exit) {
     io.err(e.message + '\n');
-    return e.code;
+    return fail('usage', e.code, e.message);
   }
-  if ((e as Error)?.constructor?.name === 'PatchError') {
-    io.err(`error: ${(e as Error).message}\n`);
-    return 2;
+  if ((e as Error)?.constructor?.name === 'PatchError' || (e as { code?: string })?.code?.startsWith?.('ERR_PARSE_ARGS')) {
+    // Node's own text for a bad option goes on to explain "--" at length: the first sentence is the error.
+    const message = (e as Error).message.replace(/\. To specify a positional argument[\s\S]*$/, '.') + ((e as { code?: string }).code ? ' Run "linework help" for the options.' : '');
+    io.err(`error: ${message}\n`);
+    return fail('usage', 2, message);
   }
   if ((e as Error)?.name === 'ConfigError') {
     io.err(`linework.yaml error in ${(e as Error).message}\n`);
     return 2;
   }
   if ((e as Error)?.name === 'SpecError') {
+    const issues = (e as SpecError).issues;
     io.err('spec error:\n');
-    for (const i of (e as SpecError).issues) io.err(`  ${i.path ? i.path + ': ' : ''}${i.message}\n`);
-    return 1;
+    for (const i of issues) io.err(`  ${i.path ? i.path + ': ' : ''}${i.message}\n`);
+    return fail('spec', 1, issues.map((i) => `${i.path ? i.path + ': ' : ''}${i.message}`).join('\n'), issues);
   }
-  io.err(`error: ${(e as Error)?.message ?? e}\n`);
-  return 1;
+  // A file that isn't there is the commonest mistake of all: name the file, not the system call.
+  const sys = e as NodeJS.ErrnoException;
+  const message =
+    sys?.code === 'ENOENT' && sys.path ? `${sys.path} doesn't exist` : sys?.code === 'EISDIR' && sys.path ? `${sys.path} is a folder, not a file` : sys?.code === 'EACCES' && sys.path ? `no permission to ${sys.syscall === 'open' ? 'open' : 'use'} ${sys.path}` : String((e as Error)?.message ?? e);
+  io.err(`error: ${message}\n`);
+  return fail('error', 1, message);
+}
+
+/** A whole number in a range from an option, or a usage error that says what the option takes. */
+export function wholeNumber(option: string, raw: string, min: number, max: number): number {
+  const n = Number(raw);
+  if (raw.trim() === '' || !Number.isInteger(n) || n < min || n > max) throw new Exit(`${option} takes a whole number from ${min} to ${max}, got "${raw}"`, 2);
+  return n;
+}
+
+/** The --scale of a render: 1 is one image pixel per diagram pixel. */
+export function renderScale(raw: string): number {
+  const n = Number(raw);
+  if (raw.trim() === '' || !Number.isFinite(n) || n < 0.1 || n > 8) throw new Exit(`--scale takes a number from 0.1 to 8 (2 is the default), got "${raw}"`, 2);
+  return n;
+}
+
+/** Every command, for "did you mean". */
+export const COMMANDS = ['build', 'set', 'add', 'rm', 'config', 'lint', 'restyle', 'new', 'show', 'render', 'check', 'tidy', 'edit', 'import', 'share', 'library', 'sync', 'icons', 'publish', 'skill', 'mcp', 'git-setup', 'kinds', 'schema', 'daemon', 'install-browser', 'doctor', 'version', 'help'];
+
+/** The command closest to a mistyped one, when it is close enough to be a typo. */
+export function nearestCommand(typed: string): string | undefined {
+  const distance = (a: string, b: string) => {
+    let row = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      const next = [i];
+      for (let j = 1; j <= b.length; j++) next[j] = Math.min(next[j - 1]! + 1, row[j]! + 1, row[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+      row = next;
+    }
+    return row[b.length]!;
+  };
+  const best = COMMANDS.map((c) => [c, distance(typed.toLowerCase(), c)] as const).sort((a, b) => a[1] - b[1])[0]!;
+  // Two slips (a swapped pair counts as two) in a word long enough to be sure which command it was.
+  return best[1] <= (typed.length <= 3 ? 1 : 2) ? best[0] : undefined;
+}
+
+export function packageVersion(): string {
+  try {
+    return JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  } catch {
+    return 'unknown';
+  }
 }
 
 /** Commands that draw, and so need Chromium. */
@@ -224,6 +294,7 @@ export const OPTIONS = {
   pull: { type: 'boolean', default: false },
   watch: { type: 'boolean', default: false },
   check: { type: 'boolean', default: false },
+  json: { type: 'boolean', default: false },
   spec: { type: 'string' },
   style: { type: 'string' },
   help: { type: 'boolean', short: 'h' },
@@ -244,18 +315,39 @@ export async function run(cmd: string, values: Values, positionals: string[], la
     if (launching && !io.warm && ['build', 'import', 'set', 'add', 'rm'].includes(cmd)) await warmUp();
     return launching!;
   };
-  const { buildLines } = await import('./report.js');
+  const { buildLines, buildJson, checkJson } = await import('./report.js');
+  const json = values.json;
+  const emit = (doc: unknown) => io.out(JSON.stringify(doc, null, 2) + '\n');
+  const built = (res: BuildResult, extra: Record<string, unknown> = {}) => {
+    if (json) emit({ ...buildJson(res, values.png), ...extra });
+    else for (const line of buildLines(res, values.png)) console.log(line);
+  };
   switch (cmd) {
     case 'build': {
       const src = positionals[0];
       if (!src || !values.out) fail('usage: linework build <spec.yaml|-> -o <out.drawio.svg>');
-      const text = src === '-' ? io.stdin() : fs.readFileSync(src, 'utf8');
+      if (values.watch && src === '-') fail('--watch needs a spec file to watch, not stdin');
+      const out = values.out;
       const { build } = await import('./api.js');
-      // Spec errors first: they shouldn't wait on, or hide behind, a browser problem.
-      (await import('./config.js')).useConfigFor(values.out);
-      (await import('./spec/parse.js')).parseSpecText(text);
-      const res = await build(text, { out: values.out, png: values.png, force: values.force, relayout: values.relayout, browser: await browser() });
-      for (const line of buildLines(res, values.png)) console.log(line);
+      const { parseSpecText } = await import('./spec/parse.js');
+      const once = async (relayout: boolean) => {
+        const text = src === '-' ? io.stdin() : fs.readFileSync(src, 'utf8');
+        // Spec errors first: they shouldn't wait on, or hide behind, a browser problem.
+        // The repo's config is read each time: under --watch it may change between saves.
+        (await import('./config.js')).useConfigFor(out);
+        parseSpecText(text);
+        built(await build(text, { out, png: values.png, force: values.force, relayout, browser: await browser() }));
+      };
+      if (!values.watch) return once(values.relayout);
+      const { watchFile } = await import('./watch.js');
+      // A spec with a mistake in it is the normal state of a file being edited: say so and keep watching.
+      const attempt = (relayout: boolean) => once(relayout).catch((e) => void report(e, io, json));
+      await attempt(values.relayout);
+      console.error(`watching ${src}. Save it to rebuild ${out}. Ctrl+C to stop.`);
+      // --relayout applies to the first build only: after it, each save merges into the layout like any rebuild.
+      const w = watchFile(src, () => attempt(false));
+      process.once('SIGINT', () => w.stop());
+      await w.done;
       return;
     }
     case 'set':
@@ -267,8 +359,7 @@ export async function run(cmd: string, values: Values, positionals: string[], la
       const { show } = await import('./api.js');
       // Bad arguments first: they shouldn't wait on, or hide behind, a browser problem.
       (await import('./spec/parse.js')).parseSpecText(patchSpec(show(file).yaml, [{ op: cmd, args }]));
-      const res = await patchFile(file, [{ op: cmd, args }], { png: values.png, browser: await browser() });
-      for (const line of buildLines(res, values.png)) console.log(line);
+      built(await patchFile(file, [{ op: cmd, args }], { png: values.png, browser: await browser() }));
       return;
     }
     case 'config': {
@@ -370,6 +461,10 @@ export async function run(cmd: string, values: Values, positionals: string[], la
       const file = positionals[0] ?? fail('usage: linework show <file.drawio.svg>');
       const { show } = await import('./api.js');
       const res = show(file, { geometry: values.geometry });
+      if (json) {
+        const YAML = await import('yaml');
+        return emit({ ok: true, file, yaml: res.yaml, spec: YAML.parse(res.yaml), notes: res.notes, edits: res.edits });
+      }
       io.out(res.yaml);
       if (values.quiet) return;
       for (const n of res.notes) console.error(`note: ${n}`);
@@ -385,6 +480,7 @@ export async function run(cmd: string, values: Values, positionals: string[], la
       if (!file || !values.out) fail('usage: linework render <file.drawio.svg> -o <out.png|out.svg|out.excalidraw>');
       const { render } = await import('./api.js');
       await render(file, values.out, await browser());
+      if (json) return emit({ ok: true, out: values.out });
       console.log(`wrote ${values.out}`);
       return;
     }
@@ -392,14 +488,17 @@ export async function run(cmd: string, values: Values, positionals: string[], la
       const file = positionals[0] ?? fail('usage: linework check <file.drawio.svg>');
       const { checkFile } = await import('./api.js');
       const res = await checkFile(file, await browser());
-      await printCheck(res);
-      if (res.findings.some((f) => f.level === 'error')) io.code = 1;
+      const failed = res.findings.some((f) => f.level === 'error' || values.strict);
+      if (json) emit({ ok: !failed, file, stats: res.stats, check: checkJson(res) });
+      else await printCheck(res);
+      if (failed) io.code = 1;
       return;
     }
     case 'tidy': {
       const file = positionals[0] ?? fail('usage: linework tidy <file.drawio.svg>');
       const { tidy } = await import('./api.js');
       const res = await tidy(file, await browser());
+      if (json) return emit({ ok: true, file, rerouted: res.fixed, labelsMoved: res.labels, stats: res.check.stats, check: checkJson(res.check) });
       const did = [res.fixed ? `rerouted ${res.fixed} edge${res.fixed === 1 ? '' : 's'}` : '', res.labels ? `moved ${res.labels} label${res.labels === 1 ? '' : 's'}` : ''].filter(Boolean);
       console.log(did.length ? `${did.join(', ')} in ${file}` : 'nothing to fix');
       await printCheck(res.check);
@@ -408,8 +507,8 @@ export async function run(cmd: string, values: Values, positionals: string[], la
     case 'edit': {
       const file = positionals[0] ?? fail('usage: linework edit <file.drawio.svg>');
       const { startEditor, openInBrowser } = await import('./edit/server.js');
-      const session = await startEditor(file, { port: values.port ? Number(values.port) : undefined });
-      const opened = !values['no-open'] && openInBrowser(session.url);
+      const session = await startEditor(file, { port: values.port === undefined ? undefined : wholeNumber('--port', values.port, 0, 65535) });
+      const opened = !values['no-open'] && (await openInBrowser(session.url));
       console.log(`${opened ? 'opened' : 'open'} ${session.url}`);
       console.log(`editing ${file}. Save in the editor (Ctrl/Cmd+S) to write the file. Exit the editor, close the tab or press Ctrl+C to stop.`);
       process.once('SIGINT', () => void session.close());
@@ -427,6 +526,11 @@ export async function run(cmd: string, values: Values, positionals: string[], la
         const out = values.out;
         const once = async () => {
           const res = await importExcalidraw(src, out, { png: values.png, browser: b });
+          if (json) {
+            const wroteSpec = !!values.spec && (res.changes.length > 0 || res.created || !fs.existsSync(values.spec));
+            if (wroteSpec) fs.writeFileSync(values.spec!, show(out).yaml);
+            return emit({ ok: true, out: res.out, created: res.created, changes: res.changes, notes: res.notes, ...(wroteSpec ? { spec: values.spec } : {}), stats: res.check.stats, check: checkJson(res.check) });
+          }
           if (res.created) console.log(`${out} didn't exist: rebuilt it from the spec in ${src}`);
           for (const c of res.changes) console.log(`  ${c}`);
           console.log(res.changes.length ? `wrote ${res.out} (${res.changes.length} change${res.changes.length === 1 ? '' : 's'} from Excalidraw)` : `${res.out} already matches ${src}`);
@@ -446,7 +550,7 @@ export async function run(cmd: string, values: Values, positionals: string[], la
             await once();
           } catch (e) {
             // A half-written save, or an edit import can't read: say so and keep watching.
-            report(e, io);
+            report(e, io, json);
           }
         });
         process.once('SIGINT', () => w.stop());
@@ -459,8 +563,8 @@ export async function run(cmd: string, values: Values, positionals: string[], la
       if (/\.(md|markdown|mdx)$/i.test(src)) {
         const blocks = mermaidBlocks(text);
         if (!blocks.length) fail(`${src} has no \`\`\`mermaid blocks`);
-        const n = values.block ? Number(values.block) : blocks.length === 1 ? 1 : 0;
-        if (!n || !blocks[n - 1]) {
+        const n = values.block !== undefined ? wholeNumber('--block', values.block, 1, blocks.length) : blocks.length === 1 ? 1 : 0;
+        if (!n) {
           const first = blocks.map((b, i) => `  ${i + 1}: ${b.split('\n')[0]}`).join('\n');
           fail(`${src} has ${blocks.length} mermaid blocks; pick one with --block N:\n${first}`);
         }
@@ -469,17 +573,26 @@ export async function run(cmd: string, values: Values, positionals: string[], la
       const res = importMermaid(text);
       for (const w of res.warnings) console.error(`import: ${w}`);
       const yaml = toYaml(res.diagram, 'imported from Mermaid');
-      if (!values.out) return void io.out(yaml);
+      if (!values.out) return json ? emit({ ok: true, yaml, warnings: res.warnings }) : void io.out(yaml);
       const { build } = await import('./api.js');
-      const built = await build(yaml, { out: values.out, png: values.png, relayout: values.relayout, force: values.force, browser: await browser() });
-      console.log(`wrote ${built.out} (${built.check.stats.nodes} nodes, ${built.check.stats.edges} edges, ${built.direction})`);
-      await printCheck(built.check);
+      const made = await build(yaml, { out: values.out, png: values.png, relayout: values.relayout, force: values.force, browser: await browser() });
+      if (json) return emit({ ...buildJson(made, values.png), yaml, warnings: res.warnings });
+      console.log(`wrote ${made.out} (${made.check.stats.nodes} nodes, ${made.check.stats.edges} edges, ${made.direction})`);
+      if (values.png) console.log(`preview ${values.png}`);
+      await printCheck(made.check);
       return;
     }
     case 'sync': {
       const { sync } = await import('./sync.js');
       const items = await sync(positionals, { check: values.check, browser: values.check ? undefined : await browser() });
-      const rel = (p: string) => path.relative(process.cwd(), p) || p;
+      // Short for a file under this folder; a climb of ../../.. is harder to read than the full path.
+      const rel = (p: string) => (path.relative(process.cwd(), p).startsWith('..') ? path.resolve(p) : path.relative(process.cwd(), p) || p);
+      if (json) {
+        const bad = items.some((i) => i.state === 'stale' || i.state === 'failed');
+        emit({ ok: !bad, items: items.map((i) => ({ spec: rel(i.spec), out: rel(i.out), state: i.state, ...(i.missing ? { missing: true } : {}), ...(i.error ? { error: i.error } : {}), ...(i.result ? { stats: i.result.check.stats, check: checkJson(i.result.check) } : {}) })) });
+        if (bad) io.code = 1;
+        return;
+      }
       for (const i of items) {
         if (i.state === 'fresh') {
           if (!values.quiet) console.log(`up to date  ${rel(i.out)}`);
@@ -517,6 +630,7 @@ export async function run(cmd: string, values: Values, positionals: string[], la
       if (!provider || !['aws', 'gcp', 'k8s', 'azure'].includes(provider)) fail('usage: linework icons <aws|gcp|k8s|azure> [filter]');
       const { listIcons } = await import('./api.js');
       const names = await listIcons(provider, positionals[1], await browser());
+      if (json) return emit({ ok: true, provider, icons: names.map((n) => `${provider}.${n}`) });
       console.log(names.map((n) => `${provider}.${n}`).join('\n') || 'no matches');
       return;
     }
@@ -550,7 +664,8 @@ export async function run(cmd: string, values: Values, positionals: string[], la
     }
     case 'mcp': {
       const { runStdio } = await import('./mcp/server.js');
-      await runStdio({ root: path.resolve(values.root ?? process.env.LINEWORK_ROOT ?? process.cwd()) });
+      const asked = values.root ?? process.env.LINEWORK_ROOT;
+      await runStdio({ root: path.resolve(asked ?? process.cwd()), pinned: !!asked });
       return;
     }
     case 'git-setup': {
@@ -561,8 +676,9 @@ export async function run(cmd: string, values: Values, positionals: string[], la
     case 'kinds': {
       const { KINDS, DIAGRAM_TYPES } = await import('./spec/model.js');
       const types = (positionals.length ? positionals : DIAGRAM_TYPES) as DiagramType[];
+      for (const t of types) if (!KINDS[t]) fail(`unknown type "${t}". Types: ${DIAGRAM_TYPES.join(', ')}`);
+      if (json) return emit({ ok: true, kinds: Object.fromEntries(types.map((t) => [t, Object.fromEntries(Object.entries(KINDS[t]).map(([k, d]) => [k, d.description]))])) });
       for (const t of types) {
-        if (!KINDS[t]) fail(`unknown type ${t}`);
         console.log(`${t}:`);
         for (const [k, d] of Object.entries(KINDS[t])) console.log(`  ${k.padEnd(10)} ${d.description}`);
       }
@@ -582,8 +698,26 @@ export async function run(cmd: string, values: Values, positionals: string[], la
       io.code = r.status ?? 1;
       return;
     }
-    default:
-      fail(`unknown command "${cmd}". Run "linework help" for the list.`);
+    case 'version':
+      return void console.log(packageVersion());
+    case 'doctor': {
+      const { doctor } = await import('./doctor.js');
+      const res = await doctor();
+      if (json) emit(res);
+      else {
+        for (const c of res.checks) {
+          console.log(`${c.ok ? 'ok  ' : c.required ? 'FAIL' : 'warn'}  ${c.name}: ${c.detail}`);
+          if (!c.ok && c.fix) for (const line of c.fix.split('\n')) console.log(`      fix: ${line}`);
+        }
+        console.log(res.ok ? '\nlinework can draw on this machine.' : '\nlinework cannot draw here yet. Fix the FAIL lines above and run "linework doctor" again.');
+      }
+      if (!res.ok) io.code = 1;
+      return;
+    }
+    default: {
+      const near = nearestCommand(cmd);
+      fail(`unknown command "${cmd}".${near ? ` Did you mean "${near}"?` : ''} Run "linework help" for the list.`);
+    }
   }
 }
 

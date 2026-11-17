@@ -7,7 +7,7 @@ import { kindDef, stereotype } from '../spec/model.js';
 import type { Box, Layout, Point } from '../layout/layout.js';
 import { DOMParser, XMLSerializer, type Element } from '@xmldom/xmldom';
 import { ICON_PAD, ICON_SIZE, resolveIcon } from './icons.js';
-import { CYL_SIZE, ER_HEAD, ER_ROW, classEdgeStyle, edgeStyle, erEdgeStyle, tableLabel, fieldLabel, fieldStyle, groupLabel, groupStyle, nodeLabel, nodeStyle, paintFor, palette, textMiddle, typeface } from './theme.js';
+import { CYL_SIZE, ER_HEAD, ER_ROW, classEdgeStyle, edgeStyle, erEdgeStyle, tableLabel, fieldLabel, fieldStyle, htmlEsc, groupLabel, groupStyle, nodeLabel, nodeStyle, paintFor, palette, textMiddle, typeface } from './theme.js';
 import type { Look } from '../spec/model.js';
 
 export { ER_HEAD, ER_ROW };
@@ -158,7 +158,7 @@ export function edgeStyleFor(d: Diagram, e: Diagram['edges'][number], bg?: strin
 }
 
 export function edgeAttrs(e: Diagram['edges'][number]): Record<string, string> {
-  return { label: e.label ?? '', aiviz_edge: e.id, ...(e.rel ? { aiviz_rel: e.rel } : {}), ...lookAttrs(e) };
+  return { label: htmlEsc(e.label ?? ''), aiviz_edge: e.id, ...(e.rel ? { aiviz_rel: e.rel } : {}), ...lookAttrs(e) };
 }
 
 /** How deep a group sits: 0 at the top, 1 inside another group, and so on. */

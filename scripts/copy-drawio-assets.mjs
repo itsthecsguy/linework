@@ -12,6 +12,11 @@ const render = ['js/app.min.js', 'js/export-init.js', 'mxgraph/css/common.css', 
 // Found by recording what the embed editor requests (spikes/editreq.mjs).
 const editor = ['index.html', 'js/bootstrap.js', 'js/PreConfig.js', 'js/PostConfig.js', 'js/main.js', 'js/extensions.min.js', 'resources/dia.txt', 'favicon.ico'];
 const dirs = ['styles', 'img/clipart'];
+// Look before deleting: without the checkout this would leave linework with no draw.io at all.
+if (!fs.existsSync(path.join(webapp, 'js/app.min.js'))) {
+  console.error(`no draw.io checkout at ${root}. Check out a jgraph/drawio tag there, or pass its path.`);
+  process.exit(1);
+}
 fs.rmSync(out, { recursive: true, force: true });
 const copy = (f) => {
   fs.mkdirSync(path.dirname(path.join(out, f)), { recursive: true });

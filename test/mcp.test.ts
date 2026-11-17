@@ -45,6 +45,41 @@ describe.runIf(run)('mcp server', () => {
     expect(guide.text).toContain('## Sequence');
   });
 
+  it('writes a render in the format the file name asks for', async () => {
+    await call('build_diagram', { spec: 'type: flow\nnodes: { a: A, b: B }\nedges:\n  - a -> b\n', path: 'r/flow.drawio.svg', preview: false });
+    const svg = await call('render_diagram', { path: 'r/flow.drawio.svg', out: 'r/out/pic.svg' });
+    expect(svg.isError).toBeFalsy();
+    expect(fs.readFileSync(path.join(tmp, 'r/out/pic.svg'), 'utf8')).toMatch(/^<\?xml[\s\S]*<svg/);
+    await call('render_diagram', { path: 'r/flow.drawio.svg', out: 'r/out/pic.png' });
+    expect(fs.readFileSync(path.join(tmp, 'r/out/pic.png')).subarray(1, 4).toString()).toBe('PNG');
+    const odd = await call('render_diagram', { path: 'r/flow.drawio.svg', out: 'r/out/pic.txt' });
+    expect(odd.isError).toBe(true);
+    expect(fs.existsSync(path.join(tmp, 'r/out/pic.txt'))).toBe(false);
+    // Icons can be listed more than once in one session.
+    const first = await call('list_icons', { provider: 'aws', filter: 'lambda' });
+    expect(first.text).toContain('aws.lambda');
+    expect((await call('list_icons', { provider: 'aws', filter: 'lambda' })).text).toBe(first.text);
+  }, 60000);
+
+  it('stays inside the folder it was started for', async () => {
+    const spec = 'type: flow\nnodes: { a: A, b: B }\nedges:\n  - a -> b\n';
+    const outside = path.join(path.dirname(tmp), `outside-${path.basename(tmp)}.drawio.svg`);
+    for (const p of ['../' + path.basename(outside), outside]) {
+      const res = await call('build_diagram', { spec, path: p, preview: false });
+      expect(res.isError, p).toBe(true);
+      expect(res.text).toContain('is outside');
+    }
+    expect(fs.existsSync(outside)).toBe(false);
+    await call('build_diagram', { spec, path: 'in/flow.drawio.svg', preview: false });
+    const leak = await call('render_diagram', { path: 'in/flow.drawio.svg', out: '../leak.png' });
+    expect(leak.isError).toBe(true);
+    // A link out of the folder is out of the folder.
+    fs.symlinkSync(path.dirname(tmp), path.join(tmp, 'up'));
+    expect((await call('build_diagram', { spec, path: 'up/x.drawio.svg', preview: false })).isError).toBe(true);
+    // An absolute path inside it is fine.
+    expect((await call('show_diagram', { path: path.join(tmp, 'in/flow.drawio.svg') })).isError).toBeFalsy();
+  }, 60000);
+
   it('builds, shows, edits and rebuilds a diagram with a preview', async () => {
     const spec = fs.readFileSync('examples/checkout.yaml', 'utf8');
     const built = await call('build_diagram', { spec, path: 'docs/checkout.drawio.svg' });

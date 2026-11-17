@@ -19,7 +19,7 @@ Your agent writes a short YAML spec. Linework lays it out, styles it and writes 
 ### 1. Check what you need
 
 - **Node 22.20 or newer** for the skills installer in step 2. Linework itself runs on Node 20+. Check with `node -v`.
-- **Chrome, Edge or another Chromium browser.** Linework uses it in the background to measure text and draw. If you have neither, run `npx -y @itsthecsguy/linework install-browser`.
+- **Chrome, Edge, Chromium, Brave or another Chromium browser.** Linework uses it in the background to measure text and draw. If you have none, run `npx -y @itsthecsguy/linework install-browser`. `npx -y @itsthecsguy/linework doctor` tells you whether your machine is ready, and what to fix if not.
 - **Using Codex?** Its sandbox stops Chrome from starting. Run `npx -y @itsthecsguy/linework install-browser` once, outside Codex. Linework's own headless Chromium does start inside the sandbox.
 
 ### 2. Give your agent the skill
@@ -44,7 +44,7 @@ This builds a two-box diagram without an agent:
 printf 'type: flow\nnodes: { a: Hello, b: World }\nedges:\n  - a -> b\n' | npx -y @itsthecsguy/linework build - -o hello.drawio.svg --png hello.png
 ```
 
-It should print `check: 0 errors, 0 warnings` and write `hello.drawio.svg` and `hello.png`. The first run takes a few seconds longer while `npx` downloads the package. If it says no browser was found, run `npx -y @itsthecsguy/linework install-browser` and try again.
+It should print `check: 0 errors, 0 warnings` and write `hello.drawio.svg` and `hello.png`. The first run takes a few seconds longer while `npx` downloads the package. If it says no browser was found, run `npx -y @itsthecsguy/linework install-browser` and try again. If something else goes wrong, `npx -y @itsthecsguy/linework doctor` checks Node, the browser and a test build, and prints the fix for whatever fails.
 
 ### 4. Ask for a diagram
 
@@ -166,6 +166,7 @@ Open the `.excalidraw` file at excalidraw.com, or with an Excalidraw extension i
 | **sequence:** draw an arrow between two lifelines | a new message at that height; dashed is a reply |
 | **sequence:** drag a message up or down, or into a frame | the order changes |
 | **sequence:** delete a message, a note, a frame or a participant | it's removed, a participant with its messages |
+| **sequence:** pick a color for a message | `color: red` on that message |
 | **ER, class:** type a line of text in a table, or under its last row | a new column or member |
 | **ER, class:** retype, delete or reorder a row | the column changes, goes, or moves |
 | **ER, class:** draw a box with rows of text in it | a new table |
@@ -221,7 +222,7 @@ In GitHub Actions:
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: itsthecsguy/linework@v0.6.0
+- uses: itsthecsguy/linework@v0.7.0
   with:
     paths: docs
     mode: check        # or "update" to rebuild in the workspace for a later step to commit
@@ -273,7 +274,7 @@ To match a brand, set `accent:` beside `theme:`. It takes one of those color nam
 
 Linework sizes every box from the real width of its text in the font it renders with, wrapping long labels instead of widening boxes. Each SVG carries a subset of that font (about 10 to 15KB), so text fits the same way on GitHub, in a browser or in a doc. `check` flags labels that overflow, overlap a box, another label, another edge or a group border, and `build` moves edge labels until they're clear.
 
-Linework needs Node 20+ and a Chromium-based browser, which it uses headless to measure text and render. It tries Playwright's Chromium, then Chrome, then Edge. If none is found, run `linework install-browser`, or set `LINEWORK_CHROME` to a browser binary. If a browser is found but crashes on launch, an agent's sandbox is usually blocking it. Linework then retries Playwright's Chromium in single-process mode, which starts inside Codex's sandbox.
+Linework needs Node 20+ and a Chromium-based browser, which it uses headless to measure text and render. It tries Playwright's Chromium, then Chrome, then Edge, then any Chromium-family browser on your PATH or in your applications folder (`chromium`, Brave, Vivaldi). If none is found, run `linework install-browser`, or set `LINEWORK_CHROME` to a browser binary. `linework doctor` shows which one it picked. If a browser is found but crashes on launch, an agent's sandbox is usually blocking it. Linework then retries Playwright's Chromium in single-process mode, which starts inside Codex's sandbox.
 
 The first drawing command starts a background process that keeps Chromium running, and later commands hand their work to it. A build of the checkout example takes about 1.0s the first time and 0.16s after that. The process listens on a Unix socket in a folder only you can open, exits after 5 idle minutes, and is off on Windows and in CI. `LINEWORK_NO_DAEMON=1` or `--no-daemon` turns it off, and `linework daemon stop` ends it.
 
@@ -308,7 +309,7 @@ Everything else takes the same JSON block in its MCP config file:
 | Claude Desktop | `claude_desktop_config.json` (Settings > Developer > Edit Config) |
 | VS Code | `.vscode/mcp.json`, with `"servers"` in place of `"mcpServers"` and `"type": "stdio"` added |
 
-Relative paths in tool calls resolve against the folder the server starts in. Add `"--root", "/path/to/docs"` to the args to pin it. The tools are `build_diagram`, `show_diagram`, `check_diagram`, `render_diagram`, `tidy_diagram`, `import_mermaid`, `import_excalidraw`, `list_icons`, `edit_diagram`, `publish_diagram`, and `linework_guide`, which hands the model the spec format and style rules. `build_diagram` returns a PNG preview, so a model that can see images checks its own work.
+Relative paths in tool calls resolve against the folder the server starts in. Add `"--root", "/path/to/docs"` to the args to pin it: with `--root`, the tools read and write only inside that folder, and a path that leads out of it is refused. The tools are `build_diagram`, `show_diagram`, `check_diagram`, `render_diagram`, `tidy_diagram`, `import_mermaid`, `import_excalidraw`, `list_icons`, `edit_diagram`, `publish_diagram`, and `linework_guide`, which hands the model the spec format and style rules. `build_diagram` returns a PNG preview, so a model that can see images checks its own work.
 
 ### Installing the skill by hand
 
@@ -381,7 +382,7 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 
 | command | does |
 |---|---|
-| `linework build <spec\|-> -o out.drawio.svg [--png p.png] [--relayout]` | layout (or merge into an existing file), write, lint |
+| `linework build <spec\|-> -o out.drawio.svg [--png p.png] [--relayout] [--watch]` | layout (or merge into an existing file), write, lint; `--watch` rebuilds on every save of the spec |
 | `linework set <file> id.field=value...` | change a label, kind, color, theme, accent or title in place |
 | `linework add <file> "id: {...}" "a -> b: label"...` | add boxes, groups and edges in place |
 | `linework rm <file> id "a -> b"...` | remove boxes, groups and edges in place |
@@ -391,7 +392,7 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 | `linework new [template]` | print a team template or a built-in example spec |
 | `linework show <file> [--geometry]` | print the spec of a diagram, including hand edits |
 | `linework edit <file> [--no-open]` | edit in the bundled draw.io, in your browser; saves write the file |
-| `linework check <file>` | lint: overlaps, edges through nodes, labels that don't fit, too wide |
+| `linework check <file> [--strict]` | lint: overlaps, edges through nodes, labels that don't fit, too wide. Exits 1 on errors; with `--strict`, on warnings too |
 | `linework render <file> -o out.png [--scale 2]` | preview image |
 | `linework render <file> -o out.excalidraw` | a copy to open and edit in Excalidraw; `.excalidraw.svg` or `.excalidraw.png` for a picture that also opens there |
 | `linework import <file.excalidraw> -o <file.drawio.svg> [--spec s.yaml] [--watch]` | bring edits made in Excalidraw back into the diagram, once or on every save |
@@ -409,6 +410,33 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 | `linework schema` | JSON Schema of the spec |
 | `linework daemon [status\|stop]` | the background process that keeps the browser running between builds |
 | `linework install-browser` | download the headless Chromium build this version uses |
+| `linework doctor` | check that this machine can draw: Node, the browser, a test build. Prints the fix for anything that fails |
+| `linework version` | print the version |
+
+### In scripts and CI
+
+Add `--json` to `build`, `set`, `add`, `rm`, `check`, `tidy`, `show`, `render`, `import`, `sync`, `icons`, `kinds` or `doctor`, and stdout carries one JSON document instead of text:
+
+```bash
+linework build spec.yaml -o docs/arch.drawio.svg --json
+```
+
+```json
+{
+  "ok": true,
+  "out": "docs/arch.drawio.svg",
+  "mode": "merge",
+  "direction": "LR",
+  "stats": { "nodes": 10, "edges": 10, "crossings": 0, "width": 596, "height": 1114 },
+  "check": { "errors": 0, "warnings": 1, "findings": [{ "level": "warning", "rule": "edge-through-group", "message": "..." }] },
+  "specWarnings": [],
+  "merge": { "kept": 9, "handMoved": 2, "placed": ["fraud"], "removed": [], "rerouted": 1 }
+}
+```
+
+A failure is a document too: `{ "ok": false, "error": { "kind": "spec", "message": "...", "issues": [{ "path": "edges[0]", "message": "..." }] } }`, where `kind` is `spec`, `usage` or `error`. Fields are only ever added.
+
+Exit codes are the same with or without `--json`: 0 when the command did its work, 1 when it failed or when `check`, `sync --check` or `doctor` found a problem, 2 for a command line linework can't read. `build` exits 0 when it wrote the file even if lint has complaints; follow it with `linework check <file> --strict` to fail a job on any finding.
 
 ## Status
 
@@ -418,12 +446,13 @@ All five phases of [PLAN.md](PLAN.md) are built. Two paths haven't been tried ye
 
 ```bash
 npm install
-npm test             # unit, round-trip, MCP and end-to-end tests (needs Chromium)
-npm run build        # compile to dist/
+npm run verify       # typecheck, build dist/ and run every test (needs a Chromium-based browser)
+npm run test:unit    # only the tests that need no browser
+npm run doctor       # can this machine draw? says what to fix
 npm run dev -- build examples/checkout.yaml -o out/checkout.drawio.svg --png out/checkout.png
 ```
 
-Every push to `main` and every pull request runs the typecheck and the tests on Node 22 and 24 in GitHub Actions. To run the suite with a browser that isn't in one of the usual places, set `LINEWORK_CHROME=/path/to/chromium`.
+[AGENTS.md](AGENTS.md) has the layout of the code, the rules a change has to keep, and how to check a change from the command line. Every push to `main` and every pull request runs the typecheck and the tests on Node 22 and 24 in GitHub Actions. To run the suite with a browser that isn't in one of the usual places, set `LINEWORK_CHROME=/path/to/chromium`.
 
 After a change to layout or rendering, rebuild the README gallery and look at what moved:
 

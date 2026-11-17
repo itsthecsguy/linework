@@ -80,10 +80,15 @@ export function publish(files: string[], opts: { to?: string; pull?: boolean; fo
   const manifestPath = path.join(dir, MANIFEST);
   const manifest: Record<string, string> = fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, 'utf8')) : {};
   const items: PublishItem[] = [];
+  // Every file is checked before any is copied: stopping halfway would leave
+  // copies in Drive that the manifest doesn't know, and those read as edits made there.
   for (const f of files) {
     const src = path.resolve(cwd, f);
     if (!fs.existsSync(src)) throw new Error(`${f} doesn't exist`);
     if (!/\.(drawio\.svg|drawio\.png|drawio|svg)$/.test(src)) throw new Error(`${f}: publish takes .drawio.svg or .drawio files`);
+  }
+  for (const f of files) {
+    const src = path.resolve(cwd, f);
     // Keep the project's folder structure so two diagrams with the same name don't collide.
     const rel = path.relative(root, src).startsWith('..') ? path.basename(src) : path.relative(root, src);
     const dest = path.join(dir, rel);

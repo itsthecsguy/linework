@@ -41,7 +41,8 @@ export interface MergeResult {
 }
 
 const GAP = 24;
-const PAD = { top: 40, left: 20, right: 20, bottom: 20 };
+/** The room a group keeps around what is in it. */
+export const PAD = { top: 40, left: 20, right: 20, bottom: 20 };
 const center = (b: Box) => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
 const overlaps = (a: Box, b: Box, m = 0) => a.x < b.x + b.w + m && b.x < a.x + a.w + m && a.y < b.y + b.h + m && b.y < a.y + a.h + m;
 const PORT_KEYS = ['exitX', 'exitY', 'exitDx', 'exitDy', 'exitPerimeter', 'entryX', 'entryY', 'entryDx', 'entryDy', 'entryPerimeter'];
@@ -295,12 +296,17 @@ export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specI
   const kept = new Set([...outIds, ...stats.keptUnknown]);
   for (const id of [...oldNodes.keys(), ...oldGroups.keys()]) if (!kept.has(id)) stats.removed.push(id);
 
-  const { id: _id, label: _label, ...oldMeta } = old.meta;
+  // The title is the spec's to give and to take away: an old one must not outlive its removal.
+  const { id: _id, label: _label, aiviz_title: _title, ...oldMeta } = old.meta;
+  // What the spec says first, in the order a fresh build writes it, then whatever else the
+  // file carried: the same merge twice gives the same bytes, with or without a title.
+  const specMeta = diagramMeta(d, opts.touched === false ? {} : { aiviz_layout: 'manual' });
+  const meta = { ...specMeta, ...Object.fromEntries(Object.entries(withoutTheme(oldMeta)).filter(([k]) => !(k in specMeta))) };
   return {
     scene: {
-      name: d.title ?? old.name,
+      name: d.title ?? (old.meta.aiviz_title && old.name === old.meta.aiviz_title ? 'Diagram' : old.name),
       // 'manual' marks a layout a person arranged; a merge into a machine layout doesn't.
-      meta: { ...withoutTheme(oldMeta), ...diagramMeta(d, opts.touched === false ? {} : { aiviz_layout: 'manual' }) },
+      meta,
       background: palette(d.theme).canvas,
       vertices,
       edges,

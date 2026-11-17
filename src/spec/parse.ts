@@ -85,6 +85,15 @@ const EdgeObject = z.strictObject({
   highlight: HighlightInput.optional(),
 });
 
+const MessageObject = z.strictObject({
+  from: z.string(),
+  to: z.string(),
+  label: scalar.optional(),
+  style: z.enum(['sync', 'reply', 'async']).optional(),
+  color: ColorInput.optional(),
+  highlight: HighlightInput.optional(),
+});
+
 const EdgeInput = z.union([z.string(), EdgeObject, z.record(z.string(), z.union([scalar, z.null()]))]);
 
 // Messages: "a -> b: text", "note over a, b: text", or a frame object.
@@ -158,7 +167,7 @@ function accentOf(raw: string | null | undefined): { accent?: string } {
 
 export function parseSpec(raw: unknown): ParseResult {
   const res = SpecInput.safeParse(raw);
-  if (!res.success) throw new SpecError(res.error.issues.map(zodIssue));
+  if (!res.success) throw new SpecError(res.error.issues.flatMap(zodIssues));
   const spec = res.data;
   const type = spec.type;
   const issues: Issue[] = [];
@@ -173,7 +182,7 @@ export function parseSpec(raw: unknown): ParseResult {
   for (const [id, g] of Object.entries(spec.groups ?? {})) {
     if (!ID_RE.test(id)) issues.push({ path: `groups.${id}`, message: badId(id) });
     const obj = typeof g === 'string' ? { label: g } : g;
-    groups.push({ id, label: obj.label ?? humanize(id), parent: obj.in, ...look(obj, `groups.${id}`, issues) });
+    groups.push({ id, label: oneLine(obj.label) ?? humanize(id), parent: obj.in, ...look(obj, `groups.${id}`, issues) });
   }
   const groupIds = new Set(groups.map((g) => g.id));
 
@@ -184,11 +193,12 @@ export function parseSpec(raw: unknown): ParseResult {
     if (groupIds.has(id)) issues.push({ path, message: `"${id}" is already a group id. Node and group ids must be unique.` });
     const obj = withComponent(id, typeof n === 'string' ? { label: n } : n);
     const kind = obj.kind ?? DEFAULT_KIND[type];
-    if (!obj.icon && KINDS[type][kind]?.icon && type === 'architecture') obj.icon = KINDS[type][kind]!.icon;
-    if (!KINDS[type][kind]) {
+    const known = Object.hasOwn(KINDS[type], kind);
+    if (!obj.icon && known && KINDS[type][kind]!.icon && type === 'architecture') obj.icon = KINDS[type][kind]!.icon;
+    if (!known) {
       issues.push({ path: `${path}.kind`, message: `unknown kind "${kind}" for a ${type} diagram. Use one of: ${Object.keys(KINDS[type]).join(', ')}.` });
     }
-    const node: Node = { id, label: obj.label ?? humanize(id), kind, tech: obj.tech, parent: obj.in, ...look(obj, path, issues) };
+    const node: Node = { id, label: oneLine(obj.label) ?? humanize(id), kind, tech: oneLine(obj.tech), parent: obj.in, ...look(obj, path, issues) };
     if (type === 'timeline') {
       const o = obj as { start?: string; end?: string; at?: string };
       const day = (key: 'start' | 'end' | 'at') => {
@@ -217,6 +227,12 @@ export function parseSpec(raw: unknown): ParseResult {
       if (type === 'class') node.fields = rows.map((f, i) => memberOf(f, `${path}.${key}[${i}]`, issues)).filter((f): f is Field => !!f);
       else if (type !== 'er') issues.push({ path: `${path}.${key}`, message: 'fields are for type: er, and members for type: class' });
       else node.fields = rows.map((f, i) => parseField(f, `${path}.fields[${i}]`, issues)).filter((f): f is Field => !!f);
+      // Each row is a cell named after it, so two with one name would be one cell twice.
+      const seen = new Set<string>();
+      for (const f of node.fields ?? []) {
+        if (seen.has(f.name)) issues.push({ path: `${path}.${key}`, message: `two rows are named "${f.name}". Names in one ${type === 'class' ? 'class' : 'table'} have to differ.` });
+        seen.add(f.name);
+      }
     }
     nodes.push(node);
   }
@@ -265,8 +281,14 @@ export function parseSpec(raw: unknown): ParseResult {
       }
       parsed = parseErEdge(text, path, issues);
     } else if (typeof item === 'string') parsed = parseEdgeString(item, path, issues);
-    else if ('from' in item && 'to' in item && typeof item.from === 'string') {
-      const o = item as z.infer<typeof EdgeObject>;
+    else if ('from' in item || 'to' in item) {
+      // The object form is checked as strictly as the rest of the spec: a misspelt key is an error, not a dropped label.
+      const checked = EdgeObject.safeParse(item);
+      if (!checked.success) {
+        for (const i of checked.error.issues.flatMap(zodIssues)) issues.push({ path: i.path ? `${path}.${i.path}` : path, message: i.path || !/^unknown key/.test(i.message) ? i.message : i.message.replace(/Allowed here: .*$/, `Allowed here: ${EDGE_KEYS}.`) });
+        return;
+      }
+      const o = checked.data;
       parsed = { from: o.from, to: o.to, label: o.label, style: o.style ?? 'sync', ...(o.rel && type === 'class' ? { rel: o.rel } : {}), ...look(o, path, issues) };
     } else {
       const entries = Object.entries(item);
@@ -299,6 +321,16 @@ export function parseSpec(raw: unknown): ParseResult {
     const n = (counts.get(base) ?? 0) + 1;
     counts.set(base, n);
     edges.push({ id: n === 1 ? base : `${base}#${n}`, ...parsed });
+  });
+  // An edge's cell is named after its ends, and the second "api -> worker" is
+  // named like a first "api -> worker_2". Two edges in one cell lose a label
+  // the next time the diagram is rebuilt, so say so now.
+  const cellOf = new Map<string, string>();
+  edges.forEach((e, i) => {
+    const cell = e.id.replace('->', '__').replace('#', '_');
+    const other = cellOf.get(cell);
+    if (other !== undefined) issues.push({ path: `edges[${i}]`, message: `the edges "${other.replace('->', ' -> ').replace(/#\d+$/, '')}" and "${e.id.replace('->', ' -> ').replace(/#\d+$/, '')}" can't be told apart in the file, because of how the node ids combine. Rename one of the nodes, e.g. "${e.to}" to "${e.to.replace(/__+/g, '_').replace(/_(\d+)$/, '$1')}${/__|_\d+$/.test(e.to) ? '' : 'b'}".` });
+    else cellOf.set(cell, e.id);
   });
   if (needStart && !nodeIds.has(START_ID)) nodes.unshift({ id: START_ID, label: '', kind: 'start' });
   for (const from of endFor) nodes.push({ id: `${END_ID}_${from === START_ID ? 'start' : from}`, label: '', kind: 'end' });
@@ -442,9 +474,9 @@ function parseSequence(spec: z.infer<typeof SpecInput>): ParseResult {
     if (!ID_RE.test(id)) issues.push({ path, message: badId(id) });
     const obj = withComponent(id, typeof n === 'string' ? { label: n } : n);
     const kind = obj.kind ?? 'service';
-    if (!KINDS.sequence[kind]) issues.push({ path: `${path}.kind`, message: `unknown kind "${kind}" for a sequence diagram. Use one of: ${Object.keys(KINDS.sequence).join(', ')}.` });
+    if (!Object.hasOwn(KINDS.sequence, kind)) issues.push({ path: `${path}.kind`, message: `unknown kind "${kind}" for a sequence diagram. Use one of: ${Object.keys(KINDS.sequence).join(', ')}.` });
     if ('fields' in obj && obj.fields) issues.push({ path: `${path}.fields`, message: 'fields are for type: er' });
-    nodes.push({ id, label: obj.label ?? humanize(id), kind, tech: obj.tech, ...look(obj, path, issues) });
+    nodes.push({ id, label: oneLine(obj.label) ?? humanize(id), kind, tech: oneLine(obj.tech), ...look(obj, path, issues) });
   }
   const ids = new Set(nodes.map((n) => n.id));
   const need = (id: string, path: string) => {
@@ -466,7 +498,8 @@ function parseSequence(spec: z.infer<typeof SpecInput>): ParseResult {
     const op = Object.keys(o).find((k) => (FRAME_OPS as readonly string[]).includes(k)) as FrameOp | undefined;
     if (op) {
       const v = o[op];
-      if (op === 'alt' || op === 'par') {
+      // alt and par are lists of branches. critical may be one too: its "option" parts.
+      if (op === 'alt' || op === 'par' || (op === 'critical' && Array.isArray(v))) {
         if (!Array.isArray(v)) {
           issues.push({ path, message: `${op} takes a list of branches: - ${op}: [ { when: condition, do: [messages] }, ... ]` });
           return null;
@@ -483,6 +516,18 @@ function parseSequence(spec: z.infer<typeof SpecInput>): ParseResult {
         return null;
       }
       return { kind: 'frame', op, branches: [{ when: v == null ? undefined : String(v), items: items(o.do, `${path}.do`) }] };
+    }
+    if ('from' in o || 'to' in o) {
+      // The long form, for a message with a color: { from: a, to: b, label: text, style: reply, color: red }.
+      const checked = MessageObject.safeParse(o);
+      if (!checked.success) {
+        for (const i of checked.error.issues.flatMap(zodIssues)) issues.push({ path: i.path ? `${path}.${i.path}` : path, message: i.path || !/^unknown key/.test(i.message) ? i.message : i.message.replace(/Allowed here: .*$/, 'Allowed here: from, to, label, style, color, highlight.') });
+        return null;
+      }
+      const msg = checked.data;
+      need(msg.from, path);
+      need(msg.to, path);
+      return { kind: 'msg', from: msg.from, to: msg.to, label: msg.label || undefined, style: msg.style ?? 'sync', ...look(msg, path, issues) };
     }
     const entries = Object.entries(o);
     if (entries.length === 1) {
@@ -585,19 +630,42 @@ function highlightWarning(nodes: Array<{ highlight?: boolean }>, edges: Array<{ 
     });
 }
 
+const NODE_KEYS = 'label, kind, tech, in, icon, color, highlight; fields (er), members (class); start, end, at (timeline)';
+const EDGE_KEYS = 'from, to, label, style, rel, color, highlight';
+
+/** A label is one line: it wraps where the box needs it to. A typed line break would read back as the tech line. */
+function oneLine(s: string | undefined): string | undefined {
+  return s === undefined ? undefined : s.replace(/\s*[\r\n]+\s*/g, ' ').trim();
+}
+
+const pathOf = (p: ReadonlyArray<PropertyKey>) => p.map((k) => (typeof k === 'number' ? `[${k}]` : `.${String(k)}`)).join('').replace(/^\./, '');
+
+/**
+ * A node, group or edge that is neither of the forms it may take. Zod reports
+ * that as one "invalid union"; what the writer needs is the key that is wrong
+ * inside the object they wrote, which is in the branch that got furthest.
+ */
+function zodIssues(i: z.core.$ZodIssue): Issue[] {
+  if (i.code === 'invalid_union') {
+    const deep = (i.errors ?? []).find((branch) => branch.length > 0 && branch.every((x) => x.path.length > 0 || x.code === 'unrecognized_keys'));
+    if (deep) return deep.flatMap((x) => zodIssues({ ...x, path: [...i.path, ...x.path] } as z.core.$ZodIssue));
+  }
+  return [zodIssue(i)];
+}
+
 function zodIssue(i: z.core.$ZodIssue): Issue {
-  const path = i.path.map((p) => (typeof p === 'number' ? `[${p}]` : `.${String(p)}`)).join('').replace(/^\./, '');
+  const path = pathOf(i.path);
   if (i.code === 'unrecognized_keys') {
     const known: Record<string, string> = {
       '': 'type, title, direction, theme, accent, groups, nodes, edges (or participants, messages for sequence)',
     };
     const where =
       path.startsWith('nodes') || path.startsWith('participants')
-        ? 'label, kind, tech, in, icon, fields, color, highlight'
+        ? NODE_KEYS
         : path.startsWith('groups')
           ? 'label, in, color, highlight'
           : path.startsWith('edges')
-            ? 'from, to, label, style, color, highlight'
+            ? EDGE_KEYS
             : known[''];
     return { path, message: `unknown key(s) ${i.keys.map((k) => `"${k}"`).join(', ')}. Allowed here: ${where}.` };
   }
@@ -605,7 +673,15 @@ function zodIssue(i: z.core.$ZodIssue): Issue {
   if (i.code === 'invalid_value' && path === 'theme') return { path, message: `theme must be one of: ${themeNames().join(', ')}` };
   if (i.code === 'invalid_value' && path === 'direction') return { path, message: `direction must be one of: ${DIRECTIONS.join(', ')}` };
   if (i.code === 'invalid_type' && path === 'nodes') return { path, message: 'nodes is required: a map of id -> { label, kind, tech, in }' };
-  if (i.code === 'invalid_union') return { path, message: path.startsWith('edges') ? 'each edge is a string like "a -> b: label"' : 'expected a label string or an object' };
+  if (i.code === 'invalid_union') {
+    if (/^edges\[\d+\]$/.test(path)) return { path, message: 'each edge is a string like "a -> b: label"' };
+    if (/^(nodes|participants|groups)\.[^.]+$/.test(path)) return { path, message: 'expected a label string or an object' };
+    return { path, message: 'expected one line of text, not a list or a map' };
+  }
+  const key = String(i.path.at(-1) ?? 'this');
+  if (i.code === 'invalid_value' && 'values' in i && Array.isArray(i.values)) return { path, message: `${key} must be one of: ${i.values.join(', ')}` };
+  if (i.code === 'invalid_type' && /received undefined$/.test(i.message)) return { path, message: `${key} is required` };
+  if (i.code === 'invalid_type' && i.expected === 'boolean') return { path, message: `${key} is true or false, without quotes` };
   return { path, message: i.message };
 }
 

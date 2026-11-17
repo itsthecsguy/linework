@@ -26,9 +26,9 @@ export function cliCommand(): string {
 export function gitSetup(cwd = process.cwd()): string[] {
   let top: string;
   try {
-    top = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8' }).trim();
+    top = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {
-    throw new Error('not inside a git repository');
+    throw new Error(`${cwd} isn't inside a git repository. Run git-setup in the repo whose diagrams you want readable diffs for.`);
   }
   const done: string[] = [];
   const attrs = path.join(top, '.gitattributes');

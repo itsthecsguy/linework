@@ -100,4 +100,4 @@ In a flow, keep decision text to a short question and label every edge leaving i
 - `references/troubleshooting.md`: download, browser and sandbox failures.
 - `references/google-docs.md`: putting a diagram in Google Docs with `linework publish`.
 - Excalidraw: `linework render d.drawio.svg -o d.excalidraw` writes an editable copy; `linework import d.excalidraw -o d.drawio.svg` merges edits. `linework share` uploads it: only if asked.
-- `linework help` lists every command, including `check`, `sync` (rebuild diagrams whose YAML changed), `kinds`, `schema` and `git-setup` (readable `git diff` for diagrams).
+- `linework help` lists every command: `check`, `sync` (rebuild diagrams whose YAML changed), `doctor`, `kinds`, `schema`, `git-setup`. `--json` gives results as JSON.

@@ -45,6 +45,39 @@ const edgeEnds = (item: unknown): { from: string; to: string } | undefined => {
   return undefined;
 };
 
+/**
+ * Remove the edges (or messages) `gone` picks, in document order. A sequence
+ * diagram nests messages inside frames (`loop: .. do: [..]`, `alt: [{ when, do }]`),
+ * so every list under an item is searched too.
+ */
+function dropEdges(list: YAMLSeq, gone: (e: { from: string; to: string }) => boolean): void {
+  for (let i = 0; i < list.items.length; i++) {
+    const item = list.items[i];
+    const e = edgeEnds(item);
+    if (e) {
+      if (gone(e)) list.delete(i--);
+      continue;
+    }
+    const inner = (v: unknown): void => {
+      if (isSeq(v)) dropEdges(v, gone);
+      else if (isMap(v)) for (const p of v.items) inner(p.value);
+    };
+    // A note names participants too ("note over a, b: text"), but it isn't an edge: leave it for the parser to judge.
+    if (isMap(item)) for (const p of item.items) inner(p.value);
+  }
+}
+
+/** A value typed on the command line, read as YAML would read it: true, 3, a word. */
+function scalar(raw: string, arg: string): unknown {
+  // "#2563eb" is a color here. YAML would read it as a comment, and so as nothing.
+  if (raw.trimStart().startsWith('#')) return raw.trim();
+  try {
+    return YAML.parse(raw) as unknown;
+  } catch (e) {
+    throw new PatchError(`can't read the value in "${arg}": ${(e as Error).message.split('\n')[0]}`);
+  }
+}
+
 /** Apply the ops to a spec's YAML text and return the new text. */
 export function patchSpec(yaml: string, ops: PatchOp[]): string {
   const doc = YAML.parseDocument(yaml);
@@ -63,7 +96,7 @@ export function patchSpec(yaml: string, ops: PatchOp[]): string {
         const path = arg.slice(0, eq), raw = arg.slice(eq + 1);
         const dot = path.lastIndexOf('.');
         const field = dot < 0 ? path : path.slice(dot + 1);
-        const value = TEXT.has(field) ? raw : (YAML.parse(raw) as unknown);
+        const value = TEXT.has(field) ? raw : scalar(raw, arg);
         if (dot < 0) {
           if (!TOP.has(path)) throw new PatchError(`"${path}" isn't a diagram setting. Settings: title, theme, accent, direction. For a box, write id.field=value.`);
           if (raw === '') doc.delete(path);
@@ -92,7 +125,12 @@ export function patchSpec(yaml: string, ops: PatchOp[]): string {
           continue;
         }
         const group = /^group\s+/.test(text);
-        const parsed = YAML.parse(group ? text.replace(/^group\s+/, '') : text) as unknown;
+        let parsed: unknown;
+        try {
+          parsed = YAML.parse(group ? text.replace(/^group\s+/, '') : text);
+        } catch (e) {
+          throw new PatchError(`can't read "${arg}": ${(e as Error).message.split('\n')[0]}`);
+        }
         const entries = typeof parsed === 'string' ? [[parsed, {}]] : parsed && typeof parsed === 'object' ? Object.entries(parsed) : [];
         if (!entries.length) throw new PatchError(`can't read "${arg}". A box: "fraud: { label: Fraud check, in: vpc }". An edge: "api -> fraud: score". A group: "group vpc: { label: Production VPC }".`);
         const key = group ? 'groups' : nodesKey;
@@ -106,22 +144,20 @@ export function patchSpec(yaml: string, ops: PatchOp[]): string {
         const m = EDGE.exec(text);
         if (m) {
           const list = seqAt(doc, edgesKey);
-          const i = list?.items.findIndex((it) => {
-            const e = edgeEnds(it);
-            return e && e.from === m[1] && e.to === m[3];
-          });
-          if (!list || i === undefined || i < 0) throw new PatchError(`no edge from "${m[1]}" to "${m[3]}"`);
-          list.delete(i);
+          // The first one that matches, wherever it is: a message can sit inside a loop or an alt branch.
+          let gone = false;
+          if (list)
+            dropEdges(list, (e) => {
+              if (gone || e.from !== m[1] || e.to !== m[3]) return false;
+              return (gone = true);
+            });
+          if (!gone) throw new PatchError(`no edge from "${m[1]}" to "${m[3]}"`);
           continue;
         }
         if (has(nodesKey, text)) {
           mapAt(doc, nodesKey)!.delete(text);
           const list = seqAt(doc, edgesKey);
-          if (list)
-            for (let i = list.items.length - 1; i >= 0; i--) {
-              const e = edgeEnds(list.items[i]);
-              if (e && (e.from === text || e.to === text)) list.delete(i);
-            }
+          if (list) dropEdges(list, (e) => e.from === text || e.to === text);
         } else if (has('groups', text)) {
           // Its members move up to the group it was in, or out to the top level.
           const groups = mapAt(doc, 'groups')!;
