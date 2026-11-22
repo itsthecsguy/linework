@@ -13,7 +13,7 @@ inputs:
     default: check
   version:
     description: The linework version to run, as an npm version or tag.
-    default: latest
+    default: 0.8.1
 outputs:
   changed:
     description: '"true" when update mode rebuilt at least one diagram.'
