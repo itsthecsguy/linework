@@ -16,7 +16,7 @@ function caseProblem(label: string, want: 'sentence' | 'title'): string | undefi
   const ws = words(label);
   // Words after the first that could be either case.
   const rest = ws.slice(1).filter((w) => plain(w) && !ACRONYM.test(w));
-  if (want === 'sentence' && rest.length >= 2 && rest.every((w) => /^[A-Z]/.test(w)))
+  if (want === 'sentence' && rest.length >= 1 && rest.every((w) => /^[A-Z]/.test(w)))
     return `"${label}" is in title case; this repo uses sentence case: "${[ws[0], ...ws.slice(1).map((w) => (plain(w) ? w.toLowerCase() : w))].join(' ')}"`;
   if (want === 'title' && rest.some((w) => /^[a-z]/.test(w) && w.length > 3))
     return `"${label}" is in sentence case; this repo uses title case: "${ws.map((w, i) => (plain(w) && (i === 0 || w.length > 3) ? w[0]!.toUpperCase() + w.slice(1) : w)).join(' ')}"`;
@@ -61,7 +61,9 @@ export function conventions(m: DrawioModel, shown: ShowResult, cfg: Config): Fin
       if (p) warn('naming-case', p);
     }
     if (maxLength && it.label.length > maxLength) warn('naming-length', `"${it.label}" is ${it.label.length} characters; this repo's limit is ${maxLength}. Shorten it and move detail to the tech line or the doc.`);
-    for (const b of banned) if (new RegExp(`\\b${b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(it.label)) warn('naming-banned', `"${it.label}" uses "${b}", which this repo's linework.yaml bans. Name the thing itself.`);
+    for (const b of banned)
+      if (new RegExp(`(?<!\\w)${b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\w)`, 'i').test(it.label))
+        warn('naming-banned', `"${it.label}" uses "${b}", which this repo's linework.yaml bans. Name the thing itself.`);
   }
 
   // Colors or fonts changed in draw.io: the box no longer matches the team's theme.

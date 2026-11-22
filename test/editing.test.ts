@@ -16,7 +16,10 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-edit-'));
 beforeAll(async () => {
   if (process.env.LINEWORK_SKIP_E2E !== '1') browser = await DrawioBrowser.launch();
 }, 60000);
-afterAll(async () => { await browser?.close(); });
+afterAll(async () => {
+  await browser?.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
 
 const spec = fs.readFileSync('examples/checkout.yaml', 'utf8');
 

@@ -139,13 +139,12 @@ export function styleFor(d: Diagram, n: Diagram['nodes'][number]): string {
 }
 
 /** An edge label inside a filled group gets the group's fill behind it, not the canvas. */
-function labelBg(d: Diagram, l: Layout, label?: Box): string | undefined {
-  if (!label) return undefined;
-  const cx = label.x + label.w / 2, cy = label.y + label.h / 2;
+export function labelBgAt(d: Diagram, groups: Map<string, Box>, p?: Point): string | undefined {
+  if (!p) return undefined;
   let best: { area: number; fill: string } | undefined;
   for (const g of d.groups) {
-    const b = l.groups.get(g.id);
-    if (!b || cx < b.x || cx > b.x + b.w || cy < b.y || cy > b.y + b.h) continue;
+    const b = groups.get(g.id);
+    if (!b || p.x < b.x || p.x > b.x + b.w || p.y < b.y || p.y > b.y + b.h) continue;
     const fill = /fillColor=([^;]+)/.exec(groupStyleFor(d, g))?.[1];
     if (fill && fill !== 'none' && (!best || b.w * b.h < best.area)) best = { area: b.w * b.h, fill };
   }
@@ -154,7 +153,7 @@ function labelBg(d: Diagram, l: Layout, label?: Box): string | undefined {
 
 export function edgeStyleFor(d: Diagram, e: Diagram['edges'][number], bg?: string): string {
   if (d.type === 'class' && e.rel) return classEdgeStyle(e.rel, d, e, bg);
-  return d.type === 'er' && e.card ? erEdgeStyle(e.card, d, e) : edgeStyle(e.style, d, e, bg);
+  return d.type === 'er' && e.card ? erEdgeStyle(e.card, d, e, bg) : edgeStyle(e.style, d, e, bg);
 }
 
 export function edgeAttrs(e: Diagram['edges'][number]): Record<string, string> {
@@ -179,7 +178,7 @@ export function groupAttrs(g: Diagram['groups'][number], theme: Diagram['theme']
  * but draw.io wraps at the diamond's full width, so a long question runs out over
  * the slanted sides. Inset the label to the width layout measured.
  */
-function diamondInset(d: Diagram, n: Diagram['nodes'][number], box: Box): string {
+export function diamondInset(d: Diagram, n: Diagram['nodes'][number], box: Box): string {
   if (kindDef(d.type, n.kind).shape !== 'diamond') return '';
   const text = (box.w - 40) / 1.5;
   const side = Math.max(0, Math.floor((box.w - text - 10) / 2));
@@ -250,8 +249,7 @@ export function sceneFromLayout(d: Diagram, l: Layout): Scene {
   };
   const edges: SceneEdge[] = d.edges.map((e) => {
     const le = l.edges.get(e.id);
-    const cyl = { from: isCyl(e.from), to: isCyl(e.to) };
-    const base: SceneEdge = { id: edgeCellId(e.id), parent: '1', attrs: edgeAttrs(e), style: edgeStyleFor(d, e, labelBg(d, l, le?.label)), source: e.from, target: e.to };
+    const base: SceneEdge = { id: edgeCellId(e.id), parent: '1', attrs: edgeAttrs(e), style: '', source: e.from, target: e.to };
     if (!le) return base;
     if (e.from === e.to && le.label && e.label && le.points.length === 4) {
       // A self-loop: the label sits beside the loop's outer run, not on it.
@@ -259,7 +257,6 @@ export function sceneFromLayout(d: Diagram, l: Layout): Scene {
       const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
       return {
         ...base,
-        style: base.style + portStyle(le.points, abs(e.from), abs(e.to), cyl),
         points: le.points.slice(1, -1),
         labelX: 0.001,
         labelOffset: { x: le.label.x + le.label.w / 2 - mid.x, y: le.label.y + le.label.h / 2 - mid.y },
@@ -267,12 +264,26 @@ export function sceneFromLayout(d: Diagram, l: Layout): Scene {
     }
     return {
       ...base,
-      style: base.style + portStyle(le.points, abs(e.from), abs(e.to), cyl),
       points: le.points.slice(1, -1),
       labelX: le.label && e.label ? ((isDecision(e.from) ? branchSpot(le.points, le.label, l.direction, sharedStem(e.id, e.from)) : undefined) ?? labelSpot(le.points, le.label, l.direction, [...l.nodes].filter(([id]) => id !== e.from && id !== e.to).map(([, b]) => b)) ?? labelFraction(le.points, { x: le.label.x + le.label.w / 2, y: le.label.y + le.label.h / 2 })) : undefined,
     };
   });
   alignLabels(d, l, edges);
+  edges.forEach((se, i) => {
+    const e = d.edges[i]!;
+    const le = l.edges.get(e.id);
+    const cyl = { from: isCyl(e.from), to: isCyl(e.to) };
+    const pos = le
+      ? se.labelOffset && le.label
+        ? { x: le.label.x + le.label.w / 2, y: le.label.y + le.label.h / 2 }
+        : se.labelX !== undefined
+          ? spotAt(le.points, se.labelX)?.p
+          : le.label
+            ? { x: le.label.x + le.label.w / 2, y: le.label.y + le.label.h / 2 }
+            : undefined
+      : undefined;
+    se.style = edgeStyleFor(d, e, labelBgAt(d, l.groups, pos)) + (le ? portStyle(le.points, abs(e.from), abs(e.to), cyl) : '');
+  });
   return { name: d.title ?? 'Diagram', background: palette(d).canvas, meta: diagramMeta(d), vertices, edges, raw: [] };
 }
 

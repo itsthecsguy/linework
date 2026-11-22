@@ -102,30 +102,42 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
   const noteLines = rows.map((r) => (r.t === 'note' ? Math.max(1, tm.wrap(r.item.text, fonts.edge, NOTE_W - 20).lines.length) : 0));
 
   // 3. Columns: centre-to-centre distance wide enough for every label between neighbours.
+  parts.forEach((p, i) => {
+    const kept = opts.keepX?.get(p.id);
+    if (kept && kept.w > headW[i]!) headW[i] = kept.w;
+  });
   const need = parts.map(() => 0); // need[i]: min centre distance between i and i+1
+  let leftMargin = 40;
   rows.forEach((r, i) => {
-    if (r.t !== 'msg' || r.item.from === r.item.to) return;
+    if (r.t === 'note' && (r.item.side === 'left' || r.item.side === 'right') && r.item.over.length) {
+      const k = idx.get(r.item.over[0]!);
+      if (k == null) return;
+      const nw = Math.ceil(Math.min(Math.max(rowW[i]! + 24, 96), NOTE_W) / 8) * 8;
+      if (r.item.side === 'right' && k < parts.length - 1) need[k] = Math.max(need[k]!, nw + 32);
+      else if (r.item.side === 'left') {
+        if (k > 0) need[k - 1] = Math.max(need[k - 1]!, nw + 32);
+        else leftMargin = Math.max(leftMargin, Math.ceil(16 + nw + 24 - headW[0]! / 2));
+      }
+      return;
+    }
+    if (r.t !== 'msg') return;
+    if (r.item.from === r.item.to) {
+      const k = idx.get(r.item.from)!;
+      if (k < parts.length - 1) need[k] = Math.max(need[k]!, rowW[i]! + 72);
+      return;
+    }
     const a = Math.min(idx.get(r.item.from)!, idx.get(r.item.to)!), b = Math.max(idx.get(r.item.from)!, idx.get(r.item.to)!);
     const per = (rowW[i]! + 48) / (b - a);
     for (let k = a; k < b; k++) need[k] = Math.max(need[k]!, per);
   });
-  rows.forEach((r, i) => {
-    if (r.t !== 'msg' || r.item.from !== r.item.to) return;
-    const k = idx.get(r.item.from)!;
-    if (k < parts.length - 1) need[k] = Math.max(need[k]!, rowW[i]! + 72);
-  });
   const xs: number[] = [];
   parts.forEach((p, i) => {
     const kept = opts.keepX?.get(p.id);
-    if (i === 0) return xs.push(kept?.x ?? 40);
+    if (i === 0) return xs.push(kept?.x ?? leftMargin);
     const prevC = xs[i - 1]! + headW[i - 1]! / 2;
     const minC = prevC + Math.max(need[i - 1]!, headW[i - 1]! / 2 + headW[i]! / 2 + 32);
     const fresh = minC - headW[i]! / 2;
     xs.push(kept ? Math.max(kept.x, prevC + headW[i - 1]! / 2 + 24) : fresh);
-  });
-  parts.forEach((p, i) => {
-    const kept = opts.keepX?.get(p.id);
-    if (kept && kept.w > headW[i]!) headW[i] = kept.w;
   });
   const cx = (id: string) => xs[idx.get(id)!]! + headW[idx.get(id)!]! / 2;
 
@@ -232,18 +244,30 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
     const lo = ps.length ? Math.min(...ps) : 0, hi = ps.length ? Math.max(...ps) : 0;
     const inset = f.depth * 10;
     const fx = cx(parts[lo]!.id) - Math.max(80, headW[lo]! / 2 + 16) + inset;
-    const fx2 = cx(parts[hi]!.id) + Math.max(80, headW[hi]! / 2 + 16) - inset;
+    let fx2 = cx(parts[hi]!.id) + Math.max(80, headW[hi]! / 2 + 16) - inset;
     const fy = rows[f.start]!.y - 4, fy2 = rows[f.end]!.y;
-    vertices.push({ id: f.id, parent: '1', attrs: { label: f.op, aiviz_type: 'frame', aiviz_frame: f.op }, style: frameStyle(theme), box: { x: fx, y: fy, w: fx2 - fx, h: fy2 - fy } });
+    const frameVertex: SceneVertex = { id: f.id, parent: '1', attrs: { label: f.op, aiviz_type: 'frame', aiviz_frame: f.op }, style: frameStyle(theme), box: { x: fx, y: fy, w: fx2 - fx, h: fy2 - fy } };
+    vertices.push(frameVertex);
     // The first guard shares a line with the operator tab beside it.
     const tabMid = fy + FRAME_TAB_INSET + FRAME_TAB_Y + (fonts.group.size * LINE) / 2;
     const guardH = Math.max(22, edgeLine + 6);
+    const frameLifelines = parts.map((p) => cx(p.id)).filter((c) => c > fx && c < fx2).sort((a, b) => a - b);
     const guard = (when: string | undefined, gy: number, k: number) => {
       if (!when) return;
-      // Start right of the operator label, then step past any lifeline the text would cover.
+      // Start right of the operator label on the first branch (or near the frame's left
+      // edge on subsequent branches), then step past any lifeline that still fits inside the frame.
       const gw = Math.max(80, Math.ceil(tm.width(`[${when}]`, fonts.edge)) + 16);
-      let gx = fx + FRAME_TAB_INSET + 2 * FRAME_TAB_X + Math.ceil(tm.width(f.op, fonts.group)) + 10;
-      for (const c of [...parts.map((p) => cx(p.id))].sort((a, b) => a - b)) if (c + BAR_W / 2 + 4 > gx && c - BAR_W / 2 - 4 < gx + gw) gx = c + BAR_W / 2 + 6;
+      let gx = k === 0
+        ? fx + FRAME_TAB_INSET + 2 * FRAME_TAB_X + Math.ceil(tm.width(f.op, fonts.group)) + 10
+        : fx + FRAME_TAB_INSET + 6;
+      for (const c of frameLifelines) {
+        if (c + BAR_W / 2 + 4 > gx && c - BAR_W / 2 - 4 < gx + gw) {
+          const nextGx = c + BAR_W / 2 + 6;
+          if (nextGx + gw <= fx2 - 6) gx = nextGx;
+          else break;
+        }
+      }
+      if (gx + gw > fx2 - 6) fx2 = gx + gw + 8;
       vertices.push({
         id: `${f.id}_g${k}`,
         parent: '1',
@@ -255,6 +279,11 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
     guard(f.whens[0], Math.round(tabMid - guardH / 2), 0);
     f.seps.forEach((s, k) => {
       const sy = rows[s]!.y + 4;
+      guard(f.whens[k + 1], sy + 2, k + 1);
+    });
+    frameVertex.box.w = fx2 - fx;
+    f.seps.forEach((s, k) => {
+      const sy = rows[s]!.y + 4;
       edges.push({
         id: `${f.id}_s${k + 1}`,
         parent: '1',
@@ -264,7 +293,6 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
         target: '',
         geomRaw: `<mxGeometry relative="1" as="geometry"><mxPoint x="${fx}" y="${sy}" as="sourcePoint"/><mxPoint x="${fx2}" y="${sy}" as="targetPoint"/></mxGeometry>`,
       });
-      guard(f.whens[k + 1], sy + 2, k + 1);
     });
   }
   rows.forEach((r, i) => {

@@ -20,6 +20,8 @@ You describe the diagram as a small YAML spec. Linework does the layout, styling
    - `state`: the lifecycle of one thing.
    - `sequence`: who calls whom, in order, for one scenario.
    - `er`: tables, columns and relationships.
+   - `class`: types, members and UML links.
+   - `timeline`: tasks, milestones and lanes over dates.
 4. **Write the spec**, starting from the closest file in `examples/` next to this guide: `checkout.yaml` and `platform.yaml` (architecture), `serverless-aws.yaml`, `orders-azure.yaml` and `gcp-ingest.yaml` (cloud icons), `refund-flow.yaml` and `deploy-flow.yaml` (flow), `payment-state.yaml` and `job-state.yaml` (state), `pay-sequence.yaml` and `auth-seq.yaml` (sequence), `billing-er.yaml` and `shop-er.yaml` (ER), `billing-class.yaml` (class), `launch-timeline.yaml` (timeline). A Mermaid block converts directly: `linework import doc.md --block 1 -o out.drawio.svg`.
 5. **Build:** `linework build /tmp/spec.yaml -o docs/diagrams/checkout.drawio.svg --png /tmp/checkout.png`
 6. **Read the output.** `spec error` lines say exactly what to fix. `check:` lists layout problems. Fix every error and the warnings that matter, then rebuild. Look at the PNG if you can view images.

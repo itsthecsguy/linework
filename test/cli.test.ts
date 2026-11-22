@@ -7,9 +7,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { parseArgs } from 'node:util';
-import { COMMANDS, Exit, OPTIONS, USAGE, nearestCommand, packageVersion, report, run, type IO } from '../src/commands.js';
+import { COMMANDS, Exit, OPTIONS, USAGE, nearestCommand, needsBrowser, packageVersion, report, run, type IO } from '../src/commands.js';
+import { ConfigError } from '../src/config.js';
 import { DrawioBrowser, systemBrowsers } from '../src/render/browser.js';
 import { SpecError } from '../src/spec/parse.js';
+import { findSpecs } from '../src/sync.js';
 
 const e2e = process.env.LINEWORK_SKIP_E2E !== '1';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-cli-'));
@@ -98,6 +100,38 @@ describe('errors and usage', () => {
     expect(packageVersion()).toMatch(/^\d+\.\d+\.\d+/);
   });
 
+  it('reports ConfigError with exit 2 and valid JSON on stdout', () => {
+    const lines = { out: '', err: '' };
+    const io: IO = { out: (t) => void (lines.out += t), err: (t) => void (lines.err += t), stdin: () => '', code: 0 };
+    const e = new ConfigError('linework.yaml', ['theme: unknown']);
+    expect(report(e, io, true)).toBe(2);
+    expect(lines.err).toContain('linework.yaml error in');
+    expect(JSON.parse(lines.out)).toEqual({ ok: false, error: { kind: 'usage', message: `linework.yaml error in ${e.message}` } });
+  });
+
+  it('skips launching a browser for sync --check and share of .excalidraw files', () => {
+    const v = (args: string[]) => parseArgs({ args, allowPositionals: true, options: OPTIONS });
+    const syncCheck = v(['--check']);
+    expect(needsBrowser('sync', syncCheck.values, syncCheck.positionals)).toBe(false);
+    const syncBuild = v([]);
+    expect(needsBrowser('sync', syncBuild.values, syncBuild.positionals)).toBe(true);
+    const shareExc = v(['diagram.excalidraw']);
+    expect(needsBrowser('share', shareExc.values, shareExc.positionals)).toBe(false);
+    const shareExcJson = v(['diagram.excalidraw.json']);
+    expect(needsBrowser('share', shareExcJson.values, shareExcJson.positionals)).toBe(false);
+    const shareSvg = v(['diagram.drawio.svg']);
+    expect(needsBrowser('share', shareSvg.values, shareSvg.positionals)).toBe(true);
+  });
+
+  it('prevents infinite loops on directory symlinks in findSpecs', () => {
+    const dir = at('loop-test');
+    fs.mkdirSync(path.join(dir, 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'sub/a.yaml'), SPEC);
+    fs.symlinkSync(dir, path.join(dir, 'sub/back'));
+    const found = findSpecs([dir]);
+    expect(found.map((f) => path.basename(f.spec))).toEqual(['a.yaml']);
+  });
+
   it('answers the commands that need no browser', async () => {
     const kinds = await cli(['kinds', 'flow', '--json']);
     expect(Object.keys(kinds.json.kinds.flow)).toEqual(['step', 'decision', 'terminal', 'data', 'error']);
@@ -108,6 +142,16 @@ describe('errors and usage', () => {
     const sync = await cli(['sync', 'examples/checkout.yaml', '--check', '--json']);
     expect(sync.code).toBe(1);
     expect(sync.json).toEqual({ ok: false, items: [{ spec: 'examples/checkout.yaml', out: 'examples/checkout.drawio.svg', state: 'stale', missing: true }] });
+    const cfg = await cli(['config', tmp, '--json']);
+    expect(cfg.code).toBe(0);
+    expect(cfg.json).toMatchObject({ ok: true, path: null, theme: 'clean', lockTheme: false });
+    const listNew = await cli(['new']);
+    expect(listNew.code).toBe(0);
+    expect(listNew.out).toContain('built-in examples:');
+    const newOut = at('starter.yaml');
+    const wroteNew = await cli(['new', 'checkout', '-o', newOut]);
+    expect(wroteNew.code).toBe(0);
+    expect(fs.readFileSync(newOut, 'utf8')).toContain('type: architecture');
   });
 });
 
@@ -212,6 +256,40 @@ describe.runIf(e2e)('drawing commands', () => {
     const stale = await cli(['sync', at('docs'), '--check']);
     expect(stale.code).toBe(1);
     expect(stale.out).toContain('1 diagram is out of date');
+  }, 60000);
+
+  it('lint and restyle answer in JSON and respect config', async () => {
+    const dir = at('team');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'linework.yaml'), 'theme: clean\nlockTheme: true\n');
+    const d = path.join(dir, 'd.drawio.svg');
+    // Build a clean diagram under the config
+    const built = await cli(['build', '-', '-o', d, '--json'], SPEC);
+    expect(built.code).toBe(0);
+    const lintOk = await cli(['lint', dir, '--json']);
+    expect(lintOk.code).toBe(0);
+    expect(lintOk.json).toMatchObject({ ok: true, errors: 0, warnings: 0 });
+    expect(lintOk.json.files).toHaveLength(1);
+    const cfgJson = await cli(['config', dir, '--json']);
+    expect(cfgJson.code).toBe(0);
+    expect(cfgJson.json).toMatchObject({ ok: true, theme: 'clean', lockTheme: true });
+    const restyleJson = await cli(['restyle', dir, '--json']);
+    expect(restyleJson.code).toBe(0);
+    expect(restyleJson.json).toMatchObject({ ok: true });
+    expect(restyleJson.json.files).toHaveLength(1);
+  }, 60000);
+
+  it('sync honors linework.yaml when checking stamps', async () => {
+    const dir = at('sync-cfg');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'linework.yaml'), 'theme: soft\nstatuses:\n  new: green\n');
+    fs.writeFileSync(path.join(dir, 's.yaml'), 'type: flow\nnodes:\n  a: { label: Hello, status: new }\n  b: World\nedges:\n  - a -> b\n');
+    const built = await cli(['sync', dir, '--json']);
+    expect(built.code).toBe(0);
+    expect(built.json.items).toMatchObject([{ state: 'built' }]);
+    const checked = await cli(['sync', dir, '--check', '--json']);
+    expect(checked.code).toBe(0);
+    expect(checked.json).toMatchObject({ ok: true, items: [{ state: 'fresh' }] });
   }, 60000);
 
   it('imports Mermaid, to a spec or straight to a diagram', async () => {

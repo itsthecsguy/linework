@@ -271,4 +271,33 @@ describe('decisions', () => {
       expect(branchSpot([{ x: 0, y: 0 }, { x: 0, y: 20 }], label, 'TB')).toBeUndefined();
     });
   });
+
+  describe('multiple self-loops and parallel pairs', () => {
+    it('separates multiple self-loops on one node and includes them in bounds', async () => {
+      const d = parseSpecText('type: state\nnodes: { s: Running }\nedges:\n  - s -> s: heartbeat\n  - s -> s: checkpoint\n').diagram;
+      const l = await layout(d);
+      const r1 = l.edges.get('s->s')!, r2 = l.edges.get('s->s#2')!;
+      expect(r1.points[1]!.x !== r2.points[1]!.x || r1.points[1]!.y !== r2.points[1]!.y).toBe(true);
+      for (const r of [r1, r2]) {
+        for (const p of r.points) {
+          expect(p.x).toBeGreaterThanOrEqual(16);
+          expect(p.x).toBeLessThanOrEqual(l.width);
+          expect(p.y).toBeGreaterThanOrEqual(16);
+          expect(p.y).toBeLessThanOrEqual(l.height);
+        }
+        if (r.label) {
+          expect(r.label.x).toBeGreaterThanOrEqual(16);
+          expect(r.label.x + r.label.w).toBeLessThanOrEqual(l.width);
+        }
+      }
+    });
+
+    it('lays out parallel edges with an opposite reply orthogonally', async () => {
+      const d = parseSpecText('type: architecture\nnodes: { a: API, b: Worker }\nedges:\n  - a -> b: job 1\n  - a -> b: job 2\n  - b -> a: status\n').diagram;
+      const l = await layout(d);
+      for (const [id, e] of l.edges) {
+        for (let i = 1; i < e.points.length; i++) expect(vert(e.points[i - 1]!, e.points[i]!) || horiz(e.points[i - 1]!, e.points[i]!), id).toBe(true);
+      }
+    });
+  });
 });

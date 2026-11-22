@@ -185,9 +185,14 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
   ): Promise<BuildResult> {
     xml = stamped(xml, stamp);
     fs.mkdirSync(path.dirname(path.resolve(opts.out)), { recursive: true });
-    // Issued together: the browser renders the preview and lays out the lint pass
-    // while node subsets the fonts for the SVG.
-    const [file, , cells] = await Promise.all([kind === 'svg' ? b.renderSvg(xml) : xml, opts.png ? b.renderPng(xml, opts.png) : undefined, r.cells ?? b.inspect(xml)]);
+    // Render once into #out when both SVG and PNG are requested, avoiding concurrent DOM writes.
+    const [file, cells] =
+      kind === 'svg' && opts.png
+        ? await Promise.all([b.renderSvgAndPng(xml, opts.png).then((x) => x.svg), r.cells ?? b.inspect(xml)])
+        : await Promise.all([
+            kind === 'svg' ? b.renderSvg(xml) : opts.png ? b.renderPng(xml, opts.png).then(() => xml) : Promise.resolve(xml),
+            r.cells ?? b.inspect(xml),
+          ]);
     fs.writeFileSync(opts.out, file);
     return {
       out: opts.out,

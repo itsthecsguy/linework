@@ -101,15 +101,21 @@ describe('editing draw.io XML', () => {
 });
 
 const run = process.env.LINEWORK_SKIP_E2E !== '1';
+let sharedBrowser: DrawioBrowser | undefined;
+const getBrowser = async () => (sharedBrowser ??= await DrawioBrowser.launch());
+afterAll(async () => {
+  await sharedBrowser?.close();
+  sharedBrowser = undefined;
+});
 
 describe.runIf(run)('Excalidraw files', () => {
   let b: DrawioBrowser;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-excalidraw-'));
   beforeAll(async () => {
-    b = await DrawioBrowser.launch();
+    b = await getBrowser();
   }, 60000);
-  afterAll(async () => {
-    await b?.close();
+  afterAll(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
   });
 
   const convert = async (example: string, theme?: string): Promise<ExcalidrawFile> => {
@@ -319,10 +325,10 @@ describe.runIf(run)('edits made in Excalidraw come back', () => {
   let b: DrawioBrowser;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-roundtrip-'));
   beforeAll(async () => {
-    b = await DrawioBrowser.launch();
+    b = await getBrowser();
   }, 60000);
-  afterAll(async () => {
-    await b?.close();
+  afterAll(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
   });
 
   /** Build an example, export it, let `edit` change the Excalidraw file as a person would, and import it. */
@@ -491,7 +497,7 @@ describe.runIf(run)('edits made in Excalidraw come back', () => {
     return f.elements.filter((e) => e.groupIds.some((g) => t.groupIds.includes(g)) || e.id === t.containerId || e === t);
   };
   const line = (f: ExcalidrawFile, id: string, from: [number, number], to: [number, number], label?: string, over: Record<string, unknown> = {}) => {
-    f.elements.push({ id, type: 'arrow', x: from[0], y: from[1], width: Math.abs(to[0] - from[0]), height: Math.abs(to[1] - from[1]), points: [[0, 0], [to[0] - from[0], to[1] - from[1]]], groupIds: [], boundElements: label ? [{ id: `${id}-t`, type: 'text' }] : [], isDeleted: false, strokeStyle: 'solid', strokeColor: '#1e1e1e', startBinding: null, endBinding: null, endArrowhead: 'arrow', startArrowhead: null, ...over });
+    f.elements.push({ id, type: 'arrow', x: from[0], y: from[1], width: Math.abs(to[0] - from[0]), height: Math.abs(to[1] - from[1]), points: [[0, 0], [to[0] - from[0], to[1] - from[1]]], groupIds: [], boundElements: label ? [{ id: `${id}-t`, type: 'text' }] : [], isDeleted: false, strokeStyle: 'solid', strokeColor: '#1e1e1e', startBinding: null, endBinding: null, endArrowhead: 'triangle', startArrowhead: null, ...over });
     if (label) f.elements.push({ id: `${id}-t`, type: 'text', x: from[0], y: from[1], width: 60, height: 20, groupIds: [], boundElements: [], isDeleted: false, text: label, originalText: label, containerId: id });
   };
   const freeText = (f: ExcalidrawFile, id: string, at: [number, number], text: string) =>
@@ -883,6 +889,70 @@ describe.runIf(run)('edits made in Excalidraw come back', () => {
     expect(d2.nodes.find((n) => n.id === 'fraud_flag')!.kind).toBe('decision');
     expect(d2.edges.find((e) => e.from === 'review' && e.to === 'approved')!.label).toBe('decided');
   }, 120000);
+
+  it('reverses waypoints for bent reversed arrows so routes run from source to target', async () => {
+    const r = await roundTrip('checkout', (f, el) => {
+      const api = el('lw-api'), stripe = el('lw-stripe');
+      const [x0, y0] = [stripe.x + stripe.width / 2, stripe.y + stripe.height];
+      const [x1, y1] = [api.x + api.width / 2, api.y + api.height];
+      const bendY = Math.max(y0, y1) + 60;
+      f.elements.push({
+        id: 'rev-bent',
+        type: 'arrow',
+        x: x0,
+        y: y0,
+        width: Math.abs(x1 - x0),
+        height: bendY - y0,
+        points: [[0, 0], [0, bendY - y0], [x1 - x0, bendY - y0], [x1 - x0, y1 - y0]],
+        groupIds: [],
+        boundElements: [],
+        isDeleted: false,
+        strokeStyle: 'solid',
+        startBinding: { elementId: stripe.id, focus: 0, gap: 1 },
+        endBinding: { elementId: api.id, focus: 0, gap: 1 },
+        startArrowhead: 'arrow',
+        endArrowhead: null,
+      });
+    }, 'bent-reversed');
+    expect(r.spec.edges.some((e) => e.from === 'api' && e.to === 'stripe')).toBe(true);
+    const cell = r.cells.get('e_api__stripe_2')!;
+    expect(cell).toBeDefined();
+    // First point starts near api, last point ends near stripe (not backwards).
+    const apiBox = r.cells.get('api')!.box, stripeBox = r.cells.get('stripe')!.box;
+    const pts = cell.points!;
+    expect(Math.hypot(pts[0]!.x - (apiBox.x + apiBox.w / 2), pts[0]!.y - (apiBox.y + apiBox.h))).toBeLessThan(Math.max(apiBox.w, apiBox.h));
+    expect(Math.hypot(pts.at(-1)!.x - (stripeBox.x + stripeBox.w / 2), pts.at(-1)!.y - (stripeBox.y + stripeBox.h))).toBeLessThan(Math.max(stripeBox.w, stripeBox.h));
+  }, 120000);
+
+  it('handles sequence message restyle, open-headed async, reversed arrowheads, and frame moves with participant rename', async () => {
+    const r = await roundTrip('pay-sequence', (f, el) => {
+      // Restyle an existing sync message to async (open head) and another to reply (dashed) + reversed.
+      const insert = message(f, 'insert order (pending)').find((e) => e.type === 'arrow')!;
+      insert.endArrowhead = 'arrow';
+      const confirm = message(f, 'confirmCardPayment').find((e) => e.type === 'arrow')!;
+      confirm.startArrowhead = 'triangle';
+      confirm.endArrowhead = null;
+      confirm.strokeStyle = 'dashed';
+      // Draw a new open-headed async arrow and a new reversed sync arrow.
+      const after = message(f, 'create PaymentIntent').find((e) => e.type === 'arrow')!;
+      line(f, 'new-async', [stemX(el, 'api'), after.y + 10], [stemX(el, 'db'), after.y + 10], 'emit event', { endArrowhead: 'arrow' });
+      line(f, 'new-rev', [stemX(el, 'db'), after.y + 18], [stemX(el, 'api'), after.y + 18], 'pull state', { startArrowhead: 'triangle', endArrowhead: null });
+      // Resize the alt frame downward to exclude its first message AND rename a participant (tests xmlDirty).
+      const frame = f.elements.find((e) => e.type === 'rectangle' && (e.customData as { lw?: Origin })?.lw?.cell === 'frame_1')!;
+      const firstInFrame = message(f, 'webhook payment_succeeded').find((e) => e.type === 'arrow')!;
+      const shift = firstInFrame.y - frame.y + 8;
+      frame.y += shift;
+      frame.height -= shift;
+      retype(f.elements.find((e) => e.type === 'text' && e.text === 'Shopper')!, 'Customer');
+    }, 'seq-styles-dirty');
+    const seq = flat(r.spec.seq as Msg[]);
+    expect(seq.find((i) => i.label === 'insert order (pending)')).toMatchObject({ style: 'async' });
+    expect(seq.find((i) => i.label === 'confirmCardPayment')).toMatchObject({ from: 'stripe', to: 'web', style: 'reply' });
+    expect(seq.find((i) => i.label === 'emit event')).toMatchObject({ from: 'api', to: 'db', style: 'async' });
+    expect(seq.find((i) => i.label === 'pull state')).toMatchObject({ from: 'api', to: 'db', style: 'sync' });
+    expect((r.spec.seq as Msg[]).some((i) => i.kind === 'msg' && i.label === 'webhook payment_succeeded')).toBe(true);
+    expect(r.spec.nodes.find((n) => n.id === 'user')!.label).toBe('Customer');
+  }, 120000);
 });
 
 describe('share links', () => {
@@ -906,14 +976,15 @@ describe('share links', () => {
     const scene = { type: 'excalidraw', version: 2, source: 'x', elements: [el('a', 'rectangle'), el('b', 'image')], appState: { viewBackgroundColor: '#fff', gridSize: null, theme: 'light' }, files: { f: { mimeType: 'image/svg+xml', id: 'f', dataURL: 'data:', created: 1, lastRetrieved: 1 } } } as ExcalidrawFile;
     expect(shareable(scene).images).toBe(1);
     expect(JSON.parse(shareable(scene).text)).toMatchObject({ elements: [{ id: 'a' }], files: {} });
-    const calls: Array<{ url: string; body: Uint8Array }> = [];
-    const post = (async (url: string, init: { body: Uint8Array }) => {
-      calls.push({ url, body: init.body });
+    const calls: Array<{ url: string; body: Uint8Array; signal?: AbortSignal }> = [];
+    const post = (async (url: string, init: { body: Uint8Array; signal?: AbortSignal }) => {
+      calls.push({ url, body: init.body, signal: init.signal });
       return new Response(JSON.stringify({ id: 'abc123' }), { status: 200 });
     }) as unknown as typeof fetch;
     const res = await shareLink(scene, post);
     expect(calls.length).toBe(1);
     expect(calls[0]!.url).toBe('https://json.excalidraw.com/api/v2/post/');
+    expect(calls[0]!.signal).toBeInstanceOf(AbortSignal);
     const m = /^https:\/\/excalidraw\.com\/#json=abc123,([\w-]{22})$/.exec(res.url)!;
     expect(m).toBeTruthy();
     expect(JSON.parse(await unseal(calls[0]!.body, m[1]!)).elements.length).toBe(1);
@@ -927,26 +998,30 @@ describe('share links', () => {
 describe('watching a file', () => {
   it('runs once per save, however the editor writes it, and not for other files', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-watch-'));
-    const file = path.join(dir, 'a.excalidraw');
-    fs.writeFileSync(file, 'one');
-    let runs = 0;
-    const w = watchFile(file, async () => void runs++, { settle: 40 });
-    const settle = () => new Promise((r) => setTimeout(r, 250));
-    fs.writeFileSync(path.join(dir, 'other.txt'), 'x');
-    await settle();
-    expect(runs).toBe(0);
-    fs.writeFileSync(file, 'two!');
-    await settle();
-    expect(runs).toBe(1);
-    // Saved by writing beside it and renaming over it.
-    fs.writeFileSync(path.join(dir, 'a.excalidraw.tmp'), 'three!!');
-    fs.renameSync(path.join(dir, 'a.excalidraw.tmp'), file);
-    await settle();
-    expect(runs).toBe(2);
-    w.stop();
-    await w.done;
-    fs.writeFileSync(file, 'four!!!!');
-    await settle();
-    expect(runs).toBe(2);
+    try {
+      const file = path.join(dir, 'a.excalidraw');
+      fs.writeFileSync(file, 'one');
+      let runs = 0;
+      const w = watchFile(file, async () => void runs++, { settle: 40 });
+      const settle = () => new Promise((r) => setTimeout(r, 250));
+      fs.writeFileSync(path.join(dir, 'other.txt'), 'x');
+      await settle();
+      expect(runs).toBe(0);
+      fs.writeFileSync(file, 'two!');
+      await settle();
+      expect(runs).toBe(1);
+      // Saved by writing beside it and renaming over it.
+      fs.writeFileSync(path.join(dir, 'a.excalidraw.tmp'), 'three!!');
+      fs.renameSync(path.join(dir, 'a.excalidraw.tmp'), file);
+      await settle();
+      expect(runs).toBe(2);
+      w.stop();
+      await w.done;
+      fs.writeFileSync(file, 'four!!!!');
+      await settle();
+      expect(runs).toBe(2);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

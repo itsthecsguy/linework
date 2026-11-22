@@ -67,7 +67,7 @@ export async function shareLink(scene: ExcalidrawFile, post: typeof fetch = fetc
   const { payload, key } = await seal(text);
   let res: Response;
   try {
-    res = await post(STORE, { method: 'POST', body: new Uint8Array(payload) });
+    res = await post(STORE, { method: 'POST', body: new Uint8Array(payload), signal: AbortSignal.timeout(30_000) });
   } catch (e) {
     throw new Error(`couldn't reach excalidraw.com to store the drawing: ${(e as Error).message}`);
   }

@@ -135,3 +135,30 @@ describe('stale specs', () => {
     expect(parseSpecText(text).diagram.nodes.length).toBe(11);
   });
 });
+
+describe('merge regressions', () => {
+  it('strips removed spec-owned aiviz_* attrs while keeping custom user attrs', async () => {
+    const before = parseSpecText('type: architecture\nnodes:\n  api: { label: API, tech: Go, icon: aws.lambda }\n  db: DB\nedges:\n  - api -> db\n').diagram;
+    const xml = toMxfile(before, await layout(before)).replace('<object id="api"', '<object id="api" owner="payments"');
+    const old = readDrawio(xml);
+    const after = parseSpecText('type: architecture\nnodes:\n  api: { label: API }\n  db: DB\nedges:\n  - api -> db\n').diagram;
+    const out = readDrawio(serialize(merge(after, old, await layout(after)).scene));
+    const api = out.byId.get('api')!;
+    expect(api.attrs.owner).toBe('payments');
+    expect(api.attrs.aiviz_tech).toBeUndefined();
+    expect(api.attrs.aiviz_icon).toBeUndefined();
+    const node = toDiagram(out).diagram.nodes.find((n) => n.id === 'api');
+    expect(node).toMatchObject({ id: 'api', label: 'API' });
+    expect(node?.tech).toBeUndefined();
+    expect(node?.icon).toBeUndefined();
+  });
+
+  it('applies diamondInset to newly merged or restyled diamond nodes and group labelBg to restyled edges', async () => {
+    const before = parseSpecText('type: flow\ngroups: { g: { label: Core } }\nnodes:\n  a: { label: Start, in: g }\n  b: { label: End, in: g }\nedges:\n  - a -> b: go\n').diagram;
+    const old = readDrawio(toMxfile(before, await layout(before)));
+    const after = parseSpecText('type: flow\ngroups: { g: { label: Core } }\nnodes:\n  a: { label: Start, in: g }\n  d: { label: "Is this valid?", kind: decision, in: g }\n  b: { label: End, in: g }\nedges:\n  - a -> d: check\n  - d -> b: "yes"\n').diagram;
+    const out = readDrawio(serialize(merge(after, old, await layout(after)).scene));
+    expect(out.byId.get('d')!.styleRaw).toMatch(/spacingLeft=[1-9]\d*;spacingRight=[1-9]\d*;/);
+    expect(out.byId.get('e_a__d')!.style.labelBackgroundColor).toBe('#F5F5F7');
+  });
+});

@@ -7,6 +7,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { socketPath, viaDaemon } from '../src/daemon.js';
+
 const skip = process.env.LINEWORK_SKIP_E2E === '1' || process.platform === 'win32' || !fs.existsSync('dist/cli.js');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lw-'));
 // Its own socket folder, so the test never talks to a developer's running process.
@@ -16,6 +18,61 @@ const sockets = () => (fs.existsSync(path.join(tmp, 'linework')) ? fs.readdirSyn
 
 afterAll(() => {
   cli(['daemon', 'stop']);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+describe('daemon socket & protocol', () => {
+  it.runIf(process.platform !== 'win32')('separates socketPath by LINEWORK_NO_CONFIG', () => {
+    const prevXdg = process.env.XDG_RUNTIME_DIR;
+    const prevNoCfg = process.env.LINEWORK_NO_CONFIG;
+    try {
+      process.env.XDG_RUNTIME_DIR = tmp;
+      delete process.env.LINEWORK_NO_CONFIG;
+      const s1 = socketPath();
+      process.env.LINEWORK_NO_CONFIG = '1';
+      const s2 = socketPath();
+      expect(s1).toBeTruthy();
+      expect(s2).toBeTruthy();
+      expect(s1).not.toBe(s2);
+    } finally {
+      if (prevXdg === undefined) delete process.env.XDG_RUNTIME_DIR;
+      else process.env.XDG_RUNTIME_DIR = prevXdg;
+      if (prevNoCfg === undefined) delete process.env.LINEWORK_NO_CONFIG;
+      else process.env.LINEWORK_NO_CONFIG = prevNoCfg;
+    }
+  });
+
+  it.runIf(process.platform !== 'win32')('handles malformed JSON replies in viaDaemon without throwing', async () => {
+    const dir = fs.mkdtempSync(path.join('/tmp', 'lw-bj-'));
+    const prevXdg = process.env.XDG_RUNTIME_DIR;
+    const prevCi = process.env.CI;
+    const prevNo = process.env.LINEWORK_NO_DAEMON;
+    let srv: net.Server | undefined;
+    try {
+      process.env.XDG_RUNTIME_DIR = dir;
+      delete process.env.CI;
+      delete process.env.LINEWORK_NO_DAEMON;
+      const sock = socketPath()!;
+      srv = net.createServer((c) => {
+        c.once('data', () => {
+          c.write('not-valid-json\n');
+          c.end();
+        });
+      });
+      await new Promise<void>((r) => srv!.listen(sock, r));
+      const code = await viaDaemon({ argv: ['check', 'x.drawio.svg'], cwd: dir }, () => {}, () => {});
+      expect(code).toBe(1);
+    } finally {
+      srv?.close();
+      if (prevXdg === undefined) delete process.env.XDG_RUNTIME_DIR;
+      else process.env.XDG_RUNTIME_DIR = prevXdg;
+      if (prevCi === undefined) delete process.env.CI;
+      else process.env.CI = prevCi;
+      if (prevNo === undefined) delete process.env.LINEWORK_NO_DAEMON;
+      else process.env.LINEWORK_NO_DAEMON = prevNo;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe.runIf(!skip)('background process', () => {
@@ -73,7 +130,10 @@ describe.runIf(!skip)('background process: staying healthy', () => {
     expect(run(['build', '-', '-o', 'a.drawio.svg'], spec).status).toBe(0);
     expect(await until(() => socks().length === 1, 10000)).toBe(true);
   };
-  afterAll(() => void run(['daemon', 'stop']));
+  afterAll(() => {
+    run(['daemon', 'stop']);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 
   it('still exits when idle after a connection that asked for nothing', async () => {
     await start();

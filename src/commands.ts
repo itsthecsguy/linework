@@ -114,8 +114,9 @@ Usage:
 
 Options for scripts and agents:
   --json   One JSON document on stdout instead of text, errors included
-           ({ "ok": false, "error": { ... } }). For build, set, add, rm, check,
-           tidy, show, render, import, sync, icons, kinds and doctor.
+           ({ "ok": false, "error": { ... } }). For build, set, add, rm, config,
+           lint, restyle, check, tidy, show, render, import, sync, icons, kinds
+           and doctor.
   -q       show, sync: leave out the notes.
 
 Exit codes: 0 done; 1 the command failed, or check/sync found a problem; 2 bad usage.
@@ -126,7 +127,7 @@ Exit codes: 0 done; 1 the command failed, or check/sync found a problem; 2 bad u
 const STARTER_CONFIG = `# Team settings for linework diagrams in this repo.
 # Every option: run "linework skill" and read references/team-config.md there.
 
-theme: clean          # clean | soft | dark | sketch | blueprint | c4, or one from "themes:" below
+theme: clean          # clean | soft | dark | sketch | blueprint | c4 | paper | midnight | mono | bold, or one from "themes:" below
 lockTheme: true       # a spec may not pick another theme
 out: docs/diagrams    # where new diagrams go
 
@@ -203,8 +204,9 @@ export function report(e: unknown, io: IO = processIO, json = false): number {
     return fail('usage', 2, message);
   }
   if ((e as Error)?.name === 'ConfigError') {
-    io.err(`linework.yaml error in ${(e as Error).message}\n`);
-    return 2;
+    const message = `linework.yaml error in ${(e as Error).message}`;
+    io.err(`${message}\n`);
+    return fail('usage', 2, message);
   }
   if ((e as Error)?.name === 'SpecError') {
     const issues = (e as SpecError).issues;
@@ -262,8 +264,10 @@ export function packageVersion(): string {
 }
 
 /** Commands that draw, and so need Chromium. */
-export function needsBrowser(cmd: string, values: Values): boolean {
-  return ['build', 'set', 'add', 'rm', 'render', 'check', 'tidy', 'icons', 'library', 'sync', 'lint', 'restyle'].includes(cmd) || (cmd === 'import' && !!values.out) || cmd === 'share';
+export function needsBrowser(cmd: string, values: Values, positionals: string[] = []): boolean {
+  if (cmd === 'sync') return !values.check;
+  if (cmd === 'share') return !/\.excalidraw(\.json)?$/i.test(positionals[0] ?? '');
+  return ['build', 'set', 'add', 'rm', 'render', 'check', 'tidy', 'icons', 'library', 'lint', 'restyle'].includes(cmd) || (cmd === 'import' && !!values.out);
 }
 
 /** A small spec with a group, labels and a cycle: enough to exercise ELK's main paths. */
@@ -369,10 +373,31 @@ export async function run(cmd: string, values: Values, positionals: string[], la
         const target = path.resolve('linework.yaml');
         if (fs.existsSync(target) && !values.force) fail('linework.yaml already exists here. Use --force to overwrite it.');
         fs.writeFileSync(target, STARTER_CONFIG);
+        if (json) return emit({ ok: true, path: target });
         console.log('wrote linework.yaml. Edit it, then run "linework config" to see what applies and "linework lint" to check existing diagrams.');
         return;
       }
       const cfg = useConfigFor(positionals[0] ?? process.cwd());
+      if (json) {
+        return emit({
+          ok: true,
+          path: cfg.path ?? null,
+          theme: cfg.theme ?? 'clean',
+          lockTheme: cfg.lockTheme,
+          ...(cfg.direction ? { direction: cfg.direction } : {}),
+          ...(cfg.out ? { out: cfg.out } : {}),
+          ...(cfg.templates ? { templates: cfg.templates } : {}),
+          components: cfg.components,
+          statuses: cfg.statuses,
+          legend: cfg.legend,
+          kinds: cfg.kinds,
+          naming: cfg.naming,
+          limits: cfg.limits,
+          rules: cfg.rules,
+          handStyles: cfg.handStyles,
+          themes: cfg.themes.map((t) => t.name),
+        });
+      }
       if (!cfg.path) return void console.log('no linework.yaml here or in any folder above. Built-in defaults apply: theme clean, direction auto. "linework config init" writes a starter file.');
       const rel = (p: string) => path.relative(process.cwd(), p) || '.';
       console.log(`config: ${rel(cfg.path)}`);
@@ -412,19 +437,50 @@ export async function run(cmd: string, values: Values, positionals: string[], la
         const e = fs_.filter((f) => f.level === 'error').length + (r.error ? 1 : 0);
         errors += e;
         warnings += fs_.length - (e - (r.error ? 1 : 0));
+      }
+      const failed = errors > 0 || (values.strict && warnings > 0);
+      if (json) {
+        emit({
+          ok: !failed,
+          errors,
+          warnings,
+          files: res.map((r) => ({
+            file: path.relative(process.cwd(), r.file) || r.file,
+            ...(r.error ? { error: r.error } : {}),
+            ...(r.check ? { stats: r.check.stats, check: checkJson(r.check) } : {}),
+          })),
+        });
+        if (failed) io.code = 1;
+        return;
+      }
+      for (const r of res) {
+        const fs_ = r.check?.findings ?? [];
         if (!r.error && !fs_.length) continue;
         console.log(path.relative(process.cwd(), r.file));
         if (r.error) console.log(`  error: ${r.error}`);
         for (const f of fs_) console.log(`  ${f.level}: ${f.message} [${f.rule}]`);
       }
       console.log(`${res.length} diagram${res.length === 1 ? '' : 's'} checked: ${errors} errors, ${warnings} warnings`);
-      if (errors || (values.strict && warnings)) io.code = 1;
+      if (failed) io.code = 1;
       return;
     }
     case 'restyle': {
       if (!positionals.length) fail('usage: linework restyle <dir|file...>');
       const { restyleFiles } = await import('./api.js');
       const res = await restyleFiles(positionals, await browser());
+      const failed = res.some((r) => r.error);
+      if (json) {
+        emit({
+          ok: !failed,
+          files: res.map((r) => ({
+            file: path.relative(process.cwd(), r.file) || r.file,
+            ...(r.error ? { error: r.error } : {}),
+            ...(r.result ? { stats: r.result.check.stats, check: checkJson(r.result.check) } : {}),
+          })),
+        });
+        if (failed) io.code = 1;
+        return;
+      }
       for (const r of res) {
         const name = path.relative(process.cwd(), r.file);
         if (r.error) console.log(`${name}: error: ${r.error}`);
@@ -433,7 +489,7 @@ export async function run(cmd: string, values: Values, positionals: string[], la
           console.log(`${name}: restyled${left.length ? `, ${left.length} finding${left.length === 1 ? '' : 's'} left (run linework check on it)` : ''}`);
         }
       }
-      if (res.some((r) => r.error)) io.code = 1;
+      if (failed) io.code = 1;
       return;
     }
     case 'new': {

@@ -21,6 +21,7 @@ export interface Request {
 export type Reply = { t: 'out' | 'err'; d: string } | { t: 'exit'; code: number };
 
 const IDLE_MS = Number(process.env.LINEWORK_DAEMON_IDLE ?? 300) * 1000;
+const CONNECT_TIMEOUT_MS = 2000;
 const cliPath = () => path.join(path.dirname(fileURLToPath(import.meta.url)), 'cli.js');
 
 /** Off on Windows (no Unix sockets with file permissions), in CI, and on request. */
@@ -47,7 +48,11 @@ export function socketPath(): string | undefined {
     } catch {
       // running from source
     }
-    const key = crypto.createHash('sha256').update([cliPath(), stamp, process.version, process.env.LINEWORK_CHROME ?? '', process.env.LINEWORK_NO_CACHE ?? ''].join('\0')).digest('hex').slice(0, 12);
+    const key = crypto
+      .createHash('sha256')
+      .update([cliPath(), stamp, process.version, process.env.LINEWORK_CHROME ?? '', process.env.LINEWORK_NO_CACHE ?? '', process.env.LINEWORK_NO_CONFIG ?? ''].join('\0'))
+      .digest('hex')
+      .slice(0, 12);
     return path.join(dir, `${key}.sock`);
   } catch {
     return undefined;
@@ -66,25 +71,47 @@ export function viaDaemon(req: Request, out: (t: string) => void, err: (t: strin
     let buf = '';
     let started = false;
     let code: number | undefined;
+    let settled = false;
+    const done = (v: number | undefined) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(v);
+    };
+    const timer = setTimeout(() => {
+      c.destroy();
+      done(undefined);
+    }, CONNECT_TIMEOUT_MS);
     // A process that died without cleaning up leaves a socket nobody answers.
     c.once('error', () => {
       if (!started) fs.rmSync(sock, { force: true });
-      resolve(started ? 1 : undefined);
+      done(started ? 1 : undefined);
     });
-    c.once('connect', () => c.write(JSON.stringify(req) + '\n'));
+    c.once('connect', () => {
+      clearTimeout(timer);
+      c.write(JSON.stringify(req) + '\n');
+    });
     c.setEncoding('utf8');
     c.on('data', (chunk: string) => {
       started = true;
       buf += chunk;
       for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
-        const msg = JSON.parse(buf.slice(0, i)) as Reply;
+        const line = buf.slice(0, i);
         buf = buf.slice(i + 1);
+        let msg: Reply;
+        try {
+          msg = JSON.parse(line) as Reply;
+        } catch {
+          c.destroy();
+          done(1);
+          return;
+        }
         if (msg.t === 'out') out(msg.d);
         else if (msg.t === 'err') err(msg.d);
         else if (msg.t === 'exit') code = msg.code;
       }
     });
-    c.once('close', () => resolve(code ?? (started ? 1 : undefined)));
+    c.once('close', () => done(code ?? (started ? 1 : undefined)));
   });
 }
 
@@ -94,10 +121,24 @@ export function daemonAlive(): Promise<boolean> {
   if (!sock || !fs.existsSync(sock)) return Promise.resolve(false);
   return new Promise((resolve) => {
     const c = net.createConnection(sock);
-    c.once('connect', () => (c.destroy(), resolve(true)));
+    let settled = false;
+    const done = (v: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(v);
+    };
+    const timer = setTimeout(() => {
+      c.destroy();
+      done(false);
+    }, CONNECT_TIMEOUT_MS);
+    c.once('connect', () => {
+      c.destroy();
+      done(true);
+    });
     c.once('error', () => {
       fs.rmSync(sock, { force: true });
-      resolve(false);
+      done(false);
     });
   });
 }
@@ -128,19 +169,32 @@ export async function serve(): Promise<void> {
   if (fs.existsSync(sock)) {
     const alive = await new Promise<boolean>((r) => {
       const c = net.createConnection(sock);
-      c.once('connect', () => (c.destroy(), r(true)));
-      c.once('error', () => r(false));
+      let settled = false;
+      const done = (v: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        r(v);
+      };
+      const timer = setTimeout(() => {
+        c.destroy();
+        done(false);
+      }, CONNECT_TIMEOUT_MS);
+      c.once('connect', () => (c.destroy(), done(true)));
+      c.once('error', () => done(false));
     });
     if (alive) return;
     fs.rmSync(sock, { force: true });
   }
   const { DrawioBrowser } = await import('./render/browser.js');
   const { run, warmUp, report, OPTIONS } = await import('./commands.js');
+  const { NO_CONFIG, useConfig } = await import('./config.js');
   const { parseArgs } = await import('node:util');
   const browser = await DrawioBrowser.launch({ scale: 2 });
   await warmUp();
 
   let idle: NodeJS.Timeout;
+  let inFlight = 0;
   let queue: Promise<unknown> = Promise.resolve();
   const server = net.createServer({ allowHalfOpen: true });
   const shutdown = async () => {
@@ -172,18 +226,22 @@ export async function serve(): Promise<void> {
       // Only a command holds the process open. A connection that says nothing
       // (another process checking whether this one is alive) leaves the timer running.
       clearTimeout(idle);
+      inFlight++;
       const send = (m: Reply) => void (c.writable && c.write(JSON.stringify(m) + '\n'));
       // One command at a time: they share the page and the working directory.
       queue = queue.then(async () => {
         let code = 0;
+        let stopping = false;
         try {
           const req = JSON.parse(line) as Request;
           if (req.argv[0] === 'daemon' && req.argv[1] === 'stop') {
+            stopping = true;
             send({ t: 'exit', code: 0 });
             c.end();
             return void shutdown();
           }
           const io = { out: (d: string) => send({ t: 'out', d }), err: (d: string) => send({ t: 'err', d }), stdin: () => req.stdin ?? '', code: 0, warm: true };
+          useConfig(NO_CONFIG);
           try {
             process.chdir(req.cwd);
             const [cmd, ...rest] = req.argv;
@@ -192,13 +250,19 @@ export async function serve(): Promise<void> {
             code = io.code;
           } catch (e) {
             code = report(e, io, req.argv.includes('--json'));
+          } finally {
+            useConfig(NO_CONFIG);
           }
         } catch {
           code = 1;
+        } finally {
+          inFlight--;
         }
-        send({ t: 'exit', code });
-        c.end();
-        arm();
+        if (!stopping) {
+          send({ t: 'exit', code });
+          c.end();
+          if (inFlight === 0) arm();
+        }
       });
     });
   });

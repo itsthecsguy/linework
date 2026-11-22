@@ -172,7 +172,7 @@ export const FRAME_OPS = ['alt', 'par', 'opt', 'loop', 'critical', 'break'] as c
 export type FrameOp = (typeof FRAME_OPS)[number];
 
 export type SeqItem =
-  | { kind: 'msg'; from: string; to: string; label?: string; style: MessageStyle; highlight?: boolean; color?: ColorName }
+  | ({ kind: 'msg'; from: string; to: string; label?: string; style: MessageStyle } & Look)
   | { kind: 'note'; over: string[]; side: 'over' | 'left' | 'right'; text: string }
   | { kind: 'frame'; op: FrameOp; branches: Array<{ when?: string; items: SeqItem[] }> };
 

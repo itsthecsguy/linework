@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process';
 import { extractMxfile } from '../drawio/read.js';
 import { assetsDir } from '../render/browser.js';
 import { FACES, embedFonts, fontFaceCss, fontsDir } from '../render/fonts.js';
+import { activeConfig, useConfig, useConfigFor } from '../config.js';
 
 export interface EditResult {
   /** Times the file was written. */
@@ -51,7 +52,7 @@ iframe{border:0;width:100%;height:100%} #msg{display:none;padding:48px;color:#33
 const D = ${data};
 const base = '/${token}';
 const f = document.getElementById('f');
-const send = (m) => f.contentWindow.postMessage(JSON.stringify(m), '*');
+const send = (m) => f.contentWindow.postMessage(JSON.stringify(m), location.origin);
 let pending = null; // the save waiting for its export
 async function post(p, body) {
   const r = await fetch(base + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) });
@@ -93,6 +94,11 @@ window.addEventListener('pagehide', () => navigator.sendBeacon(base + '/closed')
 export async function startEditor(file: string, opts: { port?: number } = {}): Promise<EditSession> {
   const abs = path.resolve(file);
   if (!fs.existsSync(abs)) throw new Error(`${file} doesn't exist. Create it with linework build first.`);
+  const cfg = useConfigFor(abs);
+  const customFaces = activeConfig().fonts.map((f, i) => ({
+    ...f,
+    route: `/aiviz-fonts/custom-${i}${path.extname(f.file).toLowerCase()}`,
+  }));
   const format: 'svg' | 'xml' = abs.endsWith('.svg') ? 'svg' : 'xml';
   extractMxfile(fs.readFileSync(abs, 'utf8')); // fail early on files draw.io can't open
   const assets = assetsDir();
@@ -137,7 +143,10 @@ export async function startEditor(file: string, opts: { port?: number } = {}): P
             let content = msg.data ? decodeDataUri(msg.data) : msg.xml;
             // draw.io writes a fresh SVG without our fonts; put them back so the file
             // still renders in the diagram's typeface everywhere.
-            if (content && msg.data) content = await embedFonts(content);
+            if (content && msg.data) {
+              useConfig(cfg);
+              content = await embedFonts(content);
+            }
             if (!content) return json(400, { error: 'empty save' });
             let target = abs;
             if (fs.statSync(abs).mtimeMs !== msg.mtime) {
@@ -169,16 +178,31 @@ export async function startEditor(file: string, opts: { port?: number } = {}): P
     }
     if (req.method === 'GET' && url.pathname.startsWith('/aiviz-fonts/')) {
       const f = FACES.find((x) => `/aiviz-fonts/${x.file}` === url.pathname);
-      if (!f) {
-        res.writeHead(404);
-        return void res.end();
+      if (f) {
+        res.writeHead(200, { 'content-type': 'font/woff2' });
+        return void fs.createReadStream(path.join(fontsDir(), f.file)).pipe(res);
       }
-      res.writeHead(200, { 'content-type': 'font/woff2' });
-      return void fs.createReadStream(path.join(fontsDir(), f.file)).pipe(res);
+      const cf = customFaces.find((x) => x.route === url.pathname);
+      if (cf && fs.existsSync(cf.file)) {
+        const ext = path.extname(cf.file).toLowerCase();
+        const type = ext === '.woff2' ? 'font/woff2' : ext === '.ttf' ? 'font/ttf' : ext === '.otf' ? 'font/otf' : 'application/octet-stream';
+        res.writeHead(200, { 'content-type': type });
+        return void fs.createReadStream(cf.file).pipe(res);
+      }
+      res.writeHead(404);
+      return void res.end();
     }
     if (req.method === 'GET' && url.pathname === '/app/index.html') {
       // The editor shows labels in the diagram's own fonts.
-      const html = fs.readFileSync(path.join(assets, 'index.html'), 'utf8').replace('</head>', `<style>${fontFaceCss((f) => `/aiviz-fonts/${f}`)}</style></head>`);
+      const extraCss = customFaces
+        .map((f) => {
+          const ext = path.extname(f.file).toLowerCase();
+          const fmt = ext === '.ttf' ? 'truetype' : ext === '.otf' ? 'opentype' : 'woff2';
+          return `@font-face{font-family:"${f.family}";font-weight:${f.weight};font-style:normal;src:url(${f.route}) format("${fmt}");}`;
+        })
+        .join('\n');
+      const css = [fontFaceCss((f) => `/aiviz-fonts/${f}`), extraCss].filter(Boolean).join('\n');
+      const html = fs.readFileSync(path.join(assets, 'index.html'), 'utf8').replace('</head>', `<style>${css}</style></head>`);
       res.writeHead(200, { 'content-type': TYPES['.html']! });
       return void res.end(html);
     }

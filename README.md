@@ -309,7 +309,7 @@ Everything else takes the same JSON block in its MCP config file:
 | Claude Desktop | `claude_desktop_config.json` (Settings > Developer > Edit Config) |
 | VS Code | `.vscode/mcp.json`, with `"servers"` in place of `"mcpServers"` and `"type": "stdio"` added |
 
-Relative paths in tool calls resolve against the folder the server starts in. Add `"--root", "/path/to/docs"` to the args to pin it: with `--root`, the tools read and write only inside that folder, and a path that leads out of it is refused. The tools are `build_diagram`, `show_diagram`, `check_diagram`, `render_diagram`, `tidy_diagram`, `import_mermaid`, `import_excalidraw`, `list_icons`, `edit_diagram`, `publish_diagram`, and `linework_guide`, which hands the model the spec format and style rules. `build_diagram` returns a PNG preview, so a model that can see images checks its own work.
+Relative paths in tool calls resolve against the folder the server starts in. Add `"--root", "/path/to/docs"` to the args to pin it: with `--root`, the tools read and write only inside that folder, and a path that leads out of it is refused. The tools are `build_diagram`, `show_diagram`, `check_diagram`, `render_diagram`, `tidy_diagram`, `import_mermaid`, `import_excalidraw`, `list_icons`, `edit_diagram`, `publish_diagram`, `get_config`, `lint_diagrams`, and `linework_guide`, which hands the model the spec format and style rules. `build_diagram` returns a PNG preview, so a model that can see images checks its own work.
 
 ### Installing the skill by hand
 
@@ -415,7 +415,7 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 
 ### In scripts and CI
 
-Add `--json` to `build`, `set`, `add`, `rm`, `check`, `tidy`, `show`, `render`, `import`, `sync`, `icons`, `kinds` or `doctor`, and stdout carries one JSON document instead of text:
+Add `--json` to `build`, `set`, `add`, `rm`, `check`, `lint`, `config`, `restyle`, `tidy`, `show`, `render`, `import`, `sync`, `icons`, `kinds` or `doctor`, and stdout carries one JSON document instead of text:
 
 ```bash
 linework build spec.yaml -o docs/arch.drawio.svg --json
@@ -436,7 +436,7 @@ linework build spec.yaml -o docs/arch.drawio.svg --json
 
 A failure is a document too: `{ "ok": false, "error": { "kind": "spec", "message": "...", "issues": [{ "path": "edges[0]", "message": "..." }] } }`, where `kind` is `spec`, `usage` or `error`. Fields are only ever added.
 
-Exit codes are the same with or without `--json`: 0 when the command did its work, 1 when it failed or when `check`, `sync --check` or `doctor` found a problem, 2 for a command line linework can't read. `build` exits 0 when it wrote the file even if lint has complaints; follow it with `linework check <file> --strict` to fail a job on any finding.
+Exit codes are the same with or without `--json`: 0 when the command did its work, 1 when it failed or when `check`, `lint`, `sync --check` or `doctor` found a problem, 2 for a command line linework can't read. `build` exits 0 when it wrote the file even if lint has complaints; follow it with `linework check <file> --strict` to fail a job on any finding.
 
 ## Status
 
@@ -452,7 +452,7 @@ npm run doctor       # can this machine draw? says what to fix
 npm run dev -- build examples/checkout.yaml -o out/checkout.drawio.svg --png out/checkout.png
 ```
 
-[AGENTS.md](AGENTS.md) has the layout of the code, the rules a change has to keep, and how to check a change from the command line. Every push to `main` and every pull request runs the typecheck and the tests on Node 22 and 24 in GitHub Actions. To run the suite with a browser that isn't in one of the usual places, set `LINEWORK_CHROME=/path/to/chromium`.
+[AGENTS.md](AGENTS.md) has the layout of the code, the rules a change has to keep, and how to check a change from the command line. Every push to `main` and every pull request runs the typecheck and the tests on Node 20, 22 and 24 in GitHub Actions. To run the suite with a browser that isn't in one of the usual places, set `LINEWORK_CHROME=/path/to/chromium`.
 
 After a change to layout or rendering, rebuild the README gallery and look at what moved:
 

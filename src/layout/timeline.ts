@@ -120,11 +120,11 @@ export async function timelineScene(d: Diagram, measure: Measure, opts: { extraM
   const lanes: Array<{ id: string; top: number; bottom: number }> = [];
   for (const g of d.groups) {
     const mine = items.filter((i) => i.n.parent === g.id);
-    if (!mine.length) continue;
     y += 10;
     const top = y;
     y += LANE_HEAD;
     for (const i of mine) place(i);
+    if (!mine.length) y += ROW;
     y += 6;
     lanes.push({ id: g.id, top, bottom: y });
   }
@@ -148,10 +148,10 @@ export async function timelineScene(d: Diagram, measure: Measure, opts: { extraM
   const lineStyle = `rounded=0;html=1;fillColor=${t.edge};strokeColor=none;opacity=22;`;
   let k = 0;
   for (let day = t0; day < t1; day = next(day, unit), k++) {
-    vertices.push({ id: `tick_${k}`, parent: '1', attrs: { label: tickText(day, unit, k === 0), aiviz_type: 'tick' }, style: tickStyle, box: { x: x(day) + 5, y: AXIS_Y, w: Math.max(30, next(day, unit) * ppd - day * ppd - 6), h: AXIS_H } });
-    vertices.push({ id: `grid_${k}`, parent: '1', attrs: { label: '', aiviz_type: 'grid' }, style: lineStyle, box: { x: x(day), y: AXIS_Y + 2, w: 1, h: bottom - AXIS_Y - 2 } });
+    vertices.push({ id: `_lw_tick_${k}`, parent: '1', attrs: { label: tickText(day, unit, k === 0), aiviz_type: 'tick' }, style: tickStyle, box: { x: x(day) + 5, y: AXIS_Y, w: Math.max(30, next(day, unit) * ppd - day * ppd - 6), h: AXIS_H } });
+    vertices.push({ id: `_lw_grid_${k}`, parent: '1', attrs: { label: '', aiviz_type: 'grid' }, style: lineStyle, box: { x: x(day), y: AXIS_Y + 2, w: 1, h: bottom - AXIS_Y - 2 } });
   }
-  vertices.push({ id: 'axis', parent: '1', attrs: { label: '', aiviz_type: 'grid' }, style: lineStyle.replace('opacity=22', 'opacity=70'), box: { x: X0, y: AXIS_Y + AXIS_H, w: right - X0, h: 1 } });
+  vertices.push({ id: '_lw_axis', parent: '1', attrs: { label: '', aiviz_type: 'grid' }, style: lineStyle.replace('opacity=22', 'opacity=70'), box: { x: X0, y: AXIS_Y + AXIS_H, w: right - X0, h: 1 } });
   vertices.push(...bars);
 
   return {

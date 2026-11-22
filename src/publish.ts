@@ -28,13 +28,15 @@ export function driveFolders(): string[] {
     if (fs.existsSync(cs))
       for (const d of fs.readdirSync(cs))
         if (d.startsWith('GoogleDrive-')) {
-          const my = fs.readdirSync(path.join(cs, d)).find((n) => n === 'My Drive' || n === 'Meine Ablage' || /^my drive$/i.test(n));
-          if (my) found.push(path.join(cs, d, my));
+          const full = path.join(cs, d);
+          if (!fs.statSync(full, { throwIfNoEntry: false })?.isDirectory()) continue;
+          const my = fs.readdirSync(full).find((n) => n === 'My Drive' || n === 'Meine Ablage' || /^my drive$/i.test(n));
+          if (my && fs.statSync(path.join(full, my), { throwIfNoEntry: false })?.isDirectory()) found.push(path.join(full, my));
         }
   } else if (process.platform === 'win32') {
     for (const letter of 'GHIJKLMNOPQRSTUVWXYZ') {
       const p = `${letter}:\\My Drive`;
-      if (fs.existsSync(p)) found.push(p);
+      if (fs.statSync(p, { throwIfNoEntry: false })?.isDirectory()) found.push(p);
     }
   }
   return found;
@@ -80,25 +82,34 @@ export function publish(files: string[], opts: { to?: string; pull?: boolean; fo
   const manifestPath = path.join(dir, MANIFEST);
   const manifest: Record<string, string> = fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, 'utf8')) : {};
   const items: PublishItem[] = [];
-  // Every file is checked before any is copied: stopping halfway would leave
-  // copies in Drive that the manifest doesn't know, and those read as edits made there.
-  for (const f of files) {
-    const src = path.resolve(cwd, f);
-    if (!fs.existsSync(src)) throw new Error(`${f} doesn't exist`);
-    if (!/\.(drawio\.svg|drawio\.png|drawio|svg)$/.test(src)) throw new Error(`${f}: publish takes .drawio.svg or .drawio files`);
-  }
-  for (const f of files) {
+  const resolved = files.map((f) => {
     const src = path.resolve(cwd, f);
     // Keep the project's folder structure so two diagrams with the same name don't collide.
-    const rel = path.relative(root, src).startsWith('..') ? path.basename(src) : path.relative(root, src);
+    const rawRel = path.relative(root, src);
+    const rel = rawRel.startsWith('..') || path.isAbsolute(rawRel) ? path.basename(src) : rawRel;
     const dest = path.join(dir, rel);
     const key = rel.split(path.sep).join('/');
+    return { f, src, dest, key };
+  });
+  // Every file is checked before any is copied: stopping halfway would leave
+  // copies in Drive that the manifest doesn't know, and those read as edits made there.
+  for (const { f, src, dest } of resolved) {
+    if (!fs.existsSync(src)) throw new Error(`${f} doesn't exist`);
+    if (!/\.(drawio\.svg|drawio\.png|drawio|svg)$/.test(src)) throw new Error(`${f}: publish takes .drawio.svg or .drawio files`);
+    if (opts.pull && !fs.existsSync(dest)) throw new Error(`${dest} doesn't exist, so there is nothing to pull`);
+  }
+  for (const { src, dest, key } of resolved) {
     const srcBuf = fs.readFileSync(src);
     const destBuf = fs.existsSync(dest) ? fs.readFileSync(dest) : undefined;
     // Changed in Drive since we last wrote it: someone edited it from Docs or Drive.
     const editedInDrive = !!destBuf && manifest[key] !== undefined && sha(destBuf) !== manifest[key];
     if (opts.pull) {
       if (!destBuf) throw new Error(`${dest} doesn't exist, so there is nothing to pull`);
+      const editedLocally = manifest[key] !== undefined && sha(srcBuf) !== manifest[key];
+      if (editedLocally && sha(destBuf) !== sha(srcBuf) && !opts.force) {
+        items.push({ file: src, dest, action: 'conflict' });
+        continue;
+      }
       if (sha(destBuf) !== sha(srcBuf)) {
         fs.writeFileSync(src, destBuf);
         items.push({ file: src, dest, action: 'pulled' });

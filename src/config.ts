@@ -131,8 +131,31 @@ export class ConfigError extends Error {
   }
 }
 
+let configRoot: string | undefined;
+
+function realPath(p: string): string {
+  for (let dir = path.resolve(p), rest = ''; ; rest = path.join(path.basename(dir), rest), dir = path.dirname(dir)) {
+    try {
+      return path.join(fs.realpathSync(dir), rest);
+    } catch {
+      if (path.dirname(dir) === dir) return path.resolve(p);
+    }
+  }
+}
+
+function insideBoundary(p: string, boundary: string): boolean {
+  const rp = realPath(p);
+  return rp === boundary || rp.startsWith(boundary + path.sep);
+}
+
+/** Pin config discovery, extends and custom font paths to stay inside `root` (or undefined to clear). */
+export function setConfigRoot(root: string | undefined): void {
+  configRoot = root ? realPath(path.resolve(root)) : undefined;
+}
+
 /** The config file that governs a path: the nearest one at or above it. */
-export function findConfig(from: string): string | undefined {
+export function findConfig(from: string, rootBoundary?: string): string | undefined {
+  const boundary = rootBoundary !== undefined ? realPath(path.resolve(rootBoundary)) : configRoot;
   let dir = path.resolve(from);
   try {
     if (!fs.statSync(dir).isDirectory()) dir = path.dirname(dir);
@@ -140,17 +163,23 @@ export function findConfig(from: string): string | undefined {
     dir = path.dirname(dir);
   }
   for (;;) {
+    if (boundary && !insideBoundary(dir, boundary)) return undefined;
     for (const n of CONFIG_NAMES) {
       const f = path.join(dir, n);
-      if (fs.existsSync(f)) return f;
+      if (fs.existsSync(f)) {
+        if (boundary && !insideBoundary(f, boundary)) continue;
+        return f;
+      }
     }
+    if (boundary && realPath(dir) === boundary) return undefined;
     const up = path.dirname(dir);
     if (up === dir) return undefined;
     dir = up;
   }
 }
 
-function readRaw(file: string, seen: string[] = []): ConfigInput & { __dir: string; __fontDirs: Record<string, string> } {
+function readRaw(file: string, seen: string[] = [], boundary?: string): ConfigInput & { __dir: string; __fontDirs: Record<string, string> } {
+  if (boundary && !insideBoundary(file, boundary)) throw new ConfigError(file, [`config file resolves outside ${boundary}`]);
   if (seen.includes(file)) throw new ConfigError(file, [`extends loops back on itself: ${[...seen, file].join(' -> ')}`]);
   let doc: unknown;
   try {
@@ -179,8 +208,9 @@ function readRaw(file: string, seen: string[] = []): ConfigInput & { __dir: stri
       }
     }
   }
+  if (boundary && !insideBoundary(parentFile, boundary)) throw new ConfigError(file, [`extends: "${own.extends}" resolves outside ${boundary}`]);
   if (!fs.existsSync(parentFile)) throw new ConfigError(file, [`extends: ${parentFile} doesn't exist`]);
-  const base = readRaw(parentFile, [...seen, file]);
+  const base = readRaw(parentFile, [...seen, file], boundary);
   const maps = <K extends 'rules' | 'themes' | 'components' | 'statuses'>(k: K) => ({ ...base[k], ...own[k] }) as ConfigInput[K];
   const kinds: ConfigInput['kinds'] = {};
   for (const t of DIAGRAM_TYPES) if (base.kinds?.[t] || own.kinds?.[t]) kinds[t] = { ...base.kinds?.[t], ...own.kinds?.[t] };
@@ -205,8 +235,9 @@ function readRaw(file: string, seen: string[] = []): ConfigInput & { __dir: stri
 const humanize = (id: string) => id.replace(/[_-]+/g, ' ').replace(/^./, (c) => c.toUpperCase());
 
 /** Read and check a config file. Throws ConfigError with every problem found. */
-export function loadConfig(file: string): Config {
-  const raw = readRaw(file);
+export function loadConfig(file: string, rootBoundary?: string): Config {
+  const boundary = rootBoundary !== undefined ? realPath(path.resolve(rootBoundary)) : configRoot;
+  const raw = readRaw(file, [], boundary);
   const issues: string[] = [];
   const themes: Theme[] = [];
   const fonts: CustomFont[] = [];
@@ -222,7 +253,8 @@ export function loadConfig(file: string): Config {
       k.font = { family: font.family, fallback: font.fallback, strong, size: font.size };
       for (const [weight, rel] of [[400, font.regular], [strong, font.bold]] as const) {
         const f = path.resolve(raw.__fontDirs[name] ?? raw.__dir, rel);
-        if (!fs.existsSync(f)) issues.push(`themes.${name}.font: ${f} doesn't exist`);
+        if (boundary && !insideBoundary(f, boundary)) issues.push(`themes.${name}.font: ${rel} resolves outside ${boundary}`);
+        else if (!fs.existsSync(f)) issues.push(`themes.${name}.font: ${f} doesn't exist`);
         else fonts.push({ family: font.family, weight, file: f });
       }
     }
@@ -303,9 +335,9 @@ export function useConfig(cfg: Config = NO_CONFIG): Config {
 }
 
 /** Find, load and put in force the config that governs a file or folder. */
-export function useConfigFor(target: string): Config {
-  const file = process.env.LINEWORK_NO_CONFIG ? undefined : findConfig(target);
-  return useConfig(file ? loadConfig(file) : NO_CONFIG);
+export function useConfigFor(target: string, rootBoundary?: string): Config {
+  const file = process.env.LINEWORK_NO_CONFIG ? undefined : findConfig(target, rootBoundary);
+  return useConfig(file ? loadConfig(file, rootBoundary) : NO_CONFIG);
 }
 
 /** A rule's level after the team's overrides. */

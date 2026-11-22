@@ -127,4 +127,21 @@ edges: ["[*] -> a", "a -> b", "a -> [*]", "b -> [*]"]
     const { warnings } = parseSpecText('type: flow\nnodes: { d: { kind: decision }, a: {}, b: {} }\nedges: [d -> a, "d -> b: no"]');
     expect(warnings.map((w) => w.message).join()).toMatch(/label every edge leaving a decision/);
   });
+
+  it('collects accent errors alongside other spec issues', () => {
+    const out = errs('type: flow\naccent: notacolor\nnodes: { a: { kind: nope } }\n');
+    expect(out).toMatch(/nodes\.a\.kind: unknown kind/);
+    expect(out).toMatch(/accent: accent is a color name/);
+  });
+
+  it('rejects unknown keys on sequence frames and branches, and allows status on messages', () => {
+    expect(errs('type: sequence\nparticipants: { a: {}, b: {} }\nmessages:\n  - alt:\n      - when: ok\n        messages: []\n        do: []\n')).toMatch(/unknown key\(s\) "messages"\. Allowed here: when, do\./);
+    expect(errs('type: sequence\nparticipants: { a: {}, b: {} }\nmessages:\n  - opt: ok\n    extra: 1\n    do: []\n')).toMatch(/unknown key\(s\) "extra"\. Allowed here: opt, do\./);
+    expect(errs('type: sequence\nparticipants: { a: {}, b: {} }\nmessages:\n  - { from: a, to: b, status: beta }\n')).toMatch(/messages\[0\]\.status: status needs a "statuses:" section/);
+    expect(errs('type: flow\ngroups: { g: { extra: 1 } }\nnodes: { a: {} }\n')).toMatch(/Allowed here: label, in, color, status, highlight\./);
+  });
+
+  it('rejects nested timeline groups', () => {
+    expect(errs('type: timeline\ngroups: { a: {}, b: { in: a } }\nnodes:\n  t: { start: 2026-01-01, end: 2026-01-05, in: b }\n')).toMatch(/groups\.b\.in: timeline lanes cannot be nested/);
+  });
 });

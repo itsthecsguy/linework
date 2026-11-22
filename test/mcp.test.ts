@@ -31,17 +31,23 @@ beforeAll(async () => {
 }, 60000);
 afterAll(async () => {
   await client?.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
 });
 
 describe.runIf(run)('mcp server', () => {
   it('lists the tools and gives instructions', async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ['build_diagram', 'check_diagram', 'edit_diagram', 'import_excalidraw', 'import_mermaid', 'linework_guide', 'list_icons', 'publish_diagram', 'render_diagram', 'show_diagram', 'tidy_diagram'],
+      ['build_diagram', 'check_diagram', 'edit_diagram', 'get_config', 'import_excalidraw', 'import_mermaid', 'linework_guide', 'lint_diagrams', 'list_icons', 'publish_diagram', 'render_diagram', 'show_diagram', 'tidy_diagram'],
     );
+    const impTool = tools.find((t) => t.name === 'import_mermaid');
+    expect(impTool?.description).toContain('classDiagram');
+    expect(impTool?.description).toContain('gantt');
     expect(client.getInstructions()).toContain('show_diagram');
     const guide = await call('linework_guide', { topic: 'spec' });
     expect(guide.text).toContain('build -> build_diagram');
+    expect(guide.text).toContain('config -> get_config');
+    expect(guide.text).toContain('lint -> lint_diagrams');
     expect(guide.text).toContain('## Sequence');
   });
 
@@ -117,12 +123,42 @@ describe.runIf(run)('mcp server', () => {
     expect((await call('list_icons', { provider: 'aws', filter: 'lambda' })).text).toContain('aws.lambda');
   }, 120000);
 
-  it('publishes to a synced folder', async () => {
+  it('publishes to a synced folder and keeps publish_diagram inside --root', async () => {
     const res = await call('publish_diagram', { paths: ['docs/checkout.drawio.svg'], to: 'drive' });
     expect(res.text).toContain('published');
     expect(res.text).toContain('Insert diagrams');
     expect(fs.existsSync(path.join(tmp, 'drive/docs/checkout.drawio.svg'))).toBe(true);
+    const escaped = await call('publish_diagram', { paths: ['docs/checkout.drawio.svg'], to: '../outside-drive' });
+    expect(escaped.isError).toBe(true);
+    expect(escaped.text).toContain('is outside');
   });
+
+  it('supports get_config, lint_diagrams, tidy_diagram and keeps config inside --root', async () => {
+    const noCfg = await call('get_config', { path: 'docs' });
+    expect(noCfg.isError).toBeFalsy();
+    expect(noCfg.text).toContain('no linework.yaml');
+
+    fs.mkdirSync(path.join(tmp, 'team-cfg'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'team-cfg/linework.yaml'), 'theme: soft\nlockTheme: true\n');
+    const hasCfg = await call('get_config', { path: 'team-cfg' });
+    expect(hasCfg.isError).toBeFalsy();
+    expect(hasCfg.text).toContain('theme: soft (locked');
+
+    // A config trying to extend outside --root is rejected
+    fs.mkdirSync(path.join(tmp, 'bad-cfg'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'bad-cfg/linework.yaml'), 'extends: ../../outside.yaml\n');
+    const escCfg = await call('get_config', { path: 'bad-cfg' });
+    expect(escCfg.isError).toBe(true);
+    expect(escCfg.text).toContain('resolves outside');
+
+    const linted = await call('lint_diagrams', { paths: ['docs'] });
+    expect(linted.isError).toBeFalsy();
+    expect(linted.text).toContain('1 diagram checked: 0 errors, 0 warnings');
+
+    const tidied = await call('tidy_diagram', { path: 'docs/checkout.drawio.svg' });
+    expect(tidied.isError).toBeFalsy();
+    expect(tidied.text).toContain('nothing to fix');
+  }, 60000);
 
   it('opens the local editor without launching a browser', async () => {
     const res = await call('edit_diagram', { path: 'docs/checkout.drawio.svg', open: false });

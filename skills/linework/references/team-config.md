@@ -13,7 +13,7 @@ templates: docs/diagrams/templates   # starter specs for "linework new"
 
 themes:                # your own, built on a built-in one
   acme:
-    extends: clean     # clean | soft | dark | sketch | blueprint | c4
+    extends: clean     # clean | soft | dark | sketch | blueprint | c4 | paper | midnight | mono | bold
     text: "#0B1F33"    # every color is hex
     muted: "#4A5D70"   # the second line of a box
     box: "#FFFFFF"

@@ -307,13 +307,19 @@ const BLUEPRINT: Theme = {
   note: { fill: '#EAF0FA', stroke: '#9DB0D0', text: BP_INK },
   well: '#EAF0FA',
   paint: (color, hl) => {
-    if (hl) return { fill: BP_HI, stroke: BP_HI, text: '#FFFFFF', sub: 'rgba(255,255,255,0.8)', strokeWidth: 1 };
+    if (hl) {
+      const c = color === 'neutral' || color === 'ink' ? BP_HI : BP_LINE[color];
+      return { fill: c, stroke: c, text: '#FFFFFF', sub: 'rgba(255,255,255,0.8)', strokeWidth: 1 };
+    }
     if (color === 'ink') return { fill: BP_INK, stroke: BP_INK, text: '#FFFFFF', sub: '#C9D5EA', strokeWidth: 1 };
     if (color === 'neutral') return { fill: '#FFFFFF', stroke: BP_LINE_INK, text: BP_INK, sub: '#5A6F92', strokeWidth: 1.25 };
     return { fill: '#FFFFFF', stroke: BP_LINE[color], text: BP_INK, sub: BP_LINE[color], strokeWidth: 1.25 };
   },
   edgePaint: (color, hl) => {
-    if (hl) return { stroke: BP_HI, text: BP_HI, width: 2 };
+    if (hl) {
+      const c = color ? BP_LINE[color] : BP_HI;
+      return { stroke: c, text: c, width: 2 };
+    }
     return color ? { stroke: BP_LINE[color], text: BP_LINE[color], width: 1.25 } : { stroke: BLUEPRINT.edge, text: BLUEPRINT.edgeText, width: 1.25 };
   },
   extra: '',
@@ -710,8 +716,8 @@ export function nodeStyle(type: DiagramType, kind: string, theme: ThemeArg = 'cl
     case 'table': {
       // An entity: header (startSize) with field rows stacked inside.
       const neutral = !look.highlight && !look.color && !(t.kindColors && k.color !== 'neutral');
-      const head = neutral && t.name !== 'c4' ? t.well : c.fill;
-      const border = stroke === 'none' ? head : neutral && t.name !== 'c4' ? t.paint('neutral', false).stroke : stroke;
+      const head = neutral && t.base !== 'c4' ? t.well : c.fill;
+      const border = stroke === 'none' ? head : neutral && t.base !== 'c4' ? t.paint('neutral', false).stroke : stroke;
       return (
         `shape=swimlane;childLayout=stackLayout;horizontal=1;startSize=${ER_HEAD};horizontalStack=0;resizeParent=1;resizeParentMax=0;` +
         `resizeLast=0;collapsible=0;marginBottom=0;rounded=1;absoluteArcSize=1;arcSize=${r + 2};swimlaneFillColor=${t.canvas};fontStyle=1;` +
@@ -761,11 +767,18 @@ export function groupStyle(theme: ThemeArg = 'clean', look: Look = {}, depth = 0
   let { fill, stroke, text } = t.group;
   if (depth > 0 && t.group.nested) fill = t.group.nested;
   if (look.color || look.highlight) {
-    const p = look.color ? t.paint(look.color, false) : accentTint(t);
-    fill = OUTLINED.has(t.base) ? 'none' : p.fill;
-    // A colored ground carries the color; only a highlight adds an outline.
-    stroke = look.highlight ? t.edgePaint(look.color, true).stroke : t.group.stroke === 'none' ? 'none' : p.stroke;
-    text = p.sub;
+    if (OUTLINED.has(t.base)) {
+      const ep = t.edgePaint(look.color, !!look.highlight);
+      fill = 'none';
+      stroke = ep.stroke;
+      text = ep.text;
+    } else {
+      const p = look.color ? t.paint(look.color, false) : accentTint(t);
+      fill = p.fill;
+      // A colored ground carries the color; only a highlight adds an outline.
+      stroke = look.highlight ? t.edgePaint(look.color, true).stroke : t.group.stroke === 'none' ? 'none' : p.stroke;
+      text = p.sub;
+    }
   }
   return (
     `rounded=1;absoluteArcSize=1;arcSize=${t.radius * 2 + 4};html=1;whiteSpace=wrap;container=1;collapsible=0;` +
@@ -798,14 +811,14 @@ export function edgeStyle(style: EdgeStyle, theme: ThemeArg = 'clean', look: Loo
 
 const ER_END: Record<Card, string> = { one: 'ERmandOne', zero_or_one: 'ERzeroToOne', many: 'ERzeroToMany', one_or_many: 'ERoneToMany' };
 
-export function erEdgeStyle(card: { from: Card; to: Card; identifying: boolean }, theme: ThemeArg = 'clean', look: Look = {}): string {
+export function erEdgeStyle(card: { from: Card; to: Card; identifying: boolean }, theme: ThemeArg = 'clean', look: Look = {}, labelBg?: string): string {
   const t = palette(theme);
   const p = t.edgePaint(look.color, !!look.highlight);
   return (
     'edgeStyle=orthogonalEdgeStyle;rounded=1;arcSize=16;html=1;' +
     `strokeColor=${p.stroke};strokeWidth=${p.width};startArrow=${ER_END[card.from]};endArrow=${ER_END[card.to]};startFill=0;endFill=0;startSize=10;endSize=10;` +
     (card.identifying ? '' : dashes(t)) +
-    `${fontPart(t, t.type.size.edge, p.text)}labelBackgroundColor=${t.canvas};labelPadding=1 5;${t.extra}`
+    `${fontPart(t, t.type.size.edge, p.text)}labelBackgroundColor=${labelBg ?? t.canvas};labelPadding=1 5;${t.extra}`
   );
 }
 

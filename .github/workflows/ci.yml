@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [22, 24]
+        node: [20, 22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -30,8 +30,19 @@ jobs:
       - run: npm run typecheck
       # The daemon tests run the built CLI, so build before testing.
       - run: npm run build
+      - name: Get Playwright version
+        id: playwright
+        run: echo "version=$(node -p "require('./node_modules/playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache headless Chromium
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Install headless Chromium
         run: |
-          node dist/cli.js install-browser
+          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" != "true" ]; then
+            node dist/cli.js install-browser
+          fi
           npx playwright-core install-deps chromium
       - run: npm test

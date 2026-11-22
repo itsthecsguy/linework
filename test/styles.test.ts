@@ -1,6 +1,6 @@
 // Styles, color and highlight: spec parsing, round trips, merge restyling, text
 // wrapping, font embedding, and a real build in every style (needs Chromium).
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -361,17 +361,26 @@ describe('fonts', () => {
     } finally {
       if (prev === undefined) delete process.env.XDG_CACHE_HOME;
       else process.env.XDG_CACHE_HOME = prev;
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });
 
 const run = process.env.LINEWORK_SKIP_E2E !== '1';
+let browser: DrawioBrowser | undefined;
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-styles-'));
+beforeAll(async () => {
+  if (run) browser = await DrawioBrowser.launch();
+}, 60000);
+afterAll(async () => {
+  await browser?.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
 
 describe.runIf(run)('fixes from agent runs', () => {
   it('reroutes a call-and-callback pair instead of looping it around a group', async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-agent-'));
-    const out = path.join(tmp, 'checkout.drawio.svg');
-    const r = await build(fs.readFileSync('test/fixtures/agent-checkout.yaml', 'utf8'), { out });
+    const out = path.join(tmp, 'agent-checkout.drawio.svg');
+    const r = await build(fs.readFileSync('test/fixtures/agent-checkout.yaml', 'utf8'), { out, browser: browser! });
     expect(r.check.findings.map((f) => f.message)).toEqual([]);
     const m = readDrawio(fs.readFileSync(out, 'utf8'));
     const pts = m.byId.get('e_api__stripe')!.geom!.points; // waypoints only
@@ -382,22 +391,16 @@ describe.runIf(run)('fixes from agent runs', () => {
 
 describe.runIf(run)('every style builds clean', () => {
   it('builds each example in each style with no lint findings and embedded fonts', async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-styles-'));
-    const b = await DrawioBrowser.launch();
-    try {
-      for (const name of ['checkout', 'pay-sequence', 'billing-er', 'refund-flow']) {
-        const src = fs.readFileSync(`examples/${name}.yaml`, 'utf8');
-        for (const theme of THEMES) {
-          const out = path.join(tmp, `${name}-${theme}.drawio.svg`);
-          const r = await build(src.replace(/^type:.*$/m, (m) => `${m}\ntheme: ${theme}`), { out, browser: b });
-          expect(r.check.findings.map((f) => `${name}/${theme}: ${f.rule} ${f.message}`)).toEqual([]);
-          const svg = fs.readFileSync(out, 'utf8');
-          expect(svg).toContain('id="aiviz-fonts"');
-          expect(svg).toContain(theme === 'sketch' ? 'font-family:"Kalam"' : theme === 'blueprint' ? 'font-family:"IBM Plex Mono"' : 'font-family:"IBM Plex Sans"');
-        }
+    for (const name of ['checkout', 'pay-sequence', 'billing-er', 'refund-flow']) {
+      const src = fs.readFileSync(`examples/${name}.yaml`, 'utf8');
+      for (const theme of THEMES) {
+        const out = path.join(tmp, `${name}-${theme}.drawio.svg`);
+        const r = await build(src.replace(/^type:.*$/m, (m) => `${m}\ntheme: ${theme}`), { out, browser: browser! });
+        expect(r.check.findings.map((f) => `${name}/${theme}: ${f.rule} ${f.message}`)).toEqual([]);
+        const svg = fs.readFileSync(out, 'utf8');
+        expect(svg).toContain('id="aiviz-fonts"');
+        expect(svg).toContain(theme === 'sketch' ? 'font-family:"Kalam"' : theme === 'blueprint' ? 'font-family:"IBM Plex Mono"' : 'font-family:"IBM Plex Sans"');
       }
-    } finally {
-      await b.close();
     }
   }, 300000);
 });

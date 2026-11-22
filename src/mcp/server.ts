@@ -7,8 +7,10 @@ import { fileURLToPath } from 'node:url';
 import * as z from 'zod';
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
-import { build, checkFile, importExcalidraw, listIcons, render, show, tidy } from '../api.js';
+import { build, checkFile, importExcalidraw, lintFiles, listIcons, render, show, tidy } from '../api.js';
+import { setConfigRoot, useConfigFor } from '../config.js';
 import { readDrawio } from '../drawio/read.js';
+import { themeNames } from '../drawio/theme.js';
 import { DrawioBrowser } from '../render/browser.js';
 import { SpecError } from '../spec/parse.js';
 import { buildLines, checkLines } from '../report.js';
@@ -32,7 +34,7 @@ const PKG = (() => {
   throw new Error('linework: bundled skill not found. Reinstall linework.');
 })();
 
-const TOOL_NAMES = `In this MCP server the CLI commands in the guide are tools: build -> build_diagram, show -> show_diagram, check -> check_diagram, render -> render_diagram, tidy -> tidy_diagram, import -> import_mermaid (or import_excalidraw for an .excalidraw, .excalidraw.svg or .excalidraw.png file), icons -> list_icons, edit -> edit_diagram, publish -> publish_diagram. Pass the spec text to build_diagram directly instead of writing a file. There are no set, add or rm tools: for a small change, call show_diagram, edit its output and pass that to build_diagram, which keeps the layout the same way.\n\n`;
+const TOOL_NAMES = `In this MCP server the CLI commands in the guide are tools: build -> build_diagram, show -> show_diagram, check -> check_diagram, render -> render_diagram, tidy -> tidy_diagram, import -> import_mermaid (or import_excalidraw for an .excalidraw, .excalidraw.svg or .excalidraw.png file), icons -> list_icons, edit -> edit_diagram, publish -> publish_diagram, config -> get_config, lint -> lint_diagrams. Pass the spec text to build_diagram directly instead of writing a file. There are no set, add or rm tools: for a small change, call show_diagram, edit its output and pass that to build_diagram, which keeps the layout the same way.\n\n`;
 
 type Content = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
 type Result = { content: Content[]; isError?: boolean };
@@ -90,7 +92,10 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
   const text = (t: string): Content => ({ type: 'text', text: t });
   const wrap = (fn: () => Promise<Result>) => async (): Promise<Result> => {
     try {
-      return await serial(fn);
+      return await serial(async () => {
+        setConfigRoot(opts.pinned ? opts.root : undefined);
+        return fn();
+      });
     } catch (e) {
       if (e instanceof SpecError) return { isError: true, content: [text(['spec error:', ...e.issues.map((i) => `  ${i.path ? i.path + ': ' : ''}${i.message}`)].join('\n'))] };
       return { isError: true, content: [text(`error: ${(e as Error).message}`)] };
@@ -211,7 +216,11 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
       wrap(async () => {
         const file = resolvePath(args.path);
         const res = await tidy(file, await getBrowser());
-        return { content: [text([res.fixed ? `rerouted ${res.fixed} edges in ${file}` : 'nothing to fix', ...checkLines(res.check)].join('\n'))] };
+        const did = [
+          res.fixed ? `rerouted ${res.fixed} edge${res.fixed === 1 ? '' : 's'}` : '',
+          res.labels ? `moved ${res.labels} label${res.labels === 1 ? '' : 's'}` : '',
+        ].filter(Boolean);
+        return { content: [text([did.length ? `${did.join(', ')} in ${file}` : 'nothing to fix', ...checkLines(res.check)].join('\n'))] };
       })(),
   );
 
@@ -219,7 +228,7 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
     'import_mermaid',
     {
       title: 'Convert Mermaid to a linework spec',
-      description: 'Converts a Mermaid diagram (flowchart, stateDiagram, sequenceDiagram, erDiagram) to a linework spec. Returns the spec; review the guessed node kinds, then build it. With path, builds it straight away.',
+      description: 'Converts a Mermaid diagram (flowchart, stateDiagram, sequenceDiagram, erDiagram, classDiagram, gantt) to a linework spec. Returns the spec; review the guessed node kinds, then build it. With path, builds it straight away.',
       inputSchema: z.object({ source: z.string().describe('Mermaid source, without the ``` fence.'), path: pathArg.optional() }),
     },
     (args) =>
@@ -311,8 +320,10 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
     },
     (args) =>
       wrap(async () => {
-        const { publish } = await import('../publish.js');
-        const items = publish(args.paths.map(resolvePath), { to: args.to && resolvePath(args.to), pull: args.pull, cwd: opts.root });
+        const { publish, publishDir } = await import('../publish.js');
+        const destDir = publishDir(args.to ? resolvePath(args.to) : undefined, opts.root);
+        if (opts.pinned) resolvePath(destDir);
+        const items = publish(args.paths.map(resolvePath), { to: destDir, pull: args.pull, cwd: opts.root });
         const lines = items.map((i) =>
           i.action === 'conflict'
             ? `skipped ${i.file}: the Drive copy was edited after the last publish. Ask the user whether to pull it (pull: true) or overwrite it.`
@@ -324,7 +335,85 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
       })(),
   );
 
+  server.registerTool(
+    'get_config',
+    {
+      title: 'Show team config',
+      description: 'Returns the team settings from the nearest linework.yaml that governs the given path (default: root): theme, shared components, statuses, custom kinds, naming rules, and limits.',
+      inputSchema: z.object({ path: z.string().optional().describe(`File or folder to find linework.yaml for (default: ${opts.root}).`) }),
+      annotations: { readOnlyHint: true },
+    },
+    (args) =>
+      wrap(async () => {
+        const target = resolvePath(args.path ?? '.');
+        const cfg = useConfigFor(target);
+        if (!cfg.path) return { content: [text('no linework.yaml here or in any folder above. Built-in defaults apply: theme clean, direction auto.')] };
+        const rel = (p: string) => path.relative(opts.root, p) || '.';
+        const lines: string[] = [
+          `config: ${rel(cfg.path)}`,
+          `theme: ${cfg.theme ?? 'clean'}${cfg.lockTheme ? ' (locked: leave "theme:" out of specs)' : ` (default; a spec may pick another of: ${themeNames().join(', ')})`}`,
+        ];
+        if (cfg.direction) lines.push(`direction: ${cfg.direction}`);
+        if (cfg.out) lines.push(`save new diagrams in: ${rel(cfg.out)}`);
+        const comps = Object.entries(cfg.components);
+        if (comps.length) {
+          lines.push('shared components (use these ids; leave out the fields shown, they are filled in):');
+          for (const [id, c] of comps) lines.push(`  ${id}: { ${Object.entries(c).map(([k, v]) => `${k}: ${v}`).join(', ')} }`);
+        }
+        const sts = Object.entries(cfg.statuses);
+        if (sts.length) {
+          lines.push('statuses (write "status: <name>" on a node, group or edge instead of "color:"):');
+          for (const [name, st] of sts) lines.push(`  ${name}: ${st.color}${st.label ? `, shown as "${st.label}"` : ''}`);
+          if (cfg.legend) lines.push('  a legend for the statuses used is drawn under each diagram');
+        }
+        for (const [type, kinds] of Object.entries(cfg.kinds)) {
+          lines.push(`extra ${type} kinds:`);
+          for (const [k, def] of Object.entries(kinds ?? {})) lines.push(`  ${k}: ${def.description}`);
+        }
+        const n = cfg.naming;
+        const naming = [n.case !== 'any' ? `${n.case} case` : '', n.maxLength ? `at most ${n.maxLength} characters` : '', n.banned.length ? `never: ${n.banned.join(', ')}` : ''].filter(Boolean);
+        if (naming.length) lines.push(`labels: ${naming.join('; ')}`);
+        lines.push(`limits: ${cfg.limits.nodes} nodes, ${cfg.limits.width}px wide`);
+        const rules = Object.entries(cfg.rules);
+        if (rules.length) lines.push(`rule levels: ${rules.map(([r, l]) => `${r}=${l}`).join(', ')}`);
+        if (cfg.templates) lines.push(`templates: ${rel(cfg.templates)}`);
+        return { content: [text(lines.join('\n'))] };
+      })(),
+  );
+
+  server.registerTool(
+    'lint_diagrams',
+    {
+      title: 'Lint diagrams in a folder',
+      description: "Checks every .drawio.svg and .drawio diagram under the given files or folders (default: root) against layout rules and the team's linework.yaml.",
+      inputSchema: z.object({
+        paths: z.array(z.string()).optional().describe(`Files or folders to check (default: ${opts.root}).`),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    (args) =>
+      wrap(async () => {
+        const targets = (args.paths?.length ? args.paths : ['.']).map(resolvePath);
+        const res = await lintFiles(targets, await getBrowser());
+        const lines: string[] = [];
+        let errors = 0, warnings = 0;
+        for (const r of res) {
+          const fs_ = r.check?.findings ?? [];
+          const e = fs_.filter((f) => f.level === 'error').length + (r.error ? 1 : 0);
+          errors += e;
+          warnings += fs_.length - (e - (r.error ? 1 : 0));
+          if (!r.error && !fs_.length) continue;
+          lines.push(path.relative(opts.root, r.file) || r.file);
+          if (r.error) lines.push(`  error: ${r.error}`);
+          for (const f of fs_) lines.push(`  ${f.level}: ${f.message} [${f.rule}]`);
+        }
+        lines.push(`${res.length} diagram${res.length === 1 ? '' : 's'} checked: ${errors} errors, ${warnings} warnings`);
+        return { content: [text(lines.join('\n'))] };
+      })(),
+  );
+
   const dispose = async () => {
+    if (opts.pinned) setConfigRoot(undefined);
     for (const e of editors.values()) await e.close();
     if (browser) await (await browser.catch(() => undefined))?.close();
   };

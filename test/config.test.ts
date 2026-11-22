@@ -3,13 +3,18 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ConfigError, findConfig, loadConfig, useConfig, useConfigFor, NO_CONFIG } from '../src/config.js';
+import { ConfigError, findConfig, loadConfig, setConfigRoot, useConfig, useConfigFor, NO_CONFIG } from '../src/config.js';
 import { parseSpecText } from '../src/spec/parse.js';
-import { toYaml } from '../src/drawio/show.js';
+import { toDiagram, toYaml } from '../src/drawio/show.js';
 import { contrast, palette } from '../src/drawio/theme.js';
 import { KINDS } from '../src/spec/model.js';
-import { DrawioBrowser } from '../src/render/browser.js';
+import { DrawioBrowser, type InspectCell } from '../src/render/browser.js';
 import { build, checkFile, lintFiles, restyleFiles, show } from '../src/api.js';
+import { check } from '../src/lint/check.js';
+import { conventions } from '../src/lint/conventions.js';
+import { readDrawio } from '../src/drawio/read.js';
+import { toMxfile } from '../src/drawio/write.js';
+import { layout } from '../src/layout/layout.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-cfg-'));
 const write = (rel: string, text: string) => {
@@ -18,7 +23,10 @@ const write = (rel: string, text: string) => {
   fs.writeFileSync(f, text);
   return f;
 };
-afterEach(() => void useConfig(NO_CONFIG));
+afterEach(() => {
+  setConfigRoot(undefined);
+  useConfig(NO_CONFIG);
+});
 
 const ORG = `
 statuses:
@@ -94,6 +102,69 @@ describe('loading', () => {
     expect(palette('acme').type.family).toMatch(/^Acme Mono, /);
     expect(cfg.themes[0]!.base).toBe('clean');
   });
+
+  it('keeps config discovery, extends and custom fonts inside rootBoundary', () => {
+    const outer = write('bound/linework.yaml', 'theme: dark\n');
+    const innerDir = path.join(tmp, 'bound/inner');
+    fs.mkdirSync(innerDir, { recursive: true });
+    expect(findConfig(innerDir)).toBe(outer);
+    expect(findConfig(innerDir, innerDir)).toBeUndefined();
+    setConfigRoot(innerDir);
+    expect(findConfig(innerDir)).toBeUndefined();
+
+    const escExtends = write('bound/inner/ext/linework.yaml', 'extends: ../../linework.yaml\n');
+    expect(() => loadConfig(escExtends, innerDir)).toThrow(ConfigError);
+    expect(() => loadConfig(escExtends, innerDir)).toThrow(/resolves outside/);
+
+    fs.mkdirSync(path.join(tmp, 'bound/fonts'), { recursive: true });
+    fs.copyFileSync('assets/fonts/plex-mono-400.woff2', path.join(tmp, 'bound/fonts/r.woff2'));
+    const escFont = write('bound/inner/fnt/linework.yaml', 'themes:\n  x: { font: { family: X, regular: ../../fonts/r.woff2, bold: ../../fonts/r.woff2 } }\n');
+    expect(() => loadConfig(escFont, innerDir)).toThrow(ConfigError);
+    expect(() => loadConfig(escFont, innerDir)).toThrow(/resolves outside/);
+  });
+
+  it('flags 2-word title-cased labels and punctuation-bounded banned terms', async () => {
+    const cfgFile = write('conv/linework.yaml', 'naming: { case: sentence, banned: ["C++", ".NET"] }\n');
+    const cfg = useConfig(loadConfig(cfgFile));
+    const { diagram } = parseSpecText('type: flow\nnodes:\n  a: Payment Service\n  b: Legacy C++ worker\n  c: Old .NET app\nedges:\n  - a -> b\n  - b -> c\n');
+    const m = readDrawio(toMxfile(diagram, await layout(diagram)));
+    const findings = conventions(m, toDiagram(m), cfg);
+    expect(findings.some((f) => f.rule === 'naming-case' && f.message.includes('Payment Service'))).toBe(true);
+    expect(findings.filter((f) => f.rule === 'naming-banned').map((f) => f.message)).toEqual(
+      expect.arrayContaining([expect.stringContaining('C++'), expect.stringContaining('.NET')]),
+    );
+  });
+
+  it('handles empty diagrams, table rows, and segment box hits in check()', () => {
+    expect(check([]).stats).toEqual({ nodes: 0, edges: 0, crossings: 0, width: 0, height: 0 });
+    const cell = (overrides: Partial<InspectCell>): InspectCell => ({
+      id: 'c',
+      vertex: true,
+      edge: false,
+      parent: '1',
+      container: false,
+      text: false,
+      shape: null,
+      aivizType: null,
+      source: null,
+      target: null,
+      box: { x: 0, y: 0, w: 100, h: 40 },
+      textBox: null,
+      label: '',
+      points: null,
+      ...overrides,
+    });
+    const tbl = cell({ id: 't1', container: true, shape: 'swimlane', box: { x: 0, y: 0, w: 160, h: 90 }, label: 'Users' });
+    const row1 = cell({ id: 'r1', parent: 't1', box: { x: 0, y: 30, w: 160, h: 24 }, label: 'id' });
+    const row2 = cell({ id: 'r2', parent: 't1', box: { x: 0, y: 54, w: 160, h: 24 }, label: 'email' });
+    expect(check([tbl, row1, row2]).stats.nodes).toBe(0);
+
+    const n1 = cell({ id: 'n1', box: { x: 0, y: 0, w: 40, h: 40 }, label: 'A' });
+    const n2 = cell({ id: 'n2', box: { x: 200, y: 200, w: 40, h: 40 }, label: 'B' });
+    const e1 = cell({ id: 'e1', vertex: false, edge: true, source: 'n1', target: 'n2', points: [{ x: 40, y: 40 }, { x: 200, y: 200 }], label: 'diag', textBox: { x: 150, y: 50, w: 40, h: 16 } });
+    const e2 = cell({ id: 'e2', vertex: false, edge: true, source: 'n1', target: 'n2', points: [{ x: 40, y: 40 }, { x: 200, y: 200 }] });
+    expect(check([n1, n2, e1, e2]).findings.some((f) => f.rule === 'label-on-edge')).toBe(false);
+  });
 });
 
 describe('specs under a config', () => {
@@ -145,7 +216,10 @@ const e2e = process.env.LINEWORK_SKIP_E2E !== '1';
 beforeAll(async () => {
   if (e2e) browser = await DrawioBrowser.launch();
 }, 60000);
-afterAll(async () => { await browser?.close(); });
+afterAll(async () => {
+  await browser?.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
 
 describe.runIf(e2e)('a repo with a config', () => {
   const SPEC = `type: architecture

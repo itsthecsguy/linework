@@ -15,12 +15,22 @@ function onPath(cmd: string): boolean {
   }
 }
 
+/** Shell-quote an argument for git's POSIX sh textconv runner (converting Windows backslashes). */
+export function shellQuote(s: string, platform: NodeJS.Platform = process.platform): string {
+  const p = platform === 'win32' ? s.replace(/\\/g, '/') : s;
+  return `'${p.replace(/'/g, `'\\''`)}'`;
+}
+
 /** The command git should run. Prefer a stable name over this machine's paths. */
-export function cliCommand(): string {
-  const cli = fileURLToPath(new URL('./cli.js', import.meta.url));
-  if (onPath('linework')) return 'linework';
-  if (cli.includes(`${path.sep}_npx${path.sep}`)) return 'npx -y @itsthecsguy/linework';
-  return `"${process.execPath}" "${cli.replace(/\.ts$/, '.js').replace(`${path.sep}src${path.sep}`, `${path.sep}dist${path.sep}`)}"`;
+export function cliCommand(opts?: { execPath?: string; cliPath?: string; platform?: NodeJS.Platform; hasLinework?: boolean }): string {
+  const platform = opts?.platform ?? process.platform;
+  const sep = platform === 'win32' ? '\\' : '/';
+  const cli = opts?.cliPath ?? fileURLToPath(new URL('./cli.js', import.meta.url));
+  if (opts?.hasLinework ?? onPath('linework')) return 'linework';
+  if (cli.includes(`${sep}_npx${sep}`)) return 'npx -y @itsthecsguy/linework';
+  const execPath = opts?.execPath ?? process.execPath;
+  const built = cli.replace(/\.ts$/, '.js').replace(`${sep}src${sep}`, `${sep}dist${sep}`);
+  return `${shellQuote(execPath, platform)} ${shellQuote(built, platform)}`;
 }
 
 export function gitSetup(cwd = process.cwd()): string[] {

@@ -136,21 +136,25 @@ describe('timeline specs', () => {
 describe('finding specs to sync', () => {
   it('pairs each spec with its diagram and leaves other YAML alone', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-find-'));
-    fs.mkdirSync(path.join(dir, 'docs'));
-    fs.mkdirSync(path.join(dir, 'node_modules', 'x'), { recursive: true });
-    fs.mkdirSync(path.join(dir, '.hidden'));
-    fs.writeFileSync(path.join(dir, 'docs', 'arch.yaml'), 'type: architecture\nnodes: { a: {} }\n');
-    fs.writeFileSync(path.join(dir, 'docs', 'plan.yml'), '# a plan\ntype: timeline\nnodes: {}\n');
-    fs.writeFileSync(path.join(dir, 'docs', 'config.yaml'), 'type: module\nname: x\n');
-    fs.writeFileSync(path.join(dir, 'docs', 'old.yaml'), 'whatever: 1\n');
-    fs.writeFileSync(path.join(dir, 'docs', 'old.drawio.svg'), '<svg/>');
-    fs.writeFileSync(path.join(dir, 'node_modules', 'x', 'a.yaml'), 'type: flow\n');
-    fs.writeFileSync(path.join(dir, '.hidden', 'a.yaml'), 'type: flow\n');
-    const rel = (p: string) => path.relative(dir, p);
-    expect(findSpecs([dir]).map((s) => [rel(s.spec), rel(s.out)])).toEqual([['docs/arch.yaml', 'docs/arch.drawio.svg'], ['docs/old.yaml', 'docs/old.drawio.svg'], ['docs/plan.yml', 'docs/plan.drawio.svg']]);
-    // Named outright, a file is taken at its word.
-    expect(findSpecs([path.join(dir, 'docs', 'config.yaml')]).length).toBe(1);
-    expect(() => findSpecs([path.join(dir, 'nope')])).toThrow(/doesn't exist/);
+    try {
+      fs.mkdirSync(path.join(dir, 'docs'));
+      fs.mkdirSync(path.join(dir, 'node_modules', 'x'), { recursive: true });
+      fs.mkdirSync(path.join(dir, '.hidden'));
+      fs.writeFileSync(path.join(dir, 'docs', 'arch.yaml'), 'type: architecture\nnodes: { a: {} }\n');
+      fs.writeFileSync(path.join(dir, 'docs', 'plan.yml'), '# a plan\ntype: timeline\nnodes: {}\n');
+      fs.writeFileSync(path.join(dir, 'docs', 'config.yaml'), 'type: module\nname: x\n');
+      fs.writeFileSync(path.join(dir, 'docs', 'old.yaml'), 'whatever: 1\n');
+      fs.writeFileSync(path.join(dir, 'docs', 'old.drawio.svg'), '<svg/>');
+      fs.writeFileSync(path.join(dir, 'node_modules', 'x', 'a.yaml'), 'type: flow\n');
+      fs.writeFileSync(path.join(dir, '.hidden', 'a.yaml'), 'type: flow\n');
+      const rel = (p: string) => path.relative(dir, p);
+      expect(findSpecs([dir]).map((s) => [rel(s.spec), rel(s.out)])).toEqual([['docs/arch.yaml', 'docs/arch.drawio.svg'], ['docs/old.yaml', 'docs/old.drawio.svg'], ['docs/plan.yml', 'docs/plan.drawio.svg']]);
+      // Named outright, a file is taken at its word.
+      expect(findSpecs([path.join(dir, 'docs', 'config.yaml')]).length).toBe(1);
+      expect(() => findSpecs([path.join(dir, 'nope')])).toThrow(/doesn't exist/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('stamps a spec by what it says, not how it is written', () => {
@@ -170,6 +174,7 @@ describe.runIf(run)('new diagram types, built', () => {
   }, 60000);
   afterAll(async () => {
     await b?.close();
+    fs.rmSync(tmp, { recursive: true, force: true });
   });
   const errors = (r: { check: { findings: Array<{ level: string }> } }) => r.check.findings.filter((f) => f.level === 'error');
 
@@ -271,26 +276,30 @@ describe.runIf(run)('new diagram types, built', () => {
 
   it('sync builds what is missing, rebuilds what changed, and --check only looks', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-sync-'));
-    const spec = path.join(dir, 'arch.yaml'), out = path.join(dir, 'arch.drawio.svg');
-    fs.copyFileSync('examples/checkout.yaml', spec);
-    fs.copyFileSync('examples/launch-timeline.yaml', path.join(dir, 'plan.yaml'));
-    expect((await sync([dir], { check: true })).map((i) => [i.state, i.missing])).toEqual([['stale', true], ['stale', true]]);
-    expect(fs.existsSync(out)).toBe(false);
-    expect((await sync([dir], { browser: b })).map((i) => i.state)).toEqual(['built', 'built']);
-    expect((await sync([dir], { check: true })).map((i) => i.state)).toEqual(['fresh', 'fresh']);
-    const before = fs.readFileSync(out, 'utf8');
-    // A comment is not a change. A new label is, and the layout stays.
-    fs.appendFileSync(spec, '# reviewed\n');
-    expect((await sync([dir], { browser: b })).map((i) => i.state)).toEqual(['fresh', 'fresh']);
-    expect(fs.readFileSync(out, 'utf8')).toBe(before);
-    fs.writeFileSync(spec, fs.readFileSync(spec, 'utf8').replace('Shopper', 'Buyer'));
-    expect((await sync([dir], { check: true })).map((i) => i.state)).toEqual(['stale', 'fresh']);
-    const res = await sync([dir], { browser: b });
-    expect(res.map((i) => i.state)).toEqual(['built', 'fresh']);
-    expect(res[0]!.result!.mode).toBe('merge');
-    expect(show(out).yaml).toContain('Buyer');
-    fs.writeFileSync(path.join(dir, 'broken.yaml'), 'type: flow\nnodes:\n  a: { kind: nope }\n');
-    const bad = await sync([dir], { check: true });
-    expect(bad.find((i) => i.spec.endsWith('broken.yaml'))).toMatchObject({ state: 'failed', error: expect.stringMatching(/unknown kind/) });
+    try {
+      const spec = path.join(dir, 'arch.yaml'), out = path.join(dir, 'arch.drawio.svg');
+      fs.copyFileSync('examples/checkout.yaml', spec);
+      fs.copyFileSync('examples/launch-timeline.yaml', path.join(dir, 'plan.yaml'));
+      expect((await sync([dir], { check: true })).map((i) => [i.state, i.missing])).toEqual([['stale', true], ['stale', true]]);
+      expect(fs.existsSync(out)).toBe(false);
+      expect((await sync([dir], { browser: b })).map((i) => i.state)).toEqual(['built', 'built']);
+      expect((await sync([dir], { check: true })).map((i) => i.state)).toEqual(['fresh', 'fresh']);
+      const before = fs.readFileSync(out, 'utf8');
+      // A comment is not a change. A new label is, and the layout stays.
+      fs.appendFileSync(spec, '# reviewed\n');
+      expect((await sync([dir], { browser: b })).map((i) => i.state)).toEqual(['fresh', 'fresh']);
+      expect(fs.readFileSync(out, 'utf8')).toBe(before);
+      fs.writeFileSync(spec, fs.readFileSync(spec, 'utf8').replace('Shopper', 'Buyer'));
+      expect((await sync([dir], { check: true })).map((i) => i.state)).toEqual(['stale', 'fresh']);
+      const res = await sync([dir], { browser: b });
+      expect(res.map((i) => i.state)).toEqual(['built', 'fresh']);
+      expect(res[0]!.result!.mode).toBe('merge');
+      expect(show(out).yaml).toContain('Buyer');
+      fs.writeFileSync(path.join(dir, 'broken.yaml'), 'type: flow\nnodes:\n  a: { kind: nope }\n');
+      const bad = await sync([dir], { check: true });
+      expect(bad.find((i) => i.spec.endsWith('broken.yaml'))).toMatchObject({ state: 'failed', error: expect.stringMatching(/unknown kind/) });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }, 180000);
 });

@@ -18,7 +18,7 @@ import { absBox, labelLines, readDrawio, type Cell, type DrawioModel } from '../
 import { datesOn, parseFieldRight, parseFieldText, stripMark, toDiagram, type ShowResult } from '../drawio/show.js';
 import { parseMember } from '../spec/parse.js';
 import type { InspectCell } from '../render/browser.js';
-import { DEFAULT_KIND, FRAME_OPS, KINDS, type Card, type ColorName, type Diagram, type Edge, type EdgeStyle, type Field, type FrameOp, type Look, type Node } from '../spec/model.js';
+import { DEFAULT_KIND, FRAME_OPS, KINDS, type Card, type ColorName, type Diagram, type Edge, type EdgeStyle, type Field, type FrameOp, type Look, type MessageStyle, type Node } from '../spec/model.js';
 import { PAD } from '../drawio/merge.js';
 import { drawnText, type ExcalidrawElement, type ExcalidrawFile, type Origin } from './export.js';
 
@@ -416,30 +416,32 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
     return now.length !== before.length || now.some((p, i) => Math.hypot(p.x - before[i]!.x, p.y - before[i]!.y) > 1.5);
   };
   const HEAD_CARD: Record<string, Card> = { crowfoot_one: 'one', crowfoot_many: 'many', crowfoot_one_or_many: 'one_or_many' };
-  /** Line style and arrowheads somebody changed, as the spec says them. */
-  const restyle = (e: Edge, el: ExcalidrawElement, then: ExcalidrawElement | undefined) => {
+  /** Line style and arrowheads somebody changed, as the spec says them. Returns true when from/to were swapped. */
+  const restyle = (e: Edge, el: ExcalidrawElement, then: ExcalidrawElement | undefined): boolean => {
     // A class relationship's marks mean something a line style can't say; those stay as the spec has them.
-    if (!then || e.rel) return;
+    if (!then || e.rel) return false;
     const dashed = (x: ExcalidrawElement) => x.strokeStyle === 'dashed' || x.strokeStyle === 'dotted';
     const headsChanged = (el.startArrowhead ?? null) !== (then.startArrowhead ?? null) || (el.endArrowhead ?? null) !== (then.endArrowhead ?? null);
-    if (!headsChanged && dashed(el) === dashed(then)) return;
+    if (!headsChanged && dashed(el) === dashed(then)) return false;
     const what = `the arrow from "${name(e.from)}" to "${name(e.to)}"`;
     if (e.card) {
       const next = { ...e.card };
       if (dashed(el) !== dashed(then)) next.identifying = !dashed(el);
       if ((el.startArrowhead ?? null) !== (then.startArrowhead ?? null)) next.from = HEAD_CARD[String(el.startArrowhead)] ?? next.from;
       if ((el.endArrowhead ?? null) !== (then.endArrowhead ?? null)) next.to = HEAD_CARD[String(el.endArrowhead)] ?? next.to;
-      if (JSON.stringify(next) === JSON.stringify(e.card)) return;
+      if (JSON.stringify(next) === JSON.stringify(e.card)) return false;
       e.card = next;
       changes.push(`the relationship between "${name(e.from)}" and "${name(e.to)}" is now ${next.from.replace(/_/g, ' ')} to ${next.to.replace(/_/g, ' ')}${next.identifying ? '' : ', dashed'}`);
-      return;
+      return false;
     }
     const start = !!el.startArrowhead, end = !!el.endArrowhead;
     const next: EdgeStyle = !start && !end ? 'line' : start && end ? 'bidir' : dashed(el) ? 'async' : 'sync';
-    if (start && !end) [e.from, e.to] = [e.to, e.from];
-    if (next === e.style && !(start && !end)) return;
+    const flipped = start && !end;
+    if (flipped) [e.from, e.to] = [e.to, e.from];
+    if (next === e.style && !flipped) return false;
     e.style = next;
-    changes.push(start && !end ? `${what} now points the other way` : `${what} is now ${next === 'line' ? 'a plain line' : next === 'bidir' ? 'two-way' : next === 'async' ? 'dashed' : 'solid'}`);
+    changes.push(flipped ? `${what} now points the other way` : `${what} is now ${next === 'line' ? 'a plain line' : next === 'bidir' ? 'two-way' : next === 'async' ? 'dashed' : 'solid'}`);
+    return flipped;
   };
 
   const kept: Edge[] = [];
@@ -488,10 +490,11 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
     }
     const then = was.get(el.id);
     paint(e, recolour([el], e.color), `the arrow from "${name(e.from)}" to "${name(e.to)}"`);
-    restyle(e, el, then);
+    const flipped = restyle(e, el, then);
     if (then && shaped(el, then)) {
       // A path that is already the diagram's (imported before) is not a change.
       const path = tidyPath(absPoints(el)), has = tidyPath(drawn.get(cellId)?.points ?? []);
+      if (flipped || backward(el)) path.reverse();
       if (path.length !== has.length || path.some((p, i) => Math.hypot(p.x - has[i]!.x, p.y - has[i]!.y) > 2.5)) {
         pathOf.set(e, path);
         changes.push(`kept the path drawn for the arrow from "${name(e.from)}" to "${name(e.to)}"`);
@@ -526,7 +529,11 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
       ...(type === 'er' ? { card: source?.card ?? { from: 'one', to: 'many', identifying: false } } : {}),
     };
     kept.push(edge);
-    if (shaped(el)) pathOf.set(edge, tidyPath(absPoints(el)));
+    if (shaped(el)) {
+      const path = tidyPath(absPoints(el));
+      if (backwards) path.reverse();
+      pathOf.set(edge, path);
+    }
     changes.push(`added an arrow from "${name(edge.from)}" to "${name(edge.to)}"${label ? `: ${label}` : ''}`);
   }
   if (loose) notes.push(`${loose} arrow${loose === 1 ? '' : 's'} drawn in Excalidraw ${loose === 1 ? "doesn't" : "don't"} start and end on a box, so ${loose === 1 ? 'it was' : 'they were'} left out.`);
@@ -568,7 +575,7 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
    */
   function timelineDates() {
     // The axis may have been dragged along with everything else.
-    const axisEl = shapeOf('axis'), axisWas = drawn.get('axis')?.box;
+    const axisEl = shapeOf('_lw_axis') ?? shapeOf('axis'), axisWas = (drawn.get('_lw_axis') ?? drawn.get('axis'))?.box;
     const dx = axisEl && axisWas ? axisEl.x - axisWas.x : 0;
     const rowsBefore = d.nodes.filter((n) => !added.includes(n)).map((n) => n.id);
     for (const n of [...d.nodes]) {
@@ -694,6 +701,7 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
 
   function sequenceEdits(): Edits {
     const x = new Xml(base.xml);
+    let xmlDirty = false;
     const lifelines = base.cells.filter((c) => c.vertex && c.style.shape === 'umlLifeline');
     const isLane = new Set(lifelines.map((c) => c.id));
     /** The participant a cell belongs to: itself, or the lifeline its activation bar sits on. */
@@ -725,6 +733,7 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
         if (gone.has(cur)) continue;
         gone.add(cur);
         x.remove(cur);
+        xmlDirty = true;
         for (const c of base.cells) if (c.parent === cur || c.source === cur || c.target === cur) todo.push(c.id);
       }
     };
@@ -732,6 +741,7 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
       const before = labelOf(c), now = textOf(el);
       if (!now || now === before) return;
       x.attr(c.id, 'label', escapeHtml(now));
+      xmlDirty = true;
       changes.push(`${what} "${before}" to "${now}"`);
     };
 
@@ -758,6 +768,7 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
       const before = drawn.get(c.id)?.box;
       if (before && Math.abs(el.x - dx - before.x) > 3) {
         x.box(c.id, { x: el.x - dx });
+        xmlDirty = true;
         shifted++;
       }
     }
@@ -784,7 +795,10 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
       if (!hit) continue;
       redrawnNotes.add(c.id);
       const before = drawn.get(c.id)?.box;
-      if (before && far({ x: hit.x, y: hit.y }, { x: before.x, y: before.y })) x.box(c.id, { x: hit.x - dx, y: hit.y - dy });
+      if (before && far({ x: hit.x, y: hit.y }, { x: before.x, y: before.y })) {
+        x.box(c.id, { x: hit.x - dx, y: hit.y - dy });
+        xmlDirty = true;
+      }
     }
     for (const e of live) {
       if (!SHAPES.has(e.type) || isOriginal(e) || taken.has(e.id)) continue;
@@ -802,12 +816,14 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
         const tech = source ? techFromDrawn(textOf(partOf(e, 'tech'))) : undefined;
         const picked = source ? undefined : [colorName(e.backgroundColor), colorName(e.strokeColor)].find((c) => c && c !== 'none');
         x.add('vertex', id, { label: escapeHtml(label) + (tech ? `<br>${escapeHtml(tech)}` : ''), aiviz_kind: source?.attrs.aiviz_kind ?? libKind ?? 'service', aiviz_new: '1', ...(source?.attrs.aiviz_color ? { aiviz_color: source.attrs.aiviz_color } : picked ? { aiviz_color: picked } : {}) }, `shape=umlLifeline;size=${headH};`, { box: { x: e.x - dx, y: top0, w: Math.max(e.width, 80), h: lifeH } });
+        xmlDirty = true;
         lanes.push({ id, cx: e.x + e.width / 2, w: e.width });
         laneName.set(id, label);
         addedCells.add(id);
         changes.push(`added participant "${label}"`);
       } else if (!source || source.attrs.aiviz_type === 'note') {
         x.add('vertex', claim(`note_x${++extra}`), { label: escapeHtml(label), aiviz_type: 'note' }, 'shape=note;', { box: { x: e.x - dx, y: e.y - dy, w: e.width, h: e.height } });
+        xmlDirty = true;
         changes.push(`added a note: "${label}"`);
       }
     }
@@ -823,10 +839,13 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
       x.cellAttr(id, 'source', from);
       x.cellAttr(id, 'target', to);
       x.style(id, { exitX: '0.5', exitY: yFrac(a.y), entryX: '0.5', entryY: yFrac(z.y), exitDx: '0', exitDy: '0', entryDx: '0', entryDy: '0' });
+      xmlDirty = true;
     };
 
     // ---------- messages ----------
 
+    const dashed = (el: ExcalidrawElement) => el.strokeStyle === 'dashed' || el.strokeStyle === 'dotted';
+    const msgStyle = (el: ExcalidrawElement, head: unknown): MessageStyle => (dashed(el) ? 'reply' : head === 'arrow' ? 'async' : 'sync');
     const rowThen: Array<[string, number]> = [], rowNow: Array<[string, number]> = [];
     for (const c of base.cells) {
       if (!c.edge || gone.has(c.id)) continue;
@@ -836,7 +855,9 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
       const el = shapeOf(c.id) ?? live.find((a) => {
         if (a.type !== 'arrow' || isOriginal(a) || taken.has(a.id)) return false;
         const pts = absPoints(a);
-        return pts.length > 1 && laneAt(pts[0]!.x) === from0 && laneAt(pts[pts.length - 1]!.x) === to0 && textOf(boundText(a) ?? partOf(a, 'text')) === label;
+        const rev = !!a.startArrowhead && !a.endArrowhead;
+        const p0 = pts[rev ? pts.length - 1 : 0], p1 = pts[rev ? 0 : pts.length - 1];
+        return pts.length > 1 && laneAt(p0!.x) === from0 && laneAt(p1!.x) === to0 && textOf(boundText(a) ?? partOf(a, 'text')) === label;
       });
       if (el) taken.add(el.id);
       if (!el) {
@@ -848,22 +869,44 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
       const tint = recolour([el], c.attrs.aiviz_color);
       if (tint !== undefined && (tint === 'none' ? !!c.attrs.aiviz_color : c.attrs.aiviz_color !== tint)) {
         x.attr(c.id, 'aiviz_color', tint === 'none' ? undefined : tint);
+        xmlDirty = true;
         changes.push(tint === 'none' ? `the message "${label}" is back to its own color` : `the message "${label}" is now ${tint}`);
       }
-      const pts = absPoints(el), a = pts[0], z = pts[pts.length - 1];
+      const pts = absPoints(el), p0 = pts[0], p1 = pts[pts.length - 1];
       const before = drawn.get(c.id)?.points;
-      if (!a || !z || !before?.length) continue;
+      if (!p0 || !p1 || !before?.length) continue;
+      const then = was.get(el.id);
+      const backwards = !!el.startArrowhead && !el.endArrowhead;
+      const [a, z] = backwards ? [p1, p0] : [p0, p1];
       rowThen.push([c.id, before[0]!.y]);
       rowNow.push([c.id, a.y - dy]);
-      if (!far(a, before[0]) && !far(z, before[before.length - 1])) continue;
-      const from = laneAt(a.x) ?? from0, to = laneAt(z.x) ?? to0;
+      let flipped = false;
+      if (then) {
+        const headsChanged = (el.startArrowhead ?? null) !== (then.startArrowhead ?? null) || (el.endArrowhead ?? null) !== (then.endArrowhead ?? null);
+        if (headsChanged || dashed(el) !== dashed(then)) {
+          const curStyle = (c.attrs.aiviz_msg as MessageStyle) ?? 'sync';
+          const head = backwards ? el.startArrowhead : el.endArrowhead;
+          const nextStyle = msgStyle(el, head);
+          flipped = backwards;
+          if (nextStyle !== curStyle) {
+            x.attr(c.id, 'aiviz_msg', nextStyle);
+            xmlDirty = true;
+            changes.push(`${label ? `the message "${label}"` : 'a message'} is now ${nextStyle}`);
+          }
+          if (flipped) changes.push(`${label ? `the message "${label}"` : 'a message'} now points the other way`);
+        }
+      }
+      if (!flipped && !far(a, before[0]) && !far(z, before[before.length - 1])) continue;
+      const from = laneAt(a.x) ?? (flipped ? to0 : from0), to = laneAt(z.x) ?? (flipped ? from0 : to0);
       ends(c.id, from, to, a, z);
-      if (from !== from0 || to !== to0) changes.push(`${label ? `the message "${label}"` : 'a message'} now runs from "${laneName.get(from)}" to "${laneName.get(to)}"`);
+      if (!flipped && (from !== from0 || to !== to0)) changes.push(`${label ? `the message "${label}"` : 'a message'} now runs from "${laneName.get(from)}" to "${laneName.get(to)}"`);
     }
     let loose = 0;
     for (const el of live) {
       if (el.type !== 'arrow' || isOriginal(el) || taken.has(el.id)) continue;
-      const pts = absPoints(el), a = pts[0], z = pts[pts.length - 1];
+      const pts = absPoints(el), p0 = pts[0], p1 = pts[pts.length - 1];
+      const backwards = !!el.startArrowhead && !el.endArrowhead;
+      const [a, z] = backwards ? [p1, p0] : [p0, p1];
       const from = a ? laneAt(a.x) : undefined, to = z ? laneAt(z.x) : undefined;
       if (!a || !z || !from || !to) {
         loose++;
@@ -871,7 +914,8 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
       }
       const source = originOf(el) ? base.byId.get(originOf(el)!.cell) : undefined;
       const label = textOf(boundText(el) ?? partOf(el, 'text'));
-      const style = source?.attrs.aiviz_msg ?? (el.strokeStyle === 'dashed' || el.strokeStyle === 'dotted' ? 'reply' : 'sync');
+      const head = backwards ? el.startArrowhead : el.endArrowhead;
+      const style = source?.attrs.aiviz_msg ?? msgStyle(el, head);
       const picked = source ? source.attrs.aiviz_color : colorName(el.strokeColor);
       const id = claim(`m_x${++extra}`);
       x.add('edge', id, { label: escapeHtml(label), aiviz_msg: style, ...(picked && picked !== 'none' ? { aiviz_color: picked } : {}) }, 'html=1;', {});
@@ -900,6 +944,7 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
         rowNow.push([c.id, el.y - dy]);
         if (movedTo) {
           x.box(c.id, { x: el.x - dx, y: el.y - dy, w: el.width });
+          xmlDirty = true;
           // Which participants it is over is read from where it now sits.
           if (Math.abs(el.x - dx - before!.x) > 3 || Math.abs(el.width - before!.w) > 3) {
             x.attr(c.id, 'aiviz_over', undefined);
@@ -918,9 +963,13 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
         if (opNow && opNow !== op && FRAME_OPS.includes(opNow)) {
           x.attr(c.id, 'aiviz_frame', opNow);
           x.attr(c.id, 'label', opNow);
+          xmlDirty = true;
           changes.push(`the ${op} frame is now ${opNow}`);
         }
-        if (movedTo) x.box(c.id, { x: el.x - dx, y: el.y - dy, w: el.width, h: el.height });
+        if (movedTo) {
+          x.box(c.id, { x: el.x - dx, y: el.y - dy, w: el.width, h: el.height });
+          xmlDirty = true;
+        }
       } else if (kind === 'guard') {
         if (!el) {
           changes.push(`removed the condition "${labelOf(c)}"`);
@@ -931,9 +980,13 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
         if (now && now !== labelOf(c)) {
           const text = /^\[.*\]$/.test(now) ? now : `[${now}]`;
           x.attr(c.id, 'label', escapeHtml(text));
+          xmlDirty = true;
           changes.push(`changed the condition "${labelOf(c)}" to "${text}"`);
         }
-        if (movedTo) x.box(c.id, { x: el.x - dx, y: el.y - dy });
+        if (movedTo) {
+          x.box(c.id, { x: el.x - dx, y: el.y - dy });
+          xmlDirty = true;
+        }
       }
     }
     // A branch divider somebody deleted joins the branches on either side of it.
@@ -948,8 +1001,8 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
     const order = (rows: Array<[string, number]>) => rows.filter(([id]) => !gone.has(id)).sort((p, q) => p[1] - q[1]).map(([id]) => id).join();
     if (order(rowThen) !== order(rowNow)) changes.push('put the messages in a new order');
 
-    const xml = changes.length ? x.toString() : base.xml;
-    const model = changes.length ? readDrawio(xml) : base;
+    const xml = xmlDirty || changes.length ? x.toString() : base.xml;
+    const model = xmlDirty || changes.length ? readDrawio(xml) : base;
     const shownNow = toDiagram(model);
     const dNow = shownNow.diagram;
 
@@ -978,12 +1031,10 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
       paint(n, recolour([el], n.color), `"${n.label}"`);
     }
     // Moving a message across a frame's edge changes the spec without changing the order.
-    if (!changes.length) {
-      const model2 = readDrawio(x.toString());
-      const d2 = toDiagram(model2).diagram;
-      if (JSON.stringify(d2.seq) !== JSON.stringify(dNow.seq)) return { xml: model2.xml, diagram: d2, boxes: new Map(), routes, changes: ['moved messages or notes to another place'], notes };
+    if (xmlDirty && !changes.length && JSON.stringify(dNow.seq) !== JSON.stringify(toDiagram(base).diagram.seq)) {
+      changes.push('moved messages or notes to another place');
     }
-    return { xml, diagram: dNow, boxes: new Map(), routes, changes, notes };
+    return { xml: changes.length ? xml : base.xml, diagram: dNow, boxes: new Map(), routes, changes, notes };
   }
 }
 

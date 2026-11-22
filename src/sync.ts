@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { build, specStamp, type BuildResult } from './api.js';
+import { useConfigFor } from './config.js';
 import { readDrawio } from './drawio/read.js';
 import type { DrawioBrowser } from './render/browser.js';
 import { DIAGRAM_TYPES } from './spec/model.js';
@@ -25,6 +26,7 @@ const SPEC_RE = new RegExp(`^type:\\s*["']?(${DIAGRAM_TYPES.join('|')})["']?\\s*
 /** YAML files under the given files and folders that are linework specs, each with the diagram it builds. */
 export function findSpecs(roots: string[]): Array<{ spec: string; out: string }> {
   const out: Array<{ spec: string; out: string }> = [];
+  const visited = new Set<string>();
   const visit = (p: string, top: boolean) => {
     const stat = fs.statSync(p, { throwIfNoEntry: false });
     if (!stat) {
@@ -33,6 +35,14 @@ export function findSpecs(roots: string[]): Array<{ spec: string; out: string }>
     }
     if (stat.isDirectory()) {
       if (!top && (SKIP.has(path.basename(p)) || path.basename(p).startsWith('.'))) return;
+      let real: string;
+      try {
+        real = fs.realpathSync(p);
+      } catch {
+        return;
+      }
+      if (visited.has(real)) return;
+      visited.add(real);
       for (const name of fs.readdirSync(p).sort()) visit(path.join(p, name), false);
       return;
     }
@@ -54,6 +64,7 @@ export async function sync(roots: string[], opts: { check?: boolean; browser?: D
     const item: SyncItem = { spec, out, state: 'fresh' };
     items.push(item);
     try {
+      useConfigFor(out);
       const text = fs.readFileSync(spec, 'utf8');
       const want = specStamp(text);
       const has = fs.existsSync(out) ? readDrawio(fs.readFileSync(out, 'utf8')).meta.aiviz_spec : undefined;

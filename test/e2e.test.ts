@@ -12,7 +12,10 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-'));
 beforeAll(async () => {
   if (process.env.LINEWORK_SKIP_E2E !== '1') browser = await DrawioBrowser.launch();
 }, 60000);
-afterAll(async () => { await browser?.close(); });
+afterAll(async () => {
+  await browser?.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
 
 describe.runIf(process.env.LINEWORK_SKIP_E2E !== '1')('end to end', () => {
   for (const f of fs.readdirSync('examples')) {

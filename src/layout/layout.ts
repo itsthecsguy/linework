@@ -131,11 +131,14 @@ export async function layout(d: Diagram, measure: Measure = estimateMeasure): Pr
   // wins only when it crosses fewer edges.
   const hasPairs = d.edges.some((e, i) => e.from !== e.to && d.edges.slice(0, i).some((x) => x.from === e.to && x.to === e.from));
   const go = async (dir: Exclude<Direction, 'auto'>): Promise<Layout> => {
-    const tries: Array<[Order, 'reply' | 'call']> = [['NODES_AND_EDGES', 'reply'], ['NONE', 'reply']];
+    const first = await once(dir, 'NODES_AND_EDGES', 'reply');
+    if (!hasPairs && crossings(first) === 0) return first;
+    const tries: Array<[Order, 'reply' | 'call']> = [];
+    if (crossings(first) > 0) tries.push(['NONE', 'reply']);
     if (hasPairs) tries.push(['NODES_AND_EDGES', 'call'], ['NONE', 'call']);
-    const all = await Promise.all(tries.map(([o, p]) => once(dir, o, p)));
+    const rest = await Promise.all(tries.map(([o, p]) => once(dir, o, p)));
     // Fewest crossings; then clearly shorter edges; ties go to the earlier try.
-    return all.reduce((best, l) => {
+    return [first, ...rest].reduce((best, l) => {
       const [cb, cl] = [crossings(best), crossings(l)];
       if (cl !== cb) return cl < cb ? l : best;
       return edgeLength(l) < 0.9 * edgeLength(best) ? l : best;
@@ -323,10 +326,25 @@ async function run(
   // Which of the two to flip is tried both ways by the caller: flipping the call
   // puts the other end ahead of the caller, often outside its group.
   const flipped = new Set<string>();
-  d.edges.forEach((e, i) => {
-    const call = e.from !== e.to ? d.edges.slice(0, i).find((x) => x.from === e.to && x.to === e.from) : undefined;
-    if (call) flipped.add(pairs === 'reply' ? e.id : call.id);
-  });
+  // Flip all edges of one direction between a pair together, so parallel calls/replies
+  // stay aligned with each other.
+  const firstDir = new Map<string, string>();
+  const oppPairs = new Set<string>();
+  for (const e of d.edges) {
+    if (e.from === e.to) continue;
+    const key = e.from < e.to ? `${e.from}\0${e.to}` : `${e.to}\0${e.from}`;
+    const dirKey = `${e.from}\0${e.to}`;
+    const prev = firstDir.get(key);
+    if (!prev) firstDir.set(key, dirKey);
+    else if (prev !== dirKey) oppPairs.add(key);
+  }
+  for (const e of d.edges) {
+    if (e.from === e.to) continue;
+    const key = e.from < e.to ? `${e.from}\0${e.to}` : `${e.to}\0${e.from}`;
+    if (!oppPairs.has(key)) continue;
+    const isCall = firstDir.get(key) === `${e.from}\0${e.to}`;
+    if ((pairs === 'reply' && !isCall) || (pairs === 'call' && isCall)) flipped.add(e.id);
+  }
   // The edge that closes a loop (a retry, "new findings, investigate again")
   // points back at a box that was declared earlier and already appears in an
   // earlier edge. Lay it out reversed, so the main path keeps running forward
@@ -351,7 +369,12 @@ async function run(
     for (const q = [from]; q.length; ) {
       const cur = q.pop()!;
       if (cur === to) return true;
-      for (const x of d.edges) if (x.from === cur && !cut.has(x.id) && !seen.has(x.to)) (seen.add(x.to), q.push(x.to));
+      for (const x of d.edges) {
+        if (cut.has(x.id)) continue;
+        const xf = flipped.has(x.id) ? x.to : x.from;
+        const xt = flipped.has(x.id) ? x.from : x.to;
+        if (xf === cur && !seen.has(xt)) (seen.add(xt), q.push(xt));
+      }
     }
     return false;
   };

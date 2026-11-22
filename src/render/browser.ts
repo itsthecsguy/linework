@@ -328,6 +328,16 @@ export class DrawioBrowser {
     return this.page.locator('#out svg').screenshot({ path: file, omitBackground: false });
   }
 
+  /** Renders once into #out, screenshots it, and returns the embedded .drawio.svg text. */
+  async renderSvgAndPng(xml: string, pngFile?: string): Promise<{ svg: string; png: Buffer }> {
+    const rawSvg = await this.page.evaluate((x) => (window as any).aiviz.render(x, true), xml);
+    const [svg, png] = await Promise.all([
+      embedFonts(rawSvg),
+      this.page.locator('#out svg').screenshot({ path: pngFile, omitBackground: false }),
+    ]);
+    return { svg, png };
+  }
+
   /** Reroutes the given edge cells with libavoid. Returns mxGraphModel XML. */
   reroute(xml: string, edgeIds: string[]): Promise<string> {
     return this.page.evaluate(([x, ids]) => (window as any).aiviz.reroute(x, ids), [xml, edgeIds] as const);
@@ -409,7 +419,14 @@ function serveAssets(): Promise<http.Server> {
       const f = FACES.find((x) => `/aiviz-fonts/${x.file}` === pathname);
       return f ? send(res, 200, 'font/woff2', fs.readFileSync(path.join(fonts, f.file))) : send(res, 404, 'text/plain', '');
     }
-    const file = path.join(dir, path.normalize(decodeURIComponent(pathname)));
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(pathname);
+    } catch (e) {
+      if (e instanceof URIError) return send(res, 400, 'text/plain', 'Bad Request');
+      throw e;
+    }
+    const file = path.join(dir, path.normalize(decoded));
     if (!file.startsWith(dir + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) return send(res, 404, 'text/plain', '');
     send(res, 200, TYPES[path.extname(file)] ?? 'application/octet-stream', fs.readFileSync(file));
   });

@@ -27,9 +27,11 @@ export class TextMeasurer {
   async prepare(items: Array<readonly [string | undefined, FontSpec]>): Promise<void> {
     const reqs: Array<[string, number, number, string]> = [];
     const keys: string[] = [];
+    const seen = new Set<string>();
     const add = (word: string, f: FontSpec) => {
       const k = `${key(f)}|${word}`;
-      if (this.widths.has(k) || keys.includes(k)) return;
+      if (this.widths.has(k) || seen.has(k)) return;
+      seen.add(k);
       keys.push(k);
       reqs.push([word, f.size, f.weight, f.family]);
     };

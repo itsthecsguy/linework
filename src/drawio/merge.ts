@@ -14,7 +14,7 @@ import type { Diagram, Node } from '../spec/model.js';
 import type { Box, Layout } from '../layout/layout.js';
 import { absBox, type Cell, type DrawioModel } from './read.js';
 import { manualEdits, toDiagram } from './show.js';
-import { autoAttr, diagramMeta, edgeAttrs, edgeCellId, edgeStyleFor, nodeChildren, styleFor, groupAttrs, groupStyleFor, nodeAttrs, routeAttr, type Scene, type SceneEdge, type SceneVertex } from './write.js';
+import { autoAttr, diagramMeta, diamondInset, edgeAttrs, edgeCellId, edgeStyleFor, labelBgAt, nodeChildren, styleFor, groupAttrs, groupStyleFor, nodeAttrs, routeAttr, type Scene, type SceneEdge, type SceneVertex } from './write.js';
 import type { Look } from '../spec/model.js';
 import { palette } from './theme.js';
 import { kindDef } from '../spec/model.js';
@@ -55,9 +55,8 @@ function withoutKeys(style: string, keys: string[]) {
 }
 
 function ownAttrs(c: Cell): Record<string, string> {
-  // color/highlight come from the spec every time, so dropping one in the spec drops it here.
-  const { id: _id, value: _value, aiviz_auto: _auto, aiviz_color: _c, aiviz_highlight: _h, aiviz_status: _s, ...rest } = c.attrs;
-  return rest;
+  // Spec-owned aiviz_* keys come from the spec every time, so dropping one in the spec drops it here.
+  return Object.fromEntries(Object.entries(c.attrs).filter(([k]) => k !== 'id' && k !== 'value' && !k.startsWith('aiviz_')));
 }
 
 const sameLookOf = (a?: Look, b?: Look) => (a?.color ?? '') === (b?.color ?? '') && !!a?.highlight === !!b?.highlight;
@@ -124,16 +123,16 @@ export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specI
     return c && oldGroups.has(gid) ? absBox(old, c.id) : undefined;
   };
   // New box-like nodes match the most common width already in the diagram.
+  const isBoxy = (kind: string) => !['start', 'end', 'diamond'].includes(kindDef(d.type, kind).shape);
   const widths = new Map<number, number>();
   for (const [id, b] of abs) {
     const k = d.nodes.find((n) => n.id === id)?.kind;
-    if (k && !['start', 'end', 'decision'].includes(k)) widths.set(b.w, (widths.get(b.w) ?? 0) + 1);
+    if (k && isBoxy(k)) widths.set(b.w, (widths.get(b.w) ?? 0) + 1);
   }
   const commonW = [...widths].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
   const sizeOf = (n: Node) => {
     const nat = fresh.natural.get(n.id)!;
-    const boxy = !['start', 'end', 'decision'].includes(n.kind);
-    return { w: boxy ? Math.max(nat.w, commonW) : nat.w, h: nat.h };
+    return { w: isBoxy(n.kind) ? Math.max(nat.w, commonW) : nat.w, h: nat.h };
   };
   const memberOf = (nodeId: string, gid: string) => ancestors(d.nodes.find((x) => x.id === nodeId)?.parent).has(gid);
   const pending = d.nodes.filter((n) => !abs.has(n.id));
@@ -219,7 +218,7 @@ export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specI
     // Keep a person's styling, unless the kind changed or it's a shape they added
     // without picking any colours (draw.io's default black outline).
     const unstyled = c && !c.attrs.aiviz_kind && !c.style.fillColor && !c.style.strokeColor;
-    const style = c && prev?.kind === n.kind && prev?.icon === n.icon && lookSame && !unstyled && !themeChanged ? c.styleRaw : styleFor(d, n);
+    const style = c && prev?.kind === n.kind && prev?.icon === n.icon && lookSame && !unstyled && !themeChanged ? c.styleRaw : styleFor(d, n) + diamondInset(d, n, box);
     vertices.push({ id: n.id, parent: n.parent ?? '1', attrs, style, box });
     vertices.push(...nodeChildren(d, n, box));
   }
@@ -255,7 +254,9 @@ export function merge(d: Diagram, old: DrawioModel, fresh: Layout, opts: { specI
     else {
       // Arrow style or theme changed: take the theme style, keep where the edge attaches.
       const ports = oc ? PORT_KEYS.filter((k) => k in oc.style).map((k) => `${k}=${oc.style[k]};`).join('') : '';
-      style = edgeStyleFor(d, e) + ports;
+      const a = abs.get(e.from), b = abs.get(e.to);
+      const mid = a && b ? { x: (center(a).x + center(b).x) / 2, y: (center(a).y + center(b).y) / 2 } : undefined;
+      style = edgeStyleFor(d, e, labelBgAt(d, gabs, mid)) + ports;
     }
     if (oc && sameEnds && keepParent && !stale) {
       edges.push({ id, parent: keepParent, attrs, style, source: e.from, target: e.to, geomRaw: oc.geomRaw });

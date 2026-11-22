@@ -4,10 +4,16 @@
 // wedged into a bend when there's a clear stretch of line for it.
 import { DOMParser, XMLSerializer, type Element } from '@xmldom/xmldom';
 import type { DrawioBrowser, InspectCell } from '../render/browser.js';
-import { check, type Finding } from './check.js';
+import { check, segHitsBox, type Finding } from './check.js';
 
 const OFFSETS = [-0.35, 0.35, -0.65, 0.65, -0.15, 0.15, -0.85, 0.85];
 const LABEL_RULES = new Set(['label-collision', 'label-on-node', 'label-on-edge']);
+
+type Box = { x: number; y: number; w: number; h: number };
+const inter = (a: Box, b: Box) =>
+  Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+const grow = (b: Box, m: number): Box => ({ x: b.x - m, y: b.y - m, w: Math.max(0, b.w + 2 * m), h: Math.max(0, b.h + 2 * m) });
+const scaffold = (c: InspectCell) => c.shape === 'umlLifeline' || c.shape === 'umlFrame' || ['bar', 'guard', 'frame', 'grid', 'tick', 'lane'].includes(c.aivizType ?? '');
 
 function edgeGeometry(doc: ReturnType<DOMParser['parseFromString']>, id: string): Element | undefined {
   const objs = doc.getElementsByTagName('object');
@@ -53,44 +59,94 @@ function labelEdges(findings: Finding[]): string[] {
  */
 export async function fixLabels(b: DrawioBrowser, xml: string, maxRounds = 6): Promise<{ xml: string; moved: number; cells: InspectCell[] }> {
   let cur = xml;
-  const labelScore = (cells: InspectCell[]) => check(cells).findings.filter((f) => LABEL_RULES.has(f.rule)).length;
-  let score = labelScore(await b.inspect(cur));
+  const cells = await b.inspect(cur);
+  const active = cells.filter((c) => c.aivizType !== 'legend');
+  const nodeBoxes = active.filter((c) => c.vertex && !c.container && !c.text && !scaffold(c)).map((n) => grow(n.box, 3));
+  const containers = active.filter((c) => c.vertex && c.container && !scaffold(c));
+  const groupTitles = containers.filter((g) => g.label && g.textBox).map((g) => grow(g.textBox!, 2));
+  const groupBorders = containers.map((g) => [
+    { x: g.box.x, y: g.box.y },
+    { x: g.box.x + g.box.w, y: g.box.y },
+    { x: g.box.x + g.box.w, y: g.box.y + g.box.h },
+    { x: g.box.x, y: g.box.y + g.box.h },
+    { x: g.box.x, y: g.box.y },
+  ]);
+  const edges = active.filter((c) => c.edge && c.points && c.points.length >= 2);
+  const edgeLabels = edges.filter((e) => e.textBox && e.label);
+
+  // Lightweight label-only scorer for candidate positions of one edge's label.
+  const scoreLabel = (id: string, tb: Box | null): number => {
+    if (!tb) return 0;
+    let hits = 0;
+    for (const nb of nodeBoxes) if (inter(tb, nb) > 4) hits++;
+    for (const gt of groupTitles) if (inter(tb, gt) > 4) hits++;
+    const inner = grow(tb, -2);
+    let onLine = false;
+    for (const o of edges) {
+      if (o.id === id) continue;
+      const pts = o.points!;
+      for (let k = 0; k < pts.length - 1; k++) {
+        if (segHitsBox(pts[k]!, pts[k + 1]!, inner)) {
+          onLine = true;
+          break;
+        }
+      }
+      if (onLine) break;
+    }
+    if (!onLine) {
+      const outer = grow(tb, 3);
+      for (const pts of groupBorders) {
+        for (let k = 0; k < pts.length - 1; k++) {
+          if (segHitsBox(pts[k]!, pts[k + 1]!, outer)) {
+            onLine = true;
+            break;
+          }
+        }
+        if (onLine) break;
+      }
+    }
+    if (onLine) hits++;
+    for (const o of edgeLabels) {
+      if (o.id !== id && o.textBox && inter(tb, o.textBox) > 6) hits++;
+    }
+    return hits;
+  };
+
   let moved = 0;
-  for (let round = 0; round < maxRounds && score > 0; round++) {
-    // The cells of `cur`, kept current as labels move: a move changes only that label's box.
-    const cells = await b.inspect(cur);
+  for (let round = 0; round < maxRounds; round++) {
     const targets = labelEdges(check(cells).findings);
+    if (!targets.length) break;
+    const doc = new DOMParser().parseFromString(cur, 'text/xml');
     let improved = false;
     for (const id of targets) {
-      const doc = new DOMParser().parseFromString(cur, 'text/xml');
       const g = edgeGeometry(doc, id);
       if (!g) continue;
       const base = Number(g.getAttribute('x') ?? 0);
       const cell = cells.find((c) => c.id === id);
+      const curScore = scoreLabel(id, cell?.textBox ?? null);
+      if (curScore === 0) continue;
       const spots = cell?.points && cell.textBox ? runSpots(cell.points, cell.textBox) : [];
       const tries = [...spots, ...OFFSETS.map((off) => Math.max(-0.9, Math.min(0.9, base + off)))].map((x) => Number(x.toFixed(3)));
       const boxes = await b.labelBoxes(cur, id, tries);
       let best: { x: number; score: number; box: InspectCell['textBox'] } | undefined;
       for (let i = 0; i < tries.length; i++) {
-        const s = labelScore(cells.map((c) => (c.id === id ? { ...c, textBox: boxes[i]! } : c)));
-        if (s < (best?.score ?? score)) best = { x: tries[i]!, score: s, box: boxes[i]! };
+        const s = scoreLabel(id, boxes[i]!);
+        if (s < (best?.score ?? curScore)) best = { x: tries[i]!, score: s, box: boxes[i]! };
         if (s === 0) break;
       }
       if (best) {
         g.setAttribute('x', best.x.toFixed(3));
-        cur = new XMLSerializer().serializeToString(doc);
         if (cell) cell.textBox = best.box;
-        score = best.score;
         moved++;
         improved = true;
-        if (score === 0) break;
       }
     }
     if (!improved) break;
+    cur = new XMLSerializer().serializeToString(doc);
   }
-  const cells = await b.inspect(cur);
-  cur = await matchLabelBackgrounds(b, cur, cells);
-  return { xml: cur, moved, cells };
+  const finalCells = moved ? await b.inspect(cur) : cells;
+  cur = await matchLabelBackgrounds(b, cur, finalCells);
+  return { xml: cur, moved, cells: finalCells };
 }
 
 /**

@@ -1,60 +1,178 @@
 // The loop the tool exists for: an agent builds a diagram, a person moves a node
 // in `linework edit` and saves, the agent edits the spec again, and the move survives.
-// Needs Chromium.
-import { describe, expect, it } from 'vitest';
+// Plus fast HTTP-only tests for the editor server.
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { chromium, type Browser } from 'playwright-core';
+import type { Browser } from 'playwright-core';
 import { build, show } from '../src/api.js';
+import { useConfig } from '../src/config.js';
 import { startEditor } from '../src/edit/server.js';
 import { absBox, readDrawio } from '../src/drawio/read.js';
-import { systemBrowsers } from '../src/render/browser.js';
+import { DrawioBrowser } from '../src/render/browser.js';
+import { fontsDir } from '../src/render/fonts.js';
 
 const run = process.env.LINEWORK_SKIP_E2E !== '1';
-
-async function launch(): Promise<Browser> {
-  // Same order as the tool: LINEWORK_CHROME first, then Playwright's Chromium, Chrome, Edge, then whatever is on PATH.
-  const own = process.env.LINEWORK_CHROME ? [{ executablePath: process.env.LINEWORK_CHROME }] : [];
-  for (const o of [...own, {}, { channel: 'chrome' }, { channel: 'msedge' }, ...systemBrowsers().map((executablePath) => ({ executablePath }))]) {
-    try {
-      return await chromium.launch(o);
-    } catch {}
-  }
-  throw new Error('no Chromium');
-}
-
 const apiBox = (file: string) => absBox(readDrawio(fs.readFileSync(file, 'utf8')), 'api')!;
 
+const MINIMAL_XML = '<mxfile><diagram><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>';
+const MINIMAL_SVG = (font = 'IBM Plex Sans') =>
+  `<svg xmlns="http://www.w3.org/2000/svg" content="${MINIMAL_XML.replace(/"/g, '&quot;')}"><defs/><text style="font-family:&quot;${font}&quot;">Hello</text></svg>`;
+
+describe('linework edit server (HTTP)', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-edit-http-'));
+
+  afterAll(() => {
+    useConfig();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('writes a side-copy and returns 409 when the file changed on disk', async () => {
+    const file = path.join(tmp, 'conflict.drawio.svg');
+    fs.writeFileSync(file, MINIMAL_SVG());
+    const oldMtime = fs.statSync(file).mtimeMs;
+    const session = await startEditor(file);
+    try {
+      const base = session.url.replace(/\/$/, '');
+      // Modify the file on disk with a bumped mtime.
+      fs.writeFileSync(file, MINIMAL_SVG() + '<!-- disk -->');
+      const bumped = new Date(oldMtime + 5000);
+      fs.utimesSync(file, bumped, bumped);
+
+      const savedSvg = MINIMAL_SVG() + '<!-- editor -->';
+      const data = `data:image/svg+xml;base64,${Buffer.from(savedSvg, 'utf8').toString('base64')}`;
+      const res = await fetch(`${base}/save`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ data, mtime: oldMtime }),
+      });
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toMatch(/changed on disk/);
+      expect(fs.readFileSync(file, 'utf8')).toContain('<!-- disk -->');
+    } finally {
+      await session.close();
+    }
+    const done = await session.done;
+    expect(done.conflicts.length).toBe(1);
+    expect(fs.existsSync(done.conflicts[0]!)).toBe(true);
+    expect(fs.readFileSync(done.conflicts[0]!, 'utf8')).toContain('<!-- editor -->');
+  });
+
+  it('blocks path traversal under /app/ and returns 400 on malformed URIs', async () => {
+    const file = path.join(tmp, 'sec.drawio.svg');
+    fs.writeFileSync(file, MINIMAL_SVG());
+    const session = await startEditor(file);
+    try {
+      const origin = new URL(session.url).origin;
+      const hostRes = await fetch(session.url);
+      expect(hostRes.status).toBe(200);
+      expect(await hostRes.text()).toContain('postMessage(JSON.stringify(m), location.origin)');
+
+      expect((await fetch(`${origin}/app/..%2F..%2Fpackage.json`)).status).toBe(404);
+      expect((await fetch(`${origin}/app/..%2Ffonts%2Fplex-sans-400.woff2`)).status).toBe(404);
+      expect((await fetch(`${origin}/app/%E0%A4%A`)).status).toBe(400);
+      // Server remains healthy after a malformed URI.
+      expect((await fetch(session.url)).status).toBe(200);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('serves and embeds custom theme fonts from linework.yaml on save', async () => {
+    const proj = path.join(tmp, 'custom-font-proj');
+    fs.mkdirSync(proj, { recursive: true });
+    const fontSrc = path.join(fontsDir(), 'plex-sans-400.woff2');
+    const fontBoldSrc = path.join(fontsDir(), 'plex-sans-600.woff2');
+    fs.copyFileSync(fontSrc, path.join(proj, 'brand-400.woff2'));
+    fs.copyFileSync(fontBoldSrc, path.join(proj, 'brand-600.woff2'));
+    fs.writeFileSync(
+      path.join(proj, 'linework.yaml'),
+      `theme: brand\nthemes:\n  brand:\n    extends: clean\n    font:\n      family: BrandSans\n      regular: ./brand-400.woff2\n      bold: ./brand-600.woff2\n`,
+    );
+    const file = path.join(proj, 'arch.drawio.svg');
+    fs.writeFileSync(file, MINIMAL_SVG('BrandSans'));
+    const mtime = fs.statSync(file).mtimeMs;
+
+    const session = await startEditor(file);
+    try {
+      const origin = new URL(session.url).origin;
+      const base = session.url.replace(/\/$/, '');
+      const indexHtml = await (await fetch(`${origin}/app/index.html`)).text();
+      expect(indexHtml).toContain('font-family:"BrandSans"');
+      expect(indexHtml).toContain('/aiviz-fonts/custom-0.woff2');
+
+      const fontRes = await fetch(`${origin}/aiviz-fonts/custom-0.woff2`);
+      expect(fontRes.status).toBe(200);
+      expect(fontRes.headers.get('content-type')).toBe('font/woff2');
+
+      const data = `data:image/svg+xml;base64,${Buffer.from(MINIMAL_SVG('BrandSans'), 'utf8').toString('base64')}`;
+      const saveRes = await fetch(`${base}/save`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ data, mtime }),
+      });
+      expect(saveRes.status).toBe(200);
+      const saved = fs.readFileSync(file, 'utf8');
+      expect(saved).toContain('<style id="aiviz-fonts"');
+      expect(saved).toContain('font-family:"BrandSans"');
+    } finally {
+      await session.close();
+    }
+  });
+});
+
 describe.runIf(run)('linework edit', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-edit-'));
+  let b: DrawioBrowser;
+
+  beforeAll(async () => {
+    b = await DrawioBrowser.launch();
+  }, 60000);
+
+  afterAll(async () => {
+    await b?.close();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
   it('saves a hand edit that the next build keeps', async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-edit-'));
     const file = path.join(tmp, 'checkout.drawio.svg');
-    await build(fs.readFileSync('examples/checkout.yaml', 'utf8'), { out: file });
+    await build(fs.readFileSync('examples/checkout.yaml', 'utf8'), { out: file, browser: b });
     const before = apiBox(file);
 
     const session = await startEditor(file);
-    const browser = await launch();
+    const page = await (b as unknown as { browser: Browser }).browser.newPage({ viewport: { width: 1400, height: 900 } });
     try {
-      const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
       await page.goto(session.url);
       const frame = () => page.frames().find((f) => f.url().includes('embed=1'))!;
-      await page.waitForFunction(() => !!document.querySelector('iframe')?.contentWindow?.document.querySelector('.geDiagramContainer svg'), null, { timeout: 60000 });
-      await page.waitForTimeout(1500);
+      await page.waitForFunction(
+        () => {
+          const doc = document.querySelector('iframe')?.contentWindow?.document;
+          if (!doc) return false;
+          const el = [...doc.querySelectorAll('.geDiagramContainer foreignObject *')].find((d) => d.childElementCount === 0 && d.textContent?.trim() === 'Checkout API');
+          return !!el && el.getBoundingClientRect().width > 0;
+        },
+        null,
+        { timeout: 60000 },
+      );
       // Select the "Checkout API" node by its label and nudge it with the keyboard.
-      const pos = await frame().evaluate(() => {
-        const el = [...document.querySelectorAll('.geDiagramContainer foreignObject *')].find((d) => d.childElementCount === 0 && d.textContent?.trim() === 'Checkout API')!;
-        const r = el.getBoundingClientRect();
-        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-      });
+      const labelPos = () =>
+        frame().evaluate(() => {
+          const el = [...document.querySelectorAll('.geDiagramContainer foreignObject *')].find((d) => d.childElementCount === 0 && d.textContent?.trim() === 'Checkout API')!;
+          const r = el.getBoundingClientRect();
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        });
+      const pos = await labelPos();
       await page.mouse.click(pos.x, pos.y);
-      await page.waitForTimeout(300);
+      await frame().waitForFunction(() => !!document.querySelector('.geDiagramContainer svg [style*="cursor: move"], .geDiagramContainer svg [style*="cursor: nw-resize"], .geDiagramContainer svg [stroke="#00a8ff"]'), null, { timeout: 10000 });
       for (let i = 0; i < 6; i++) await page.keyboard.press('Shift+ArrowRight');
+      await expect.poll(async () => (await labelPos()).x, { timeout: 10000 }).toBeGreaterThan(pos.x + 20);
       await page.waitForTimeout(800); // draw.io batches arrow-key nudges before committing them
       await page.keyboard.press(process.platform === 'darwin' ? 'Meta+s' : 'Control+s');
       await expect.poll(() => apiBox(file).x, { timeout: 15000 }).toBeGreaterThan(before.x);
     } finally {
-      await browser.close();
+      await page.close();
       await session.close();
     }
     const moved = apiBox(file);
@@ -62,7 +180,7 @@ describe.runIf(run)('linework edit', () => {
 
     // The agent picks up the file and adds a node.
     const spec = show(file).yaml.replace('nodes:\n', 'nodes:\n  audit: { label: Audit log, kind: storage }\n').replace('edges:\n', 'edges:\n  - api -> audit: append\n');
-    const res = await build(spec, { out: file });
+    const res = await build(spec, { out: file, browser: b });
     expect(res.mode).toBe('merge');
     expect(res.merge!.placed).toContain('audit');
     expect(apiBox(file)).toEqual(moved);

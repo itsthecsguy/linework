@@ -21,6 +21,18 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        LINEWORK_MODE: ${{ inputs.mode }}
+      run: |
+        case "$LINEWORK_MODE" in
+          check|update) ;;
+          *)
+            echo "::error::Invalid mode \"$LINEWORK_MODE\". Expected \"check\" or \"update\"." >&2
+            exit 2
+            ;;
+        esac
     - uses: actions/setup-node@v4
       with:
         node-version: 22
@@ -33,7 +45,7 @@ runs:
     # Checking only reads files. Rebuilding draws, which needs a browser: GitHub's
     # runners come with Chrome; anywhere else, fetch the headless build linework uses.
     - name: Find a browser
-      if: inputs.mode != 'check'
+      if: inputs.mode == 'update'
       shell: bash
       run: |
         if ! command -v google-chrome >/dev/null && ! command -v chromium >/dev/null && ! command -v chromium-browser >/dev/null; then
@@ -48,9 +60,16 @@ runs:
         LINEWORK_PATHS: ${{ inputs.paths }}
       run: |
         read -r -a paths <<< "$LINEWORK_PATHS"
-        if [ "$LINEWORK_MODE" = "check" ]; then
-          linework sync "${paths[@]}" --check
-        else
-          linework sync "${paths[@]}"
-          if [ -n "$(git status --porcelain -- '*.drawio.svg' 2>/dev/null)" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "changed=false" >> "$GITHUB_OUTPUT"; fi
-        fi
+        case "$LINEWORK_MODE" in
+          check)
+            linework sync "${paths[@]}" --check
+            ;;
+          update)
+            linework sync "${paths[@]}"
+            if [ -n "$(git status --porcelain -- '*.drawio.svg' 2>/dev/null)" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "changed=false" >> "$GITHUB_OUTPUT"; fi
+            ;;
+          *)
+            echo "::error::Invalid mode \"$LINEWORK_MODE\". Expected \"check\" or \"update\"." >&2
+            exit 2
+            ;;
+        esac

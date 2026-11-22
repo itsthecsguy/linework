@@ -1,17 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { publish } from '../src/publish.js';
 
+const temps: string[] = [];
+
 function setup() {
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-proj-'));
   const drive = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-drive-'));
+  temps.push(proj, drive);
   fs.mkdirSync(path.join(proj, 'docs'));
   const file = path.join(proj, 'docs', 'a.drawio.svg');
   fs.writeFileSync(file, '<svg>v1</svg>');
   return { proj, drive, file, dest: path.join(drive, 'docs', 'a.drawio.svg') };
 }
+
+afterAll(() => {
+  for (const d of temps) fs.rmSync(d, { recursive: true, force: true });
+});
 
 describe('publish', () => {
   it('copies, skips unchanged files and updates in place', () => {
@@ -26,18 +33,39 @@ describe('publish', () => {
     expect(fs.statSync(dest).ino).toBe(ino); // same file, so Drive keeps its id
   });
 
-  it('refuses to overwrite an edit made in Drive, and pulls it back', () => {
+  it('refuses to overwrite an edit made in Drive, and pulls it back when local is clean', () => {
+    const { proj, drive, file, dest } = setup();
+    publish(['docs/a.drawio.svg'], { to: drive, cwd: proj });
+    fs.writeFileSync(dest, '<svg>edited in docs</svg>');
+    expect(publish(['docs/a.drawio.svg'], { to: drive, cwd: proj, pull: true })[0]!.action).toBe('pulled');
+    expect(fs.readFileSync(file, 'utf8')).toBe('<svg>edited in docs</svg>');
+    // after a pull the two match, and later local changes publish normally
+    fs.writeFileSync(file, '<svg>v3</svg>');
+    expect(publish(['docs/a.drawio.svg'], { to: drive, cwd: proj })[0]!.action).toBe('published');
+  });
+
+  it('reports conflict on --pull when local also changed since last publish, unless --force', () => {
     const { proj, drive, file, dest } = setup();
     publish(['docs/a.drawio.svg'], { to: drive, cwd: proj });
     fs.writeFileSync(dest, '<svg>edited in docs</svg>');
     fs.writeFileSync(file, '<svg>v2 local</svg>');
     expect(publish(['docs/a.drawio.svg'], { to: drive, cwd: proj })[0]!.action).toBe('conflict');
     expect(fs.readFileSync(dest, 'utf8')).toBe('<svg>edited in docs</svg>');
-    expect(publish(['docs/a.drawio.svg'], { to: drive, cwd: proj, pull: true })[0]!.action).toBe('pulled');
+    expect(publish(['docs/a.drawio.svg'], { to: drive, cwd: proj, pull: true })[0]!.action).toBe('conflict');
+    expect(fs.readFileSync(file, 'utf8')).toBe('<svg>v2 local</svg>');
+    expect(publish(['docs/a.drawio.svg'], { to: drive, cwd: proj, pull: true, force: true })[0]!.action).toBe('pulled');
     expect(fs.readFileSync(file, 'utf8')).toBe('<svg>edited in docs</svg>');
-    // after a pull the two match, and later local changes publish normally
-    fs.writeFileSync(file, '<svg>v3</svg>');
-    expect(publish(['docs/a.drawio.svg'], { to: drive, cwd: proj })[0]!.action).toBe('published');
+  });
+
+  it('pre-validates dest existence on --pull before modifying any files', () => {
+    const { proj, drive, file, dest } = setup();
+    const second = path.join(proj, 'docs', 'b.drawio.svg');
+    fs.writeFileSync(second, '<svg>b1</svg>');
+    publish(['docs/a.drawio.svg'], { to: drive, cwd: proj });
+    fs.writeFileSync(dest, '<svg>edited in docs</svg>');
+    expect(() => publish(['docs/a.drawio.svg', 'docs/b.drawio.svg'], { to: drive, cwd: proj, pull: true })).toThrow(/doesn't exist, so there is nothing to pull/);
+    // First file was not modified because the second failed pre-validation.
+    expect(fs.readFileSync(file, 'utf8')).toBe('<svg>v1</svg>');
   });
 
   it('--force overwrites a Drive edit', () => {

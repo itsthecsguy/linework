@@ -38,7 +38,7 @@ describe('spec errors', () => {
 
   it('checks the object form of an edge as strictly as the rest', () => {
     expect(issues(flow('  - { from: a, to: b, style: dashed }\n'))).toEqual(['edges[0].style: style must be one of: sync, async, bidir, line']);
-    expect(issues(flow('  - { from: a, to: b, lable: hi }\n'))).toEqual(['edges[0]: unknown key(s) "lable". Allowed here: from, to, label, style, rel, color, highlight.']);
+    expect(issues(flow('  - { from: a, to: b, lable: hi }\n'))).toEqual(['edges[0]: unknown key(s) "lable". Allowed here: from, to, label, style, rel, color, status, highlight.']);
     expect(issues(flow('  - { from: a }\n'))).toEqual(['edges[0].to: to is required']);
     expect(parseSpecText(flow('  - { from: a, to: b, label: ok, style: async }\n')).diagram.edges[0]).toMatchObject({ from: 'a', to: 'b', label: 'ok', style: 'async' });
   });
@@ -85,7 +85,7 @@ describe('sequence messages in the long form', () => {
   });
 
   it('says what is wrong with one', () => {
-    expect(issues(seq('  - { from: a, to: c, colour: red }\n'))).toEqual(['messages[0]: unknown key(s) "colour". Allowed here: from, to, label, style, color, highlight.']);
+    expect(issues(seq('  - { from: a, to: c, colour: red }\n'))).toEqual(['messages[0]: unknown key(s) "colour". Allowed here: from, to, label, style, color, status, highlight.']);
     expect(issues(seq('  - { from: a, to: b, style: dotted }\n'))).toEqual(['messages[0].style: style must be one of: sync, reply, async']);
     expect(issues(seq('  - { from: a, to: zz }\n'))[0]).toMatch(/participant "zz" doesn't exist/);
   });

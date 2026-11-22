@@ -27,7 +27,7 @@ import {
 } from '../spec/model.js';
 import { humanize, parseMember } from '../spec/parse.js';
 import { absBox, labelLines, type Cell, type DrawioModel } from './read.js';
-import { cardFromArrow, isTheme, relFromArrows } from './theme.js';
+import { baseOf, cardFromArrow, isTheme, relFromArrows } from './theme.js';
 import { activeConfig } from '../config.js';
 import { lookOf } from './write.js';
 import { COLORS, type Look } from '../spec/model.js';
@@ -125,7 +125,7 @@ export function toDiagram(m: DrawioModel): ShowResult {
     } else if (lines.length > 1) {
       const sub = lines.slice(1).join(' ');
       // c4 draws the element type around the tech: "[Container: Go]", or "[Person]" alone. Only the tech is the spec's.
-      const c4 = m.meta.aiviz_theme === 'c4' && type === 'architecture' ? /^\[[^:\]]+(?::\s*(.*))?\]$/.exec(sub) : null;
+      const c4 = baseOf(theme) === 'c4' && type === 'architecture' ? /^\[[^:\]]+(?::\s*(.*))?\]$/.exec(sub) : null;
       if (!c4) node.tech = sub;
       else if (c4[1]) node.tech = c4[1];
     }
@@ -324,7 +324,7 @@ function sequenceDiagram(m: DrawioModel, theme: ThemeName, accent: string | unde
   type Ev =
     | { y: number; o: 1; t: 'item'; item: SeqItem }
     | { y: number; o: 0; t: 'start'; frame: Cell }
-    | { y: number; o: 0.5; t: 'sep'; frame: Cell }
+    | { y: number; o: 0.5; t: 'sep'; frame: Cell; sepIndex?: number }
     | { y: number; o: 2; t: 'end'; frame: Cell };
   const events: Ev[] = [];
   const skipped: string[] = [];
@@ -360,8 +360,11 @@ function sequenceDiagram(m: DrawioModel, theme: ThemeName, accent: string | unde
         // A dashed line across a frame divides its branches.
         const raw = /<mxPoint[^>]*y="([-\d.]+)"[^>]*as="sourcePoint"/.exec(c.geomRaw ?? '');
         const y = raw ? Number(raw[1]) : undefined;
-        const f = y != null ? innermost(y) : undefined;
-        if (f) events.push({ y: y!, o: 0.5, t: 'sep', frame: f });
+        const sepParts = c.attrs.aiviz_sep?.split(':');
+        const sepFrame = sepParts?.[0] ? m.byId.get(sepParts[0]) : undefined;
+        const sepIndex = sepParts?.[1] != null ? Number(sepParts[1]) : undefined;
+        const f = (sepFrame && isFrame(sepFrame) ? sepFrame : undefined) ?? (y != null ? innermost(y) : undefined);
+        if (f && y != null) events.push({ y, o: 0.5, t: 'sep', frame: f, sepIndex: Number.isFinite(sepIndex) ? sepIndex : undefined });
         else skipped.push(c.id);
       } else skipped.push(c.id);
     } else if (c.vertex && (c.attrs.aiviz_type === 'note' || c.style.shape === 'note')) {
@@ -383,15 +386,17 @@ function sequenceDiagram(m: DrawioModel, theme: ThemeName, accent: string | unde
     } else if (c.vertex && !isLifeline(c) && !partOf(c.id) && !('text' in c.style)) skipped.push(c.id);
   }
   // Guards: bracketed text near the top of a frame or just under a separator.
-  const guards = m.cells.filter((c) => c.vertex && 'text' in c.style).map((c) => ({ c, b: absBox(m, c.id)!, text: labelLines(c.label).join(' ') }));
-  const guardNear = (frame: Cell, y: number) => {
+  const guards = m.cells.filter((c) => c.vertex && 'text' in c.style).map((c) => ({ c, b: absBox(m, c.id)!, text: labelLines(c.label).join(' '), used: false }));
+  const guardNear = (frame: Cell, y: number, branchIdx?: number) => {
     const fb = frameBox.get(frame.id)!;
-    const g = guards.find((g) => g.b.y >= y - 4 && g.b.y <= y + 26 && g.b.x >= fb.x && g.b.x <= fb.x + fb.w);
+    const key = branchIdx != null ? `${frame.id}:${branchIdx}` : undefined;
+    const g =
+      (key ? guards.find((g) => !g.used && g.c.attrs.aiviz_guard === key) : undefined) ??
+      guards.find((g) => !g.used && !g.c.attrs.aiviz_guard && g.b.y >= y - 4 && g.b.y <= y + 26 && g.b.x >= fb.x - 2 && g.b.x <= fb.x + fb.w + 2);
     if (!g) return undefined;
-    g.c = { ...g.c, id: '' }; // consumed
+    g.used = true;
     return g.text.replace(/^\[|\]$/g, '').trim() || undefined;
   };
-  for (const g of guards) if (!frames.some((f) => { const fb = frameBox.get(f.id)!; return g.b.y >= fb.y - 4 && g.b.y <= fb.y + fb.h; })) skipped.push(g.c.id);
 
   events.sort((a, b) => a.y - b.y || a.o - b.o);
   interface Open { frame: Cell; op: FrameOp; branches: Array<{ when?: string; items: SeqItem[] }> }
@@ -403,10 +408,10 @@ function sequenceDiagram(m: DrawioModel, theme: ThemeName, accent: string | unde
     else if (ev.t === 'start') {
       const label = (labelLines(ev.frame.label)[0] ?? '').toLowerCase();
       const op = ((ev.frame.attrs.aiviz_frame ?? label) as FrameOp);
-      stack.push({ frame: ev.frame, op: FRAME_OPS.includes(op) ? op : 'opt', branches: [{ when: guardNear(ev.frame, ev.y), items: [] }] });
+      stack.push({ frame: ev.frame, op: FRAME_OPS.includes(op) ? op : 'opt', branches: [{ when: guardNear(ev.frame, ev.y, 0), items: [] }] });
     } else if (ev.t === 'sep') {
       const s = stack.find((o) => o.frame.id === ev.frame.id);
-      if (s) s.branches.push({ when: guardNear(ev.frame, ev.y), items: [] });
+      if (s) s.branches.push({ when: guardNear(ev.frame, ev.y, ev.sepIndex ?? s.branches.length), items: [] });
     } else {
       const i = stack.findIndex((o) => o.frame.id === ev.frame.id);
       if (i < 0) continue;
@@ -414,6 +419,7 @@ function sequenceDiagram(m: DrawioModel, theme: ThemeName, accent: string | unde
       top().push({ kind: 'frame', op: o!.op, branches: o!.branches });
     }
   }
+  for (const g of guards) if (!g.used && !frames.some((f) => { const fb = frameBox.get(f.id)!; return g.b.y >= fb.y - 4 && g.b.y <= fb.y + fb.h; })) skipped.push(g.c.id);
   return {
     diagram: { type: 'sequence', title: m.meta.aiviz_title, direction: 'auto', theme, ...(accent ? { accent } : {}), groups: [], nodes, edges: [], seq: root },
     notes,
@@ -569,12 +575,13 @@ export function toYaml(d: Diagram, header?: string): string {
 function writeSeq(items: SeqItem[], ind: string, out: string[]) {
   const arrow: Record<MessageStyle, string> = { sync: '->', reply: '-->', async: '-.->' };
   for (const it of items) {
-    if (it.kind === 'msg' && (it.color || (it.highlight && it.style !== 'sync'))) {
+    if (it.kind === 'msg' && (it.color || it.status || (it.highlight && it.style !== 'sync'))) {
       // No arrow says "red", or "a highlighted reply": those take the long form.
       const parts = [`from: ${it.from}`, `to: ${it.to}`];
       if (it.label) parts.push(`label: ${q(it.label, true)}`);
       if (it.style !== 'sync') parts.push(`style: ${it.style}`);
-      if (it.color) parts.push(`color: ${it.color}`);
+      if (it.status) parts.push(`status: ${it.status}`);
+      else if (it.color) parts.push(`color: ${it.color}`);
       if (it.highlight) parts.push('highlight: true');
       out.push(`${ind}- { ${parts.join(', ')} }`);
     } else if (it.kind === 'msg') out.push(lineItem(ind, `${it.from} ${it.highlight && it.style === 'sync' ? '==>' : arrow[it.style]} ${it.to}`, it.label));

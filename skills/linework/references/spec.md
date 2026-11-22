@@ -11,9 +11,9 @@
 | `direction` | no | `auto` (default), `TB`, `LR`, `BT` or `RL`. Not for sequence or timeline. |
 | `theme` | no | the style: `clean` (default), `soft`, `paper`, `dark`, `midnight`, `mono`, `bold`, `sketch`, `blueprint` or `c4` |
 | `accent` | no | the color highlights are drawn in: a color name, or a hex color in quotes (`"#E11D48"`). Default: the style's own. |
-| `groups` | no | map of id to `{ label, in, color, highlight }`, or to a label string |
-| `nodes` | yes | map of id to `{ label, kind, tech, in, icon, color, highlight }`, or to a label string |
-| `edges` | no | list of edge strings, or `{ from, to, label, style, color, highlight }` objects |
+| `groups` | no | map of id to `{ label, in, color, status, highlight }`, or to a label string |
+| `nodes` | yes (except `sequence`) | map of id to `{ label, kind, tech, in, icon, color, status, highlight, fields, members, start, end, at }`, or to a label string |
+| `edges` | no | list of edge strings, or `{ from, to, label, style, rel, color, status, highlight }` objects |
 | `participants` | sequence only | ordered map of id to `{ label, kind, tech }` |
 | `messages` | sequence only | list of messages, notes and frames |
 
@@ -33,6 +33,10 @@ nodes:
 - `in` names the group the node sits in.
 - `highlight: true` draws the node in the style's accent color, solid. Use it for the one thing the doc is about.
 - `color` tints it: `blue`, `violet`, `pink`, `red`, `orange`, `amber`, `green`, `teal` or `gray`. With `highlight`, it picks the highlight's color.
+- `status` names a status from `linework.yaml` (for example `status: new`), setting its color and adding it to the diagram legend. Also works on groups and object-form edges.
+- `fields` (`er` only): list of table columns (see [ER](#er)).
+- `members` (`class` only): list of attributes, methods or enum values (see [Class](#class)).
+- `start` / `end` / `at` (`timeline` only): `YYYY-MM-DD` task span (`start` and `end`) or milestone date (`at`) (see [Timeline](#timeline)).
 
 ## Styles
 
@@ -111,11 +115,12 @@ edges:
   - "a -> b: label: with colon"
 ```
 
-For a colored edge, or a highlighted one that isn't a plain call, use the object form:
+For a colored or status-tagged edge, a class relationship in object form (`rel`: `inherits`, `implements`, `composition`, `aggregation`, `association` or `dependency`), or a highlighted edge that isn't a plain call, use the object form:
 
 ```yaml
   - { from: api, to: dlq, label: on failure, style: async, color: red }
   - { from: a, to: b, style: bidir, highlight: true }
+  - { from: Parent, to: Child, rel: inherits, status: new }
 ```
 
 The arrow needs a space on each side. Repeated edges between the same two nodes are allowed and get separate ids.

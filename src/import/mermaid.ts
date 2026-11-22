@@ -234,16 +234,22 @@ function parseNodeAt(s: string, pos: number): { node: FNode; end: number } | nul
   return { node, end };
 }
 
-function parseEdgeAt(s: string, pos: number): { style: EdgeStyle; label?: string; end: number; thick?: boolean } | null {
+function parseEdgeAt(s: string, pos: number): { style: EdgeStyle; label?: string; end: number; thick?: boolean; reverse?: boolean } | null {
   const rest = s.slice(pos);
   // "-- text -->", "== text ==>", "-. text .->"
   let m = /^\s*(<|[xo](?=-|=))?(--|==|-\.)\s+([^>|]+?)\s+(-{2,}|={2,}|\.+-)(>|o|x)?(?=\s|[\w"])/.exec(rest);
   // The same with no spaces, for one word: "--Yes-->", "-.retry.->".
   m ??= /^\s*(<|[xo](?=-|=))?(--|==|-\.)(?![-=.>\s])([^>|\s]+?)(-{2,}|={2,}|\.+-)(>|o|x)?(?=\s|[\w"])/.exec(rest);
-  if (m) return { style: styleOf(m[1], m[2]! + m[4]!, m[5]), label: clean(m[3]!), end: pos + m[0].length, thick: m[2] === '==' };
+  if (m) {
+    const arrow = m[5] === '>' || m[5] === 'x' || m[5] === 'o';
+    return { style: styleOf(m[1], m[2]! + m[4]!, m[5]), label: clean(m[3]!), end: pos + m[0].length, thick: m[2] === '==', reverse: !!m[1] && !arrow };
+  }
   // "-->", "---", "-.->", "==>", "<-->", "--o", "--x", with optional "|text|"
   m = /^\s*(<|[xo](?=-|=))?(-{2,}|={2,}|-\.+-?|\.-+)(>|o|x)?\s*(?:\|([^|]*)\|)?/.exec(rest);
-  if (m && /[-=.]/.test(m[2]!) && m[0].trim()) return { style: styleOf(m[1], m[2]!, m[3]), label: m[4] != null ? clean(m[4]) : undefined, end: pos + m[0].length, thick: m[2]!.startsWith('=') };
+  if (m && /[-=.]/.test(m[2]!) && m[0].trim()) {
+    const arrow = m[3] === '>' || m[3] === 'x' || m[3] === 'o';
+    return { style: styleOf(m[1], m[2]!, m[3]), label: m[4] != null ? clean(m[4]) : undefined, end: pos + m[0].length, thick: m[2]!.startsWith('='), reverse: !!m[1] && !arrow };
+  }
   return null;
 }
 
@@ -283,7 +289,7 @@ function parseChain(stmt: string, touch: (n: FNode) => void, edges: Array<{ from
     const right = readGroup();
     if (!right) break;
     // Mermaid's thick links (==>) mark what matters: linework's highlight.
-    for (const a of left) for (const b of right) edges.push({ from: a, to: b, label: e.label || undefined, style: e.style, ...(e.thick ? { highlight: true } : {}) });
+    for (const a of left) for (const b of right) edges.push({ from: e.reverse ? b : a, to: e.reverse ? a : b, label: e.label || undefined, style: e.style, ...(e.thick ? { highlight: true } : {}) });
     left = right;
   }
 }
@@ -327,7 +333,13 @@ function stateDiagram(lines: string[]): ImportResult {
     const l = raw.trim();
     let m: RegExpExecArray | null;
     if ((m = /^direction\s+(LR|TB|RL|BT)/.exec(l))) { if (!stack.length) direction = m[1] as Diagram['direction']; continue; }
-    if ((m = /^state\s+"([^"]+)"\s+as\s+([\w.-]+)/.exec(l))) { labels.set(m[2]!, m[1]!); touch(m[2]!); continue; }
+    if ((m = /^state\s+"([^"]+)"\s+as\s+([\w.-]+)\s*\{$/.exec(l))) {
+      labels.set(m[2]!, m[1]!);
+      groups.push({ raw: m[2]!, parent: stack[stack.length - 1] });
+      stack.push(m[2]!);
+      continue;
+    }
+    if ((m = /^state\s+"([^"]+)"\s+as\s+([\w.-]+)$/.exec(l))) { labels.set(m[2]!, m[1]!); touch(m[2]!); continue; }
     if ((m = /^state\s+([\w.-]+)\s*\{$/.exec(l))) { groups.push({ raw: m[1]!, parent: stack[stack.length - 1] }); stack.push(m[1]!); continue; }
     if ((m = /^state\s+([\w.-]+)\s*<<\w+>>/.exec(l))) { touch(m[1]!); warnings.add('choice/fork/join states become plain states'); continue; }
     if (l === '}') { stack.pop(); continue; }
@@ -412,6 +424,20 @@ function sequenceDiagram(lines: string[]): ImportResult {
   const root: SeqItem[] = [];
   const stack: Array<{ op: FrameOp | 'rect'; branches: Array<{ when?: string; items: SeqItem[] }> }> = [];
   const cur = () => (stack.length ? stack[stack.length - 1]!.branches[stack[stack.length - 1]!.branches.length - 1]!.items : root);
+  const closeFrame = () => {
+    const f = stack.pop();
+    if (!f) return;
+    if (f.op === 'rect') cur().push(...f.branches[0]!.items);
+    else {
+      // alt, par and critical have branches in a linework spec; the rest have one part.
+      if (f.op !== 'alt' && f.op !== 'par' && f.op !== 'critical' && f.branches.length > 1) {
+        const lost = f.branches.slice(1).reduce((n, b) => n + b.items.length, 0);
+        warnings.add(`"${f.op}" keeps its first part only: ${lost} message${lost === 1 ? '' : 's'} in its later parts ${lost === 1 ? 'was' : 'were'} dropped. Add them by hand, or use an alt frame`);
+        f.branches.length = 1;
+      }
+      cur().push({ kind: 'frame', op: f.op, branches: f.branches });
+    }
+  };
   for (const raw of lines.slice(1)) {
     const l = raw.trim();
     let m: RegExpExecArray | null;
@@ -420,18 +446,7 @@ function sequenceDiagram(lines: string[]): ImportResult {
     if ((m = /^(else|and|option)\b\s*(.*)$/.exec(l))) { stack[stack.length - 1]?.branches.push({ when: m[2] ? clean(m[2]) : undefined, items: [] }); continue; }
     if (/^rect\b/.test(l)) { stack.push({ op: 'rect', branches: [{ items: [] }] }); warnings.add('rect highlights are dropped'); continue; }
     if (l === 'end') {
-      const f = stack.pop();
-      if (!f) continue;
-      if (f.op === 'rect') cur().push(...f.branches[0]!.items);
-      else {
-        // alt, par and critical have branches in a linework spec; the rest have one part.
-        if (f.op !== 'alt' && f.op !== 'par' && f.op !== 'critical' && f.branches.length > 1) {
-          const lost = f.branches.slice(1).reduce((n, b) => n + b.items.length, 0);
-          warnings.add(`"${f.op}" keeps its first part only: ${lost} message${lost === 1 ? '' : 's'} in its later parts ${lost === 1 ? 'was' : 'were'} dropped. Add them by hand, or use an alt frame`);
-          f.branches.length = 1;
-        }
-        cur().push({ kind: 'frame', op: f.op, branches: f.branches });
-      }
+      closeFrame();
       continue;
     }
     if ((m = /^note\s+(over|left of|right of)\s+([^:]+):\s*(.*)$/i.exec(l))) {
@@ -458,6 +473,10 @@ function sequenceDiagram(lines: string[]): ImportResult {
       break;
     }
     if (!matched) warnings.add(`skipped a line linework couldn't read: "${l.slice(0, 60)}"`);
+  }
+  while (stack.length) {
+    warnings.add(`unclosed "${stack[stack.length - 1]!.op}" frame was closed at the end of the diagram`);
+    closeFrame();
   }
   return { diagram: { type: 'sequence', direction: 'auto', theme: 'clean', groups: [], nodes: [...parts.values()], edges: [], seq: root }, warnings: [...warnings] };
 }
@@ -491,6 +510,7 @@ function erDiagram(lines: string[]): ImportResult {
     return ents.get(eid.get(name)!)!;
   };
   const edges: Diagram['edges'] = [];
+  const counts = new Map<string, number>();
   let open: Node | null = null;
   for (const raw of lines.slice(1)) {
     const l = raw.trim();
@@ -503,15 +523,16 @@ function erDiagram(lines: string[]): ImportResult {
       } else warnings.add(`skipped a field line: "${l.slice(0, 60)}"`);
       continue;
     }
-    if ((m = /^("?[\w.-]+"?)\s*(?:\["[^"]*"\])?\s*\{$/.exec(l))) { open = ent(m[1]!); continue; }
-    if ((m = /^("?[\w.-]+"?)\s+([|}][o|])(--|\.\.)([o|][|{])\s+("?[\w.-]+"?)\s*:\s*(.+)$/.exec(l))) {
+    if ((m = /^("[^"]+"|[\w.-]+)\s*(?:\["[^"]*"\])?\s*\{$/.exec(l))) { open = ent(m[1]!); continue; }
+    if ((m = /^("[^"]+"|[\w.-]+)\s+([|}][o|])(--|\.\.)([o|][|{])\s+("[^"]+"|[\w.-]+)\s*:\s*(.+)$/.exec(l))) {
       const a = ent(m[1]!), b = ent(m[5]!);
       const base = `${a.id}->${b.id}`;
-      const k = edges.filter((e) => e.id.startsWith(base)).length + 1;
+      const k = (counts.get(base) ?? 0) + 1;
+      counts.set(base, k);
       edges.push({ id: k === 1 ? base : `${base}#${k}`, from: a.id, to: b.id, label: clean(m[6]!) || undefined, style: 'line', card: { from: L_CARD[m[2]!]!, to: R_CARD[m[4]!]!, identifying: m[3] === '--' } });
       continue;
     }
-    if ((m = /^("?[\w.-]+"?)$/.exec(l))) { ent(m[1]!); continue; }
+    if ((m = /^("[^"]+"|[\w.-]+)$/.exec(l))) { ent(m[1]!); continue; }
     if (/^(direction|title|classDef|class|style)\b/.test(l)) continue;
     warnings.add(`skipped a line linework couldn't read: "${l.slice(0, 60)}"`);
   }
@@ -554,6 +575,7 @@ function classDiagram(lines: string[]): ImportResult {
     if (k === 'interface' || k === 'enumeration' || k === 'enum' || k === 'abstract') n.kind = k === 'enumeration' ? 'enum' : k;
   };
   const edges: Diagram['edges'] = [];
+  const counts = new Map<string, number>();
   let direction: Diagram['direction'] = 'auto';
   let open: Node | null = null;
   for (const raw of lines.slice(1)) {
@@ -586,7 +608,8 @@ function classDiagram(lines: string[]): ImportResult {
       if (parsed || plain) {
         const from = cls(parsed ? parsed.from : a!), to = cls(parsed ? parsed.to : b!);
         const base = `${from.id}->${to.id}`;
-        const k = edges.filter((e) => e.id.startsWith(base)).length + 1;
+        const k = (counts.get(base) ?? 0) + 1;
+        counts.set(base, k);
         const label = [clean(text ?? ''), ca || cb ? [ca, cb].filter(Boolean).join(' to ') : ''].filter(Boolean).join(' ') || undefined;
         edges.push({ id: k === 1 ? base : `${base}#${k}`, from: from.id, to: to.id, label, style: plain ? 'line' : 'sync', ...(parsed ? { rel: parsed.rel } : {}) });
         continue;

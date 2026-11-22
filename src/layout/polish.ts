@@ -284,18 +284,39 @@ export function polish(d: Diagram, l: Layout, inp: PolishInput): void {
   dejog(true);
 
   // Self-loops: wide enough to read as a loop, label outside it.
+  const loopCount = new Map<string, number>();
+  const sideLoops = new Map<string, number>();
   for (const e of edges) {
     if (e.from !== e.to) continue;
     const b = nodes.get(e.from)!, le = l.edges.get(e.id)!;
-    const ys = [b.y + b.h * 0.28, b.y + b.h * 0.72];
     const pts = e.pts;
-    const leftSide = pts.some((p) => p.x < b.x - 1);
-    const xo = leftSide ? b.x - 24 : b.x + b.w + 24;
-    const edgeX = leftSide ? b.x : b.x + b.w;
-    e.pts = [{ x: edgeX, y: ys[0]! }, { x: xo, y: ys[0]! }, { x: xo, y: ys[1]! }, { x: edgeX, y: ys[1]! }];
+    const nIdx = loopCount.get(e.from) ?? 0;
+    loopCount.set(e.from, nIdx + 1);
+    const prefLeft = pts.some((p) => p.x < b.x - 1);
+    const makePts = (left: boolean, slot: number) => {
+      const reach = 24 + slot * 20;
+      const xo = left ? b.x - reach : b.x + b.w + reach;
+      const edgeX = left ? b.x : b.x + b.w;
+      const dy = Math.min(0.18, slot * 0.08);
+      const y0 = Math.max(b.y + 6, b.y + b.h * (0.28 - dy));
+      const y1 = Math.min(b.y + b.h - 6, b.y + b.h * (0.72 + dy));
+      return { xo, pts: [{ x: edgeX, y: y0 }, { x: xo, y: y0 }, { x: xo, y: y1 }, { x: edgeX, y: y1 }] };
+    };
+    const isClear = (ps: Point[]) => clear(ps[0]!, ps[1]!, [e.from]) && clear(ps[1]!, ps[2]!, [e.from]) && clear(ps[2]!, ps[3]!, [e.from]);
+    const wantLeft = nIdx % 2 === 1 ? !prefLeft : prefLeft;
+    const slotOf = (left: boolean) => sideLoops.get(`${e.from}:${left ? 'L' : 'R'}`) ?? 0;
+    let leftSide = wantLeft;
+    if (!isClear(makePts(leftSide, slotOf(leftSide)).pts) && isClear(makePts(!leftSide, slotOf(!leftSide)).pts)) {
+      leftSide = !leftSide;
+    }
+    const slot = slotOf(leftSide);
+    sideLoops.set(`${e.from}:${leftSide ? 'L' : 'R'}`, slot + 1);
+    const { xo, pts: loopPts } = makePts(leftSide, slot);
+    e.pts = loopPts;
     if (le.label) {
       const lb = f.boxTo(le.label);
-      le.label = f.boxFrom({ ...lb, x: leftSide ? xo - 6 - lb.w : xo + 6, y: b.y + b.h / 2 - lb.h / 2 });
+      const yOff = slot === 0 ? 0 : (slot % 2 === 1 ? -1 : 1) * Math.ceil((slot + 1) / 2) * (lb.h + 4);
+      le.label = f.boxFrom({ ...lb, x: leftSide ? xo - 6 - lb.w : xo + 6, y: b.y + b.h / 2 - lb.h / 2 + yOff });
     }
   }
 
@@ -326,18 +347,32 @@ export function polish(d: Diagram, l: Layout, inp: PolishInput): void {
       [...l.edges.values()].every((le) => le.points.slice(1).every((q, i) => strips.every((s) => !segHits(le.points[i]!, q, s))));
     if (fits) l.groups.set(gid, { ...g, x: g.x - half, w: g.w + 2 * half });
   }
-  // Keep the drawing clear of the canvas edge after widening.
-  const left = Math.min(...[...l.groups.values(), ...l.nodes.values()].map((b) => b.x));
-  if (left < 16) {
-    const dx = 16 - left;
-    const mv = (b: Box): Box => ({ ...b, x: b.x + dx });
+  // Keep the drawing clear of the canvas edge after widening and self-loops.
+  const selfBoxes: Box[] = [];
+  for (const e of d.edges) {
+    if (e.from !== e.to) continue;
+    const le = l.edges.get(e.id);
+    if (!le) continue;
+    for (const p of le.points) selfBoxes.push({ x: p.x, y: p.y, w: 0, h: 0 });
+    if (le.label) selfBoxes.push(le.label);
+  }
+  const allBoxes = [...l.groups.values(), ...l.nodes.values(), ...selfBoxes];
+  const left = Math.min(...allBoxes.map((b) => b.x));
+  const top = Math.min(...allBoxes.map((b) => b.y));
+  if (left < 16 || top < 16) {
+    const dx = left < 16 ? 16 - left : 0;
+    const dy = top < 16 ? 16 - top : 0;
+    const mv = (b: Box): Box => ({ ...b, x: b.x + dx, y: b.y + dy });
     for (const m of [l.nodes, l.groups]) for (const [k, b] of m) m.set(k, mv(b));
     for (const le of l.edges.values()) {
-      le.points = le.points.map((p) => ({ ...p, x: p.x + dx }));
+      le.points = le.points.map((p) => ({ ...p, x: p.x + dx, y: p.y + dy }));
       if (le.label) le.label = mv(le.label);
     }
+    for (let i = 0; i < selfBoxes.length; i++) selfBoxes[i] = mv(selfBoxes[i]!);
   }
-  l.width = Math.max(l.width, ...[...l.groups.values(), ...l.nodes.values()].map((b) => b.x + b.w + 16));
+  const shifted = [...l.groups.values(), ...l.nodes.values(), ...selfBoxes];
+  l.width = Math.max(l.width, ...shifted.map((b) => b.x + b.w + 16));
+  l.height = Math.max(l.height, ...shifted.map((b) => b.y + b.h + 16));
 
   // Group titles: slide a title right when an edge runs through it.
   for (const [gid, g] of l.groups) {

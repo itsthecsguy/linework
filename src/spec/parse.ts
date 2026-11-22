@@ -91,6 +91,7 @@ const MessageObject = z.strictObject({
   label: scalar.optional(),
   style: z.enum(['sync', 'reply', 'async']).optional(),
   color: ColorInput.optional(),
+  status: z.string().optional(),
   highlight: HighlightInput.optional(),
 });
 
@@ -157,12 +158,13 @@ export function parseSpecText(text: string): ParseResult {
 }
 
 /** The spec's accent, checked. Unquoted, `accent: #E11D48` is a YAML comment and arrives as null. */
-function accentOf(raw: string | null | undefined): { accent?: string } {
+function accentOf(raw: string | null | undefined, issues: Issue[]): { accent?: string } {
   if (raw === undefined) return {};
   const accent = normalAccent(raw ?? undefined);
   if (accent) return { accent };
   const hint = raw === null ? 'YAML reads an unquoted # as a comment, so quote it' : `got "${raw}"`;
-  throw new SpecError([{ path: 'accent', message: `accent is a color name (${COLORS.join(', ')}) or a hex color in quotes, like accent: "#E11D48" (${hint}).` }]);
+  issues.push({ path: 'accent', message: `accent is a color name (${COLORS.join(', ')}) or a hex color in quotes, like accent: "#E11D48" (${hint}).` });
+  return {};
 }
 
 export function parseSpec(raw: unknown): ParseResult {
@@ -246,6 +248,9 @@ export function parseSpec(raw: unknown): ParseResult {
     }
   }
   for (const g of groups) {
+    if (type === 'timeline' && g.parent) {
+      issues.push({ path: `groups.${g.id}.in`, message: 'timeline lanes cannot be nested inside another group' });
+    }
     const seen = new Set<string>();
     for (let p: string | undefined = g.id; p; p = groups.find((x) => x.id === p)?.parent) {
       if (seen.has(p)) {
@@ -336,6 +341,7 @@ export function parseSpec(raw: unknown): ParseResult {
   for (const from of endFor) nodes.push({ id: `${END_ID}_${from === START_ID ? 'start' : from}`, label: '', kind: 'end' });
 
   const set = settings(spec, issues);
+  const acc = accentOf(spec.accent, issues);
   if (issues.length) throw new SpecError(issues);
 
   // Warnings: things that produce worse diagrams but still render.
@@ -353,7 +359,7 @@ export function parseSpec(raw: unknown): ParseResult {
   for (const n of real) if (edges.length && !linked.has(n.id)) warnings.push({ path: `nodes.${n.id}`, message: 'not connected to anything' });
 
   return {
-    diagram: { type, title: spec.title, direction: set.direction, theme: set.theme, ...accentOf(spec.accent), groups, nodes, edges },
+    diagram: { type, title: spec.title, direction: set.direction, theme: set.theme, ...acc, groups, nodes, edges },
     warnings,
   };
 }
@@ -500,16 +506,33 @@ function parseSequence(spec: z.infer<typeof SpecInput>): ParseResult {
       const v = o[op];
       // alt and par are lists of branches. critical may be one too: its "option" parts.
       if (op === 'alt' || op === 'par' || (op === 'critical' && Array.isArray(v))) {
+        const extraFrame = Object.keys(o).filter((k) => k !== op);
+        if (extraFrame.length) {
+          issues.push({ path, message: `unknown key(s) ${extraFrame.map((k) => `"${k}"`).join(', ')}. Allowed here: ${op}.` });
+        }
         if (!Array.isArray(v)) {
           issues.push({ path, message: `${op} takes a list of branches: - ${op}: [ { when: condition, do: [messages] }, ... ]` });
           return null;
         }
         const branches = v.map((b, j) => {
-          const bo = (b ?? {}) as Record<string, unknown>;
-          if (!Array.isArray(bo.do)) issues.push({ path: `${path}.${op}[${j}]`, message: 'each branch needs do: [messages]' });
-          return { when: bo.when == null ? undefined : String(bo.when), items: items(Array.isArray(bo.do) ? bo.do : [], `${path}.${op}[${j}].do`) };
+          const bPath = `${path}.${op}[${j}]`;
+          if (!b || typeof b !== 'object' || Array.isArray(b)) {
+            issues.push({ path: bPath, message: 'each branch needs when and do: [messages]' });
+            return { when: undefined, items: [] };
+          }
+          const bo = b as Record<string, unknown>;
+          const extra = Object.keys(bo).filter((k) => k !== 'when' && k !== 'do');
+          if (extra.length) {
+            issues.push({ path: bPath, message: `unknown key(s) ${extra.map((k) => `"${k}"`).join(', ')}. Allowed here: when, do.` });
+          }
+          if (!Array.isArray(bo.do)) issues.push({ path: bPath, message: 'each branch needs do: [messages]' });
+          return { when: bo.when == null ? undefined : String(bo.when), items: items(Array.isArray(bo.do) ? bo.do : [], `${bPath}.do`) };
         });
         return { kind: 'frame', op, branches };
+      }
+      const extra = Object.keys(o).filter((k) => k !== op && k !== 'do');
+      if (extra.length) {
+        issues.push({ path, message: `unknown key(s) ${extra.map((k) => `"${k}"`).join(', ')}. Allowed here: ${op}, do.` });
       }
       if (!Array.isArray(o.do)) {
         issues.push({ path, message: `${op} needs do: [messages], e.g. - ${op}: every 5s\n    do:\n      - a -> b: poll` });
@@ -521,7 +544,7 @@ function parseSequence(spec: z.infer<typeof SpecInput>): ParseResult {
       // The long form, for a message with a color: { from: a, to: b, label: text, style: reply, color: red }.
       const checked = MessageObject.safeParse(o);
       if (!checked.success) {
-        for (const i of checked.error.issues.flatMap(zodIssues)) issues.push({ path: i.path ? `${path}.${i.path}` : path, message: i.path || !/^unknown key/.test(i.message) ? i.message : i.message.replace(/Allowed here: .*$/, 'Allowed here: from, to, label, style, color, highlight.') });
+        for (const i of checked.error.issues.flatMap(zodIssues)) issues.push({ path: i.path ? `${path}.${i.path}` : path, message: i.path || !/^unknown key/.test(i.message) ? i.message : i.message.replace(/Allowed here: .*$/, 'Allowed here: from, to, label, style, color, status, highlight.') });
         return null;
       }
       const msg = checked.data;
@@ -559,13 +582,14 @@ function parseSequence(spec: z.infer<typeof SpecInput>): ParseResult {
   };
   const seq = items(spec.messages ?? [], 'messages');
   const set = settings({ theme: spec.theme }, issues);
+  const acc = accentOf(spec.accent, issues);
   if (issues.length) throw new SpecError(issues);
   const msgs: Array<{ highlight?: boolean }> = [];
   const flat = (xs: SeqItem[]) => xs.forEach((x) => (x.kind === 'msg' ? msgs.push(x) : x.kind === 'frame' ? x.branches.forEach((b) => flat(b.items)) : 0));
   flat(seq);
   highlightWarning(nodes, msgs, warnings);
   if (nodes.length > 8) warnings.push({ path: 'participants', message: `${nodes.length} participants is wide; 6 or fewer fits a doc page` });
-  return { diagram: { type: 'sequence', title: spec.title, direction: 'auto', theme: set.theme, ...accentOf(spec.accent), groups: [], nodes, edges: [], seq }, warnings };
+  return { diagram: { type: 'sequence', title: spec.title, direction: 'auto', theme: set.theme, ...acc, groups: [], nodes, edges: [], seq }, warnings };
 }
 
 function parseEdgeString(s: string, path: string, issues: Issue[]) {
@@ -630,8 +654,8 @@ function highlightWarning(nodes: Array<{ highlight?: boolean }>, edges: Array<{ 
     });
 }
 
-const NODE_KEYS = 'label, kind, tech, in, icon, color, highlight; fields (er), members (class); start, end, at (timeline)';
-const EDGE_KEYS = 'from, to, label, style, rel, color, highlight';
+const NODE_KEYS = 'label, kind, tech, in, icon, color, status, highlight; fields (er), members (class); start, end, at (timeline)';
+const EDGE_KEYS = 'from, to, label, style, rel, color, status, highlight';
 
 /** A label is one line: it wraps where the box needs it to. A typed line break would read back as the tech line. */
 function oneLine(s: string | undefined): string | undefined {
@@ -663,7 +687,7 @@ function zodIssue(i: z.core.$ZodIssue): Issue {
       path.startsWith('nodes') || path.startsWith('participants')
         ? NODE_KEYS
         : path.startsWith('groups')
-          ? 'label, in, color, highlight'
+          ? 'label, in, color, status, highlight'
           : path.startsWith('edges')
             ? EDGE_KEYS
             : known[''];

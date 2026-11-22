@@ -184,7 +184,9 @@ export function absBox(m: DrawioModel, id: string): { x: number; y: number; w: n
   const c = m.byId.get(id);
   if (!c?.geom) return undefined;
   let { x, y } = c.geom;
-  for (let p = c.parent ? m.byId.get(c.parent) : undefined; p?.geom && p.vertex; p = p.parent ? m.byId.get(p.parent) : undefined) {
+  const seen = new Set<string>([id]);
+  for (let p = c.parent ? m.byId.get(c.parent) : undefined; p?.geom && p.vertex && !seen.has(p.id); p = p.parent ? m.byId.get(p.parent) : undefined) {
+    seen.add(p.id);
     x += p.geom.x;
     y += p.geom.y;
   }

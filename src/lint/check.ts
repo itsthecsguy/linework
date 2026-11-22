@@ -26,7 +26,8 @@ const inter = (a: Box, b: Box) =>
 const shrink = (b: Box, d: number): Box => ({ x: b.x + d, y: b.y + d, w: Math.max(0, b.w - 2 * d), h: Math.max(0, b.h - 2 * d) });
 const inside = (a: Box, b: Box, tol = 1) => a.x >= b.x - tol && a.y >= b.y - tol && a.x + a.w <= b.x + b.w + tol && a.y + a.h <= b.y + b.h + tol;
 
-function segHitsBox(a: P, b: P, r: Box): boolean {
+export function segHitsBox(a: P, b: P, r: Box): boolean {
+  if (r.w <= 0 || r.h <= 0) return false;
   // Liang–Barsky clip
   let t0 = 0, t1 = 1;
   const dx = b.x - a.x, dy = b.y - a.y;
@@ -116,9 +117,7 @@ export function check(all: InspectCell[]): CheckResult {
       const isSource = endId === e.source;
       const back = pts.slice(0, -1).some((p, i) => {
         if (isSource ? i === 0 : i === pts.length - 2) return false;
-        const q = pts[i + 1]!;
-        const mid = { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
-        return mid.x > r.x && mid.x < r.x + r.w && mid.y > r.y && mid.y < r.y + r.h;
+        return segHitsBox(p, pts[i + 1]!, r);
       });
       if (back) {
         findings.push({ level: 'error', rule: 'edge-through-endpoint', message: `edge ${edgeName(e, byId)} doubles back through ${name(n)}`, edge: e.id });
@@ -147,7 +146,7 @@ export function check(all: InspectCell[]): CheckResult {
       if (!scaffold(g) && g.label && g.textBox && inter(e.textBox!, grow(g.textBox, 2)) > 4)
         findings.push({ level: 'warning', rule: 'label-on-node', message: `label "${e.label}" on edge ${edgeName(e, byId)} covers the title of ${name(g)}`, labelEdges: [e.id] });
     // A label sitting on another edge, or on a group's border, hides part of that line.
-    const tb = grow(e.textBox!, -2);
+    const tb = shrink(e.textBox!, 2);
     const lines = [
       ...edges.filter((o) => o !== e).map((o) => ({ what: `edge ${edgeName(o, byId)}`, pts: o.points!, box: tb })),
       ...containers.filter((g) => !scaffold(g)).map((g) => ({
@@ -165,9 +164,7 @@ export function check(all: InspectCell[]): CheckResult {
     for (const o of lines) {
       const hit = o.pts.some((p, k) => {
         const q = o.pts[k + 1];
-        if (!q) return false;
-        const x1 = Math.min(p.x, q.x), x2 = Math.max(p.x, q.x), y1 = Math.min(p.y, q.y), y2 = Math.max(p.y, q.y);
-        return x1 <= o.box.x + o.box.w && x2 >= o.box.x && y1 <= o.box.y + o.box.h && y2 >= o.box.y;
+        return !!q && segHitsBox(p, q, o.box);
       });
       if (hit) {
         findings.push({ level: 'warning', rule: 'label-on-edge', message: `label "${e.label}" on edge ${edgeName(e, byId)} sits on ${o.what}`, labelEdges: [e.id] });
@@ -197,14 +194,22 @@ export function check(all: InspectCell[]): CheckResult {
   if (crossings > Math.max(3, edges.length / 3)) findings.push({ level: 'warning', rule: 'crossings', message: `${crossings} edge crossings; try direction: LR/TB, reordering nodes, or splitting` });
 
   const boxes = cells.filter((c) => c.vertex).map((c) => c.box);
-  const minX = Math.min(...boxes.map((b) => b.x)), maxX = Math.max(...boxes.map((b) => b.x + b.w));
-  const minY = Math.min(...boxes.map((b) => b.y)), maxY = Math.max(...boxes.map((b) => b.y + b.h));
+  const minX = boxes.length ? Math.min(...boxes.map((b) => b.x)) : 0;
+  const maxX = boxes.length ? Math.max(...boxes.map((b) => b.x + b.w)) : 0;
+  const minY = boxes.length ? Math.min(...boxes.map((b) => b.y)) : 0;
+  const maxY = boxes.length ? Math.max(...boxes.map((b) => b.y + b.h)) : 0;
   // A doc column is ~800px; past this, text shrinks below readable size when embedded.
   if (maxX - minX > limits.width)
     findings.push({ level: 'warning', rule: 'too-wide', message: `${Math.round(maxX - minX)}px wide; embedded in a doc, its text shrinks to about ${Math.round((800 / (maxX - minX)) * 13)}px. Try direction: TB, fewer nodes per row, or splitting it` });
   return {
     findings: applyRules(dedupe(findings)),
-    stats: { nodes: nodes.filter((n) => !ancestors(n.id).size || !nodes.some((p) => ancestors(n.id).has(p.id))).length + cells.filter((c) => c.shape === 'umlLifeline').length, edges: edges.length, crossings, width: Math.round(maxX - minX), height: Math.round(maxY - minY) },
+    stats: {
+      nodes: nodes.filter((n) => !isRow(n) && (!ancestors(n.id).size || !nodes.some((p) => ancestors(n.id).has(p.id)))).length + cells.filter((c) => c.shape === 'umlLifeline').length,
+      edges: edges.length,
+      crossings,
+      width: Math.round(maxX - minX),
+      height: Math.round(maxY - minY),
+    },
   };
 }
 
