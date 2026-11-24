@@ -191,12 +191,46 @@ export function centreRouteOn(pts: P[], label: P, always = false): P[] {
   return [...before, ...left, lerp(a, b, lo), lerp(a, b, hi), ...right, ...after];
 }
 
+/** Parse #RGB, #RGBA, #RRGGBB, #RRGGBBAA, rgb(...), rgba(...) into #RRGGBB plus optional alpha (0..1). */
+function parseCssColor(raw: string): { hex: string; alpha?: number } | undefined {
+  const c = raw.trim();
+  const hex6 = /^#([0-9a-f]{6})$/i.exec(c);
+  if (hex6) return { hex: `#${hex6[1]!}` };
+  const hex8 = /^#([0-9a-f]{6})([0-9a-f]{2})$/i.exec(c);
+  if (hex8) return { hex: `#${hex8[1]!}`, alpha: parseInt(hex8[2]!, 16) / 255 };
+  const hex3 = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(c);
+  if (hex3) return { hex: `#${hex3[1]}${hex3[1]}${hex3[2]}${hex3[2]}${hex3[3]}${hex3[3]}` };
+  const hex4 = /^#([0-9a-f])([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(c);
+  if (hex4) return { hex: `#${hex4[1]}${hex4[1]}${hex4[2]}${hex4[2]}${hex4[3]}${hex4[3]}`, alpha: parseInt(hex4[4]! + hex4[4]!, 16) / 255 };
+  const rgba = /^rgba?\(\s*(\d+)\s*[,\s]\s*(\d+)\s*[,\s]\s*(\d+)\s*(?:[,/]\s*([\d.]+%?)\s*)?\)$/i.exec(c);
+  if (rgba) {
+    const ch = (v: string) => Math.max(0, Math.min(255, Number(v))).toString(16).padStart(2, '0');
+    const h = `#${ch(rgba[1]!)}${ch(rgba[2]!)}${ch(rgba[3]!)}`;
+    if (rgba[4] == null) return { hex: h };
+    const a = rgba[4].endsWith('%') ? parseFloat(rgba[4]) / 100 : parseFloat(rgba[4]);
+    return Number.isFinite(a) ? { hex: h, alpha: Math.max(0, Math.min(1, a)) } : { hex: h };
+  }
+  return undefined;
+}
+
 /** A node label's second line (what it's built with), with the size and color its HTML gives it. */
-export function techLine(c: Cell): { text: string; style: Record<string, string> } | undefined {
+export function techLine(c: Cell): { text: string; style: Record<string, string>; opacity?: number } | undefined {
   const m = /<br\s*\/?>\s*<span style="font-size:(\d+)px;color:([^"]+)">([\s\S]*)<\/span>\s*$/i.exec(c.label);
   if (!m) return undefined;
   const value = labelLines(m[3]!).join(' ');
-  return value ? { text: value, style: { ...c.style, fontSize: m[1]!, ...(/^#[0-9a-f]{6}$/i.test(m[2]!) ? { fontColor: m[2]! } : {}) } } : undefined;
+  if (!value) return undefined;
+  const parsed = parseCssColor(m[2]!);
+  const opacity = parsed?.alpha != null ? Math.round(parsed.alpha * num(c.style.opacity, 100)) : undefined;
+  return {
+    text: value,
+    style: {
+      ...c.style,
+      fontSize: m[1]!,
+      ...(parsed ? { fontColor: parsed.hex } : {}),
+      ...(opacity != null ? { opacity: String(opacity) } : {}),
+    },
+    ...(opacity != null ? { opacity } : {}),
+  };
 }
 
 /** The text a node is drawn with: its name, and its second line when it has one. Export writes these; import compares against them. */
@@ -347,6 +381,7 @@ export async function toExcalidraw(m: DrawioModel, b: DrawioBrowser, opts: Excal
       backgroundColor: 'transparent',
       strokeWidth: 1,
       strokeStyle: 'solid',
+      opacity: Math.max(0, Math.min(100, num(s.opacity, 100))),
       text: value,
       originalText: value,
       fontSize: size,
@@ -425,9 +460,19 @@ export async function toExcalidraw(m: DrawioModel, b: DrawioBrowser, opts: Excal
       return;
     }
 
+    const shadowOf = (draw: (sid: string, bx: Box, st: Record<string, string>) => ExcalidrawElement | ExcalidrawElement[], bx: Box = box): ExcalidrawElement[] => {
+      if (s.shadow !== '1') return [];
+      // A hard drop shadow (the bold style): the same outline again, behind and offset.
+      const ink = s.shadowColor ?? '#111111';
+      const out = draw(`${id}-shadow`, { ...bx, x: bx.x + num(s.shadowOffsetX, 3), y: bx.y + num(s.shadowOffsetY, 3) }, { ...s, fillColor: ink, strokeColor: ink, dashed: '0' });
+      return Array.isArray(out) ? out : [out];
+    };
+
     if (s.shape === 'umlLifeline') {
       const headH = num(s.size, 48);
-      const head = make(id, 'rectangle', { ...box, h: headH }, s, { strokeStyle: 'solid', roundness: corners(s) });
+      const headBox = { ...box, h: headH };
+      const shadow = shadowOf((sid, bx, st) => make(sid, 'rectangle', bx, st, { roundness: corners(st) }), headBox);
+      const head = make(id, 'rectangle', headBox, s, { strokeStyle: s.dashed === '1' ? 'dashed' : 'solid', roundness: corners(s) });
       heads.push(head);
       const tech = techLine(c);
       const centre = { x: box.x + box.w / 2, y: box.y + headH / 2 };
@@ -436,17 +481,37 @@ export async function toExcalidraw(m: DrawioModel, b: DrawioBrowser, opts: Excal
         group(`${id}-group`, text(`${id}-label`, drawnText(c).label, s, { cx: centre.x, cy: centre.y }, {}, { wrap: box.w - 16, stack: key }), text(`${id}-tech`, tech.text, tech.style, { cx: centre.x, cy: centre.y }, {}, { wrap: box.w - 16, stack: key }));
       } else bind(head, whole, s, centre);
       const stem = make(`${id}-line`, 'line', { x: centre.x, y: box.y + headH, w: 0, h: box.h - headH }, s, { ...LINE, backgroundColor: 'transparent', strokeStyle: 'dashed', points: [[0, 0], [0, r2(box.h - headH)]] });
-      group(`${id}-group`, head, stem);
+      group(`${id}-group`, ...shadow, head, stem);
       return;
     }
 
     if (s.shape === 'swimlane') {
       // An ER table: a body, a header across the top, and the title in it.
       const head = num(s.startSize, 36);
-      const body = make(id, 'rectangle', box, { ...s, fillColor: s.swimlaneFillColor ?? background }, { roundness: corners(s) });
-      const top = make(`${id}-head`, 'rectangle', { ...box, h: head }, s, { roundness: corners(s) });
+      const round = corners(s);
+      const shadow = shadowOf((sid, bx, st) => make(sid, 'rectangle', bx, st, { roundness: corners(st) }));
+      const body = make(id, 'rectangle', box, { ...s, fillColor: s.swimlaneFillColor ?? background }, { roundness: round });
+      const top = make(`${id}-head`, 'rectangle', { ...box, h: head }, s, { roundness: round });
+      // Square off the header's bottom seam so rounded corners don't notch against the table body.
+      const seam: ExcalidrawElement[] = [];
+      if (round) {
+        const sh = r2(head / 2);
+        const sy = box.y + head - sh;
+        const w = r2(box.w);
+        seam.push(make(`${id}-head-fill`, 'line', { x: box.x, y: sy, w: box.w, h: sh }, { ...s, dashed: '0', strokeColor: 'none' }, {
+          ...LINE,
+          points: [[0, 0], [w, 0], [w, sh], [0, sh], [0, 0]],
+        }));
+        if (color(s.strokeColor) !== 'transparent') {
+          seam.push(make(`${id}-head-seam`, 'line', { x: box.x, y: sy, w: box.w, h: sh }, s, {
+            ...LINE,
+            backgroundColor: 'transparent',
+            points: [[0, 0], [0, sh], [w, sh], [w, 0]],
+          }));
+        }
+      }
       const title = text(`${id}-title`, lines.join(' '), s, { cx: box.x + box.w / 2, cy: box.y + head / 2 });
-      group(`${id}-group`, body, top, title);
+      group(`${id}-group`, ...shadow, body, top, ...seam, title);
       anchors.set(c.id, body);
       return;
     }
@@ -479,7 +544,11 @@ export async function toExcalidraw(m: DrawioModel, b: DrawioBrowser, opts: Excal
       group(`${id}-group`, ...parts, owner, name, second);
     };
 
-    if (s.rhombus === '1') return label(make(id, 'diamond', box, s));
+    if (s.rhombus === '1') {
+      const diamond = (sid: string, bx: Box, st: Record<string, string>) => make(sid, 'diamond', bx, st);
+      const shadow = shadowOf(diamond);
+      return label(diamond(id, box, s), shadow);
+    }
 
     if (s.ellipse === '1') {
       if (s.shape !== 'endState') return label(make(id, 'ellipse', box, s));
@@ -493,29 +562,31 @@ export async function toExcalidraw(m: DrawioModel, b: DrawioBrowser, opts: Excal
 
     if (s.shape === 'cylinder3') {
       const lid = num(s.size, 7) * 2;
+      const shadow = shadowOf((sid, bx, st) => [
+        make(`${sid}-base`, 'ellipse', { x: bx.x, y: bx.y + bx.h - lid, w: bx.w, h: lid }, st),
+        make(`${sid}-body`, 'rectangle', { x: bx.x, y: bx.y + lid / 2, w: bx.w, h: bx.h - lid }, st),
+        make(`${sid}-lid`, 'ellipse', { x: bx.x, y: bx.y, w: bx.w, h: lid }, st),
+      ]);
       const base = make(`${id}-base`, 'ellipse', { x: box.x, y: box.y + box.h - lid, w: box.w, h: lid }, s);
       const body = make(`${id}-body`, 'rectangle', { x: box.x, y: box.y + lid / 2, w: box.w, h: box.h - lid }, { ...s, dashed: '0', strokeColor: 'none' });
       const side = (suffix: string, x: number) => make(`${id}-${suffix}`, 'line', { x, y: box.y + lid / 2, w: 0, h: box.h - lid }, s, { ...LINE, backgroundColor: 'transparent', points: [[0, 0], [0, r2(box.h - lid)]] });
       const sides = color(s.strokeColor) === 'transparent' ? [] : [side('left', box.x), side('right', box.x + box.w)];
       const top = make(`${id}-lid`, 'ellipse', { x: box.x, y: box.y, w: box.w, h: lid }, s);
       // The cover goes on last: Excalidraw draws a shape's label straight after the shape.
-      return label(cover(id, box), [base, body, ...sides, top]);
+      return label(cover(id, box), [...shadow, base, body, ...sides, top]);
     }
 
     if (s.shape === 'parallelogram') {
       const lean = num(s.size, 14);
       // A closed line, which Excalidraw fills. Its points count from the first one.
-      const poly = make(`${id}-outline`, 'line', { ...box, x: box.x + lean }, s, { ...LINE, points: [[0, 0], [r2(box.w - lean), 0], [r2(box.w - 2 * lean), r2(box.h)], [-lean, r2(box.h)], [0, 0]] });
-      return label(cover(id, box), [poly]);
+      const draw = (sid: string, bx: Box, st: Record<string, string>) =>
+        make(sid, 'line', { ...bx, x: bx.x + lean }, st, { ...LINE, points: [[0, 0], [r2(bx.w - lean), 0], [r2(bx.w - 2 * lean), r2(bx.h)], [-lean, r2(bx.h)], [0, 0]] });
+      const shadow = shadowOf(draw);
+      const poly = draw(`${id}-outline`, box, s);
+      return label(cover(id, box), [...shadow, poly]);
     }
 
     const isPill = s.rounded === '1' && s.absoluteArcSize !== '1' && num(s.arcSize, 0) >= 50;
-    const shadowOf = (draw: (sid: string, bx: Box, st: Record<string, string>) => ExcalidrawElement) => {
-      if (s.shadow !== '1') return [];
-      // A hard drop shadow (the bold style): the same outline again, behind and offset.
-      const ink = s.shadowColor ?? '#111111';
-      return [draw(`${id}-shadow`, { ...box, x: box.x + num(s.shadowOffsetX, 3), y: box.y + num(s.shadowOffsetY, 3) }, { ...s, fillColor: ink, strokeColor: ink, dashed: '0' })];
-    };
 
     if (isPill && box.w > box.h) {
       // Round ends: Excalidraw's own corners stop at a quarter of the height.
@@ -537,7 +608,21 @@ export async function toExcalidraw(m: DrawioModel, b: DrawioBrowser, opts: Excal
     }
     if (kind === 'frame') {
       const tb = g.textBox;
-      group(`${id}-group`, el, text(`${id}-title`, whole, s, tb ? { left: tb.x + 2, cy: tb.y + tb.h / 2 } : { left: box.x + 10, cy: box.y + 12 }));
+      const bg = color(s.labelBackgroundColor);
+      const pad = (s.labelPadding ?? '').trim().split(/\s+/).filter(Boolean).map(Number).filter(Number.isFinite);
+      const [py, px] = pad.length >= 2 ? [pad[0]!, pad[1]!] : pad.length === 1 ? [pad[0]!, pad[0]!] : [3, 9];
+      const tab = bg !== 'transparent'
+        ? make(
+            `${id}-tab`,
+            'rectangle',
+            tb
+              ? { x: Math.max(box.x + 2, tb.x - px), y: Math.max(box.y + 2, tb.y - py), w: tb.w + 2 * px, h: tb.h + 2 * py }
+              : { x: box.x + 4, y: box.y + 4, w: Math.max(36, whole.length * 8 + 2 * px), h: num(s.fontSize, 12) * LINE_HEIGHT + 2 * py },
+            { ...s, fillColor: bg, strokeColor: 'none', dashed: '0' },
+            { roundness: { type: 3 } },
+          )
+        : undefined;
+      group(`${id}-group`, el, tab, text(`${id}-title`, whole, s, tb ? { left: tb.x + 2, cy: tb.y + tb.h / 2 } : { left: box.x + 10, cy: box.y + 12 }));
       return;
     }
     label(el, shadow);
@@ -672,8 +757,47 @@ export async function toExcalidraw(m: DrawioModel, b: DrawioBrowser, opts: Excal
   }
 
   const files: ExcalidrawFile['files'] = {};
-  const svgs = icons.length ? await b.cellSvgs(m.xml, icons.map((i) => i.cell)) : [];
-  const outlines = opts.icons === 'vector' && icons.length ? await b.iconOutlines(svgs) : [];
+  let svgs: Array<string | null> = [];
+  if (icons.length) {
+    // Identical icon cells (same style, size and label) render to the exact same SVG.
+    const uniqueCells: string[] = [];
+    const keyToIdx = new Map<string, number>();
+    const iconSvgIdx: number[] = [];
+    for (const icon of icons) {
+      const c = m.byId.get(icon.cell);
+      const k = c ? `${c.styleRaw}|${c.geom?.w ?? icon.el.width}|${c.geom?.h ?? icon.el.height}|${c.label}` : `id:${icon.cell}`;
+      let idx = keyToIdx.get(k);
+      if (idx === undefined) {
+        idx = uniqueCells.length;
+        keyToIdx.set(k, idx);
+        uniqueCells.push(icon.cell);
+      }
+      iconSvgIdx.push(idx);
+    }
+    const uniqueSvgs = await b.cellSvgs(m.xml, uniqueCells);
+    svgs = iconSvgIdx.map((idx) => uniqueSvgs[idx] ?? null);
+  }
+  let outlines: Array<IconOutline[] | null> = [];
+  if (opts.icons === 'vector' && icons.length) {
+    const uniqueSvgList: string[] = [];
+    const svgToIdx = new Map<string, number>();
+    const iconOutlineIdx: number[] = [];
+    for (const svg of svgs) {
+      if (!svg) {
+        iconOutlineIdx.push(-1);
+        continue;
+      }
+      let idx = svgToIdx.get(svg);
+      if (idx === undefined) {
+        idx = uniqueSvgList.length;
+        svgToIdx.set(svg, idx);
+        uniqueSvgList.push(svg);
+      }
+      iconOutlineIdx.push(idx);
+    }
+    const uniqueOutlines = uniqueSvgList.length ? await b.iconOutlines(uniqueSvgList) : [];
+    outlines = iconOutlineIdx.map((idx) => (idx >= 0 ? (uniqueOutlines[idx] ?? null) : null));
+  }
   icons.forEach((icon, i) => {
     const svg = svgs[i];
     const at = elements.indexOf(icon.el);
@@ -715,9 +839,11 @@ export async function toExcalidraw(m: DrawioModel, b: DrawioBrowser, opts: Excal
   });
 
   // Parts of one node move together: the shape joins the group its icon or label made.
+  const usedGroups = new Set<string>();
+  for (const el of elements) for (const g of el.groupIds) usedGroups.add(g);
   for (const el of elements) {
     const own = `${el.id}-group`;
-    if (elements.some((o) => o !== el && o.groupIds.includes(own)) && !el.groupIds.includes(own)) el.groupIds.push(own);
+    if (usedGroups.has(own) && !el.groupIds.includes(own)) el.groupIds.push(own);
   }
 
   // The spec rides along on a few shapes, so the file can be imported even

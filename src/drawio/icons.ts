@@ -104,13 +104,14 @@ const ALIASES: Record<Provider, Record<string, string>> = {
 
 // AWS colours icons by service category.
 const AWS_CATEGORY: Array<[string, string[]]> = [
-  ['#ED7100', ['lambda', 'ec2', 'ecs', 'eks', 'fargate', 'batch', 'app_runner', 'elastic_beanstalk', 'lightsail', 'ecr']],
-  ['#7AA116', ['s3', 'elastic_file_system', 'glacier', 'backup', 'fsx', 'storage_gateway']],
-  ['#C925D1', ['rds', 'aurora', 'dynamodb', 'elasticache', 'documentdb_with_mongodb_compatibility', 'neptune', 'memorydb_for_redis', 'timestream', 'keyspaces']],
-  ['#8C4FFF', ['api_gateway', 'cloudfront', 'route_53', 'elastic_load_balancing', 'application_load_balancer', 'vpc', 'direct_connect', 'global_accelerator', 'app_mesh', 'cloud_map', 'transit_gateway', 'kinesis', 'athena', 'glue', 'redshift', 'emr', 'quicksight', 'managed_streaming_for_kafka', 'lake_formation']],
-  ['#E7157B', ['sqs', 'sns', 'eventbridge', 'step_functions', 'mq', 'appsync', 'cloudwatch', 'cloudformation', 'systems_manager', 'cloudtrail', 'config']],
-  ['#DD344C', ['cognito', 'identity_and_access_management', 'key_management_service', 'secrets_manager', 'waf', 'shield', 'guardduty', 'certificate_manager']],
-  ['#01A88D', ['sagemaker', 'bedrock', 'rekognition', 'comprehend', 'textract', 'transcribe', 'polly', 'lex']],
+  ['#ED7100', ['lambda', 'ec2', 'ecs', 'eks', 'fargate', 'batch', 'app_runner', 'elastic_beanstalk', 'lightsail', 'ecr', 'auto_scaling', 'ec2_auto_scaling', 'outposts', 'wavelength', 'local_zones', 'serverless_application_repository', 'compute_optimizer']],
+  ['#7AA116', ['s3', 's3_glacier', 'elastic_file_system', 'elastic_block_store', 'glacier', 'backup', 'fsx', 'storage_gateway', 'datasync', 'snowball', 'snowcone', 'iot_core', 'iot_greengrass', 'iot_analytics', 'iot_events', 'iot_device_management', 'iot_sitewise']],
+  ['#C925D1', ['rds', 'rds_proxy', 'aurora', 'dynamodb', 'elasticache', 'elasticache_for_redis', 'elasticache_for_memcached', 'documentdb_with_mongodb_compatibility', 'neptune', 'memorydb_for_redis', 'timestream', 'keyspaces', 'database_migration_service', 'qldb']],
+  ['#8C4FFF', ['api_gateway', 'cloudfront', 'route_53', 'elastic_load_balancing', 'application_load_balancer', 'network_load_balancer', 'gateway_load_balancer', 'classic_load_balancer', 'nat_gateway', 'internet_gateway', 'vpc', 'vpc_peering', 'private_link', 'client_vpn', 'site_to_site_vpn', 'network_firewall', 'direct_connect', 'global_accelerator', 'app_mesh', 'cloud_map', 'transit_gateway', 'kinesis', 'kinesis_data_streams', 'kinesis_data_firehose', 'kinesis_data_analytics', 'athena', 'glue', 'redshift', 'emr', 'quicksight', 'managed_streaming_for_kafka', 'lake_formation', 'opensearch_service', 'elasticsearch_service', 'data_exchange']],
+  ['#E7157B', ['sqs', 'sns', 'eventbridge', 'step_functions', 'mq', 'appsync', 'appflow', 'cloudwatch', 'cloudformation', 'systems_manager', 'cloudtrail', 'config', 'organizations', 'service_catalog', 'trusted_advisor', 'control_tower', 'opsworks']],
+  ['#DD344C', ['cognito', 'identity_and_access_management', 'iam_identity_center', 'single_sign_on', 'key_management_service', 'secrets_manager', 'waf', 'shield', 'guardduty', 'certificate_manager', 'inspector', 'macie', 'security_hub', 'detective', 'firewall_manager', 'directory_service', 'ses', 'simple_email_service', 'pinpoint', 'amplify', 'device_farm', 'connect']],
+  ['#01A88D', ['sagemaker', 'bedrock', 'rekognition', 'comprehend', 'textract', 'transcribe', 'polly', 'lex', 'kendra', 'forecast', 'personalize', 'translate', 'fraud_detector']],
+  ['#3B48CC', ['codebuild', 'codepipeline', 'codedeploy', 'codecommit', 'codeartifact', 'codestar', 'xray', 'cloud9', 'cloudshell']],
 ];
 // Generic AWS resources are plain glyphs, not coloured tiles.
 const AWS_GENERAL = new Set(['users', 'user', 'client', 'mobile_client', 'internet', 'traditional_server', 'generic_database', 'office_building', 'corporate_data_center']);
@@ -146,9 +147,11 @@ export function resolveIcon(icon: string, on?: { fill: string; ink: string }): R
   const glyph = (brand: string) => (on && contrast(brand, on.fill) < 3 ? on.ink : brand);
   let style: string;
   if (provider === 'aws') {
+    const cat = AWS_CATEGORY.find(([, names]) => names.includes(name))?.[0];
+    const tile = cat ?? (on && contrast('#232F3E', on.fill) < 2.5 ? '#526074' : '#232F3E');
     style = AWS_GENERAL.has(name)
       ? `${base}shape=${stencil};fillColor=${glyph('#232F3E')};strokeColor=none;`
-      : `${base}shape=mxgraph.aws4.resourceIcon;resIcon=${stencil};fillColor=${AWS_CATEGORY.find(([, names]) => names.includes(name))?.[0] ?? '#232F3E'};strokeColor=#ffffff;`;
+      : `${base}shape=mxgraph.aws4.resourceIcon;resIcon=${stencil};fillColor=${tile};strokeColor=#ffffff;`;
   } else if (provider === 'gcp') style = `${base}shape=${stencil};fillColor=${glyph('#4285F4')};strokeColor=none;`;
   else if (provider === 'k8s') style = `${base}shape=mxgraph.kubernetes.icon2;prIcon=${name};fillColor=#326CE5;strokeColor=#ffffff;`;
   else style = `${base}shape=${stencil};fillColor=${glyph('#0078D4')};strokeColor=none;`;

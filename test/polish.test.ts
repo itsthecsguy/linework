@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import { parseSpecText } from '../src/spec/parse.js';
-import { crossings, keyRows, layout, singular, type Box, type Point } from '../src/layout/layout.js';
-import { simplify } from '../src/layout/polish.js';
+import { crossings, keyRows, layout, singular, type Box, type Layout, type Point } from '../src/layout/layout.js';
+import { polish, simplify } from '../src/layout/polish.js';
+import { segHitsBox } from '../src/lint/check.js';
 import { branchSpot, labelSpot } from '../src/drawio/write.js';
 import { kindDef } from '../src/spec/model.js';
 
@@ -298,6 +299,70 @@ describe('decisions', () => {
       for (const [id, e] of l.edges) {
         for (let i = 1; i < e.points.length; i++) expect(vert(e.points[i - 1]!, e.points[i]!) || horiz(e.points[i - 1]!, e.points[i]!), id).toBe(true);
       }
+    });
+  });
+
+  describe('decision back-edges', () => {
+    it('routes an upward retry back-edge from a decision without shooting through its own diamond', async () => {
+      const d = parseSpecText(
+        'type: flow\ndirection: TB\nnodes:\n  start: { label: Start, kind: terminal }\n  work: { label: Run job }\n  check: { label: Succeeded?, kind: decision }\n  done: { label: Done, kind: terminal }\nedges:\n  - start -> work\n  - work -> check\n  - check -> done: "yes"\n  - check -> work: "retry"\n',
+      ).diagram;
+      const l = await layout(d);
+      const b = l.nodes.get('check')!;
+      const back = l.edges.get('check->work')!.points;
+      for (let i = 1; i < back.length; i++) expect(vert(back[i - 1]!, back[i]!) || horiz(back[i - 1]!, back[i]!)).toBe(true);
+      const inner = { x: b.x + 4, y: b.y + 4, w: b.w - 8, h: b.h - 8 };
+      for (let i = 0; i < back.length - 1; i++) expect(segHitsBox(back[i]!, back[i + 1]!, inner)).toBe(false);
+    });
+
+    it('attaches a clear upward back-edge to a free side point and preserves ELK routing when blocked', () => {
+      const d = parseSpecText(
+        'type: flow\ndirection: TB\nnodes:\n  top: { label: Retry target }\n  dec: { label: OK?, kind: decision }\n  left: { label: Left }\n  right: { label: Right }\nedges:\n  - top -> dec\n  - dec -> left: "a"\n  - dec -> right: "b"\n  - dec -> top: "retry"\n',
+      ).diagram;
+      const makeLayout = (blockSide: boolean): Layout => {
+        const dec: Box = { x: 200, y: 200, w: 120, h: 80 };
+        const top: Box = { x: 200, y: 40, w: 120, h: 48 };
+        const left: Box = { x: 60, y: 340, w: 100, h: 48 };
+        const right: Box = { x: 360, y: 340, w: 100, h: 48 };
+        const nodes = new Map<string, Box>([['top', top], ['dec', dec], ['left', left], ['right', right]]);
+        // ELK back-edge leaving top of dec, going up-left around to top.
+        const rawBack: Point[] = [
+          { x: 240, y: 200 },
+          { x: 240, y: 184 },
+          { x: 160, y: 184 },
+          { x: 160, y: 110 },
+          { x: 240, y: 110 },
+          { x: 240, y: 88 },
+        ];
+        const edges = new Map([
+          ['top->dec', { points: [{ x: 260, y: 88 }, { x: 260, y: 200 }] }],
+          ['dec->left', { points: blockSide ? [{ x: 240, y: 280 }, { x: 240, y: 300 }, { x: 110, y: 300 }, { x: 110, y: 340 }] : [{ x: 260, y: 280 }, { x: 260, y: 340 }] }],
+          ['dec->right', { points: [{ x: 280, y: 280 }, { x: 280, y: 300 }, { x: 410, y: 300 }, { x: 410, y: 340 }] }],
+          ['dec->top', { points: rawBack.map((p) => ({ ...p })) }],
+        ]);
+        if (!blockSide) {
+          // Put a third node blocking the horizontal corridor only in the blocked test.
+          nodes.set('left', { x: 210, y: 340, w: 100, h: 48 });
+        } else {
+          // Put an obstacle in the way of {200,240} -> {160,240} so side attachment cannot clear it.
+          nodes.set('right', { x: 140, y: 210, w: 40, h: 60 });
+        }
+        return { direction: 'TB', width: 500, height: 420, nodes, groups: new Map(), edges, natural: new Map() };
+      };
+      // Clear case: attaches to the diamond's left point (200, 240).
+      const clearL = makeLayout(false);
+      polish(d, clearL, { groupTitle: new Map(), titleInset: 14, groupTop: 40 });
+      const clearPts = clearL.edges.get('dec->top')!.points;
+      expect(clearPts[0]).toEqual({ x: 200, y: 240 });
+      for (let i = 1; i < clearPts.length; i++) expect(vert(clearPts[i - 1]!, clearPts[i]!) || horiz(clearPts[i - 1]!, clearPts[i]!)).toBe(true);
+
+      // Blocked case: preserves ELK's orthogonal back-edge instead of shooting up from bottom (260, 280).
+      const blockedL = makeLayout(true);
+      polish(d, blockedL, { groupTitle: new Map(), titleInset: 14, groupTop: 40 });
+      const blockedPts = blockedL.edges.get('dec->top')!.points;
+      expect(blockedPts[0]).not.toEqual({ x: 260, y: 280 });
+      const decInner = { x: 204, y: 204, w: 112, h: 72 };
+      for (let i = 0; i < blockedPts.length - 1; i++) expect(segHitsBox(blockedPts[i]!, blockedPts[i + 1]!, decInner)).toBe(false);
     });
   });
 });

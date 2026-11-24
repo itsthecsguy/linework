@@ -4,17 +4,19 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { parseSpecText, SpecError } from '../src/spec/parse.js';
 import { estimateMeasure, layout } from '../src/layout/layout.js';
 import { TextMeasurer } from '../src/layout/text.js';
 import { sequenceScene } from '../src/layout/sequence.js';
-import { readDrawio } from '../src/drawio/read.js';
+import { readDrawio, readSpecStamp } from '../src/drawio/read.js';
 import { toDiagram, toYaml } from '../src/drawio/show.js';
 import { merge } from '../src/drawio/merge.js';
 import { serialize, toMxfile } from '../src/drawio/write.js';
 import { importMermaid } from '../src/import/mermaid.js';
 import { embedFonts, familiesIn, forgetSubsets } from '../src/render/fonts.js';
-import { build } from '../src/api.js';
+import { build, listIcons, specStamp } from '../src/api.js';
+import { sync } from '../src/sync.js';
 import { DrawioBrowser } from '../src/render/browser.js';
 import { THEMES } from '../src/spec/model.js';
 import { contrast, resolveIcon } from '../src/drawio/icons.js';
@@ -322,9 +324,10 @@ describe('text wrapping', () => {
 });
 
 describe('fonts', () => {
-  it('finds which bundled families an SVG uses', () => {
+  it('finds which bundled families an SVG uses and ignores embedded content XML', () => {
     expect(familiesIn('<div style="font-family: IBM Plex Sans, sans-serif">x</div><text font-family="Kalam, cursive">y</text>')).toEqual(['IBM Plex Sans', 'Kalam']);
     expect(familiesIn('<text font-family="Arial">y</text>')).toEqual([]);
+    expect(familiesIn('<svg content="&lt;mxfile&gt;font-family: Kalam;&lt;/mxfile&gt;"><text font-family="IBM Plex Sans, sans-serif">x</text></svg>')).toEqual(['IBM Plex Sans']);
   });
 
   it('embeds a small subset, once, even when run twice', async () => {
@@ -366,6 +369,49 @@ describe('fonts', () => {
   });
 });
 
+describe('readSpecStamp and lazy sync', () => {
+  it('extracts aiviz_spec from uncompressed XML, .drawio.svg, and compressed pages', () => {
+    const model = '<mxGraphModel><root><object id="0" label="" aiviz_spec="deadbeef1234"><mxCell/></object><mxCell id="1" parent="0"/></root></mxGraphModel>';
+    const mxfile = `<mxfile><diagram id="p1" name="Page-1">${model}</diagram></mxfile>`;
+    expect(readSpecStamp(mxfile)).toBe('deadbeef1234');
+    const esc = mxfile.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    expect(readSpecStamp(`<svg xmlns="http://www.w3.org/2000/svg" content="${esc}"></svg>`)).toBe('deadbeef1234');
+    const compressed = zlib.deflateRawSync(Buffer.from(encodeURIComponent(model), 'utf8')).toString('base64');
+    expect(readSpecStamp(`<mxfile><diagram id="p1" name="Page-1">${compressed}</diagram></mxfile>`)).toBe('deadbeef1234');
+    expect(readSpecStamp('<mxfile><diagram id="p1"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>')).toBeUndefined();
+    expect(() => readSpecStamp('not a drawio file')).toThrow();
+  });
+
+  it('skips calling a lazy browser factory when all diagrams are fresh or in --check mode', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-sync-unit-'));
+    try {
+      const specText = 'type: flow\nnodes:\n  a: Start\n  b: End\nedges:\n  - a -> b\n';
+      const stamp = specStamp(specText);
+      fs.writeFileSync(path.join(dir, 'ok.yaml'), specText);
+      const xml = `<mxfile><diagram id="p1"><mxGraphModel><root><object id="0" label="" aiviz_spec="${stamp}"><mxCell/></object><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>`;
+      const esc = xml.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      fs.writeFileSync(path.join(dir, 'ok.drawio.svg'), `<svg xmlns="http://www.w3.org/2000/svg" content="${esc}"></svg>`);
+
+      let calls = 0;
+      const factory = async (): Promise<DrawioBrowser> => {
+        calls++;
+        throw new Error('browser should not be requested');
+      };
+      const fresh = await sync([dir], { browser: factory });
+      expect(fresh).toHaveLength(1);
+      expect(fresh[0]!.state).toBe('fresh');
+      expect(calls).toBe(0);
+
+      fs.writeFileSync(path.join(dir, 'ok.yaml'), specText + '  - b -> a\n');
+      const checked = await sync([dir], { check: true, browser: factory });
+      expect(checked[0]!.state).toBe('stale');
+      expect(calls).toBe(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 const run = process.env.LINEWORK_SKIP_E2E !== '1';
 let browser: DrawioBrowser | undefined;
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-styles-'));
@@ -386,6 +432,34 @@ describe.runIf(run)('fixes from agent runs', () => {
     const pts = m.byId.get('e_api__stripe')!.geom!.points; // waypoints only
     const len = pts.reduce((s, p, i) => (i ? s + Math.abs(p.x - pts[i - 1]!.x) + Math.abs(p.y - pts[i - 1]!.y) : 0), 0);
     expect(len).toBeLessThan(500);
+  }, 60000);
+
+  it('matches icon filters across spaces, hyphens and underscores', async () => {
+    const bySpace = await listIcons('aws', 'load balancer', browser!);
+    const byHyphen = await listIcons('aws', 'load-balancer', browser!);
+    const byUnderscore = await listIcons('aws', 'load_balancer', browser!);
+    expect(bySpace.length).toBeGreaterThan(0);
+    expect(bySpace).toEqual(byHyphen);
+    expect(bySpace).toEqual(byUnderscore);
+    expect(bySpace.every((n) => n.includes('load') && n.includes('balancer'))).toBe(true);
+    expect((await listIcons('aws', 'api-gateway', browser!)).some((n) => n.includes('api_gateway'))).toBe(true);
+  }, 60000);
+
+  it('invokes a lazy sync browser factory once for stale diagrams and skips it once fresh', async () => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'sync-lazy-'));
+    fs.writeFileSync(path.join(dir, 'one.yaml'), 'type: flow\nnodes: { a: A, b: B }\nedges:\n  - a -> b\n');
+    fs.writeFileSync(path.join(dir, 'two.yaml'), 'type: flow\nnodes: { x: X, y: Y }\nedges:\n  - x -> y\n');
+    let launches = 0;
+    const factory = async () => {
+      launches++;
+      return browser!;
+    };
+    const built = await sync([dir], { browser: factory });
+    expect(built.map((i) => i.state)).toEqual(['built', 'built']);
+    expect(launches).toBe(1);
+    const fresh = await sync([dir], { browser: factory });
+    expect(fresh.map((i) => i.state)).toEqual(['fresh', 'fresh']);
+    expect(launches).toBe(1);
   }, 60000);
 });
 

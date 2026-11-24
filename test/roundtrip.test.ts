@@ -7,7 +7,8 @@ import { timelineScene } from '../src/layout/timeline.js';
 import { serialize, toMxfile } from '../src/drawio/write.js';
 import { absBox, readDrawio } from '../src/drawio/read.js';
 import { manualEdits, toDiagram, toYaml } from '../src/drawio/show.js';
-import { deriveTheme, erEdgeStyle, groupStyle, palette, setCustomThemes } from '../src/drawio/theme.js';
+import { deriveTheme, erEdgeStyle, groupStyle, LINE, palette, setCustomThemes, tableLabel, typeface } from '../src/drawio/theme.js';
+import { resolveIcon } from '../src/drawio/icons.js';
 
 const strip = (d: ReturnType<typeof parseSpecText>['diagram']) => JSON.parse(JSON.stringify(d));
 
@@ -125,5 +126,82 @@ describe('core pipeline regressions', () => {
     expect(new Set(ids).size).toBe(ids.length);
     const back = toDiagram(readDrawio(serialize(scene)));
     expect(strip(back.diagram)).toEqual(strip(diagram));
+  });
+
+  it('clears sequence guards, widens outer frames bottom-up, and attaches active self-messages to bars', async () => {
+    for (const theme of ['clean', 'sketch'] as const) {
+      const { diagram } = parseSpecText(
+        `type: sequence\ntheme: ${theme}\nparticipants: { a: {}, b: {} }\nmessages:\n  - a -> a: idle self\n  - a -> b: open\n  - loop: while retrying\n    do:\n      - alt:\n          - when: very long inner guard condition text that widens the inner frame\n            do:\n              - b -> b: validate and persist token locally\n              - note right of b: Right-side note inside frame\n          - when: fallback branch\n            do:\n              - a -.-> b: notify\n  - b --> a: done\n`,
+      );
+      const scene = await sequenceScene(diagram, estimateMeasure);
+      const edgeLine = Math.ceil(typeface(theme).size.edge * LINE);
+      const outer = scene.vertices.find((v) => v.attrs.aiviz_frame === 'loop')!;
+      const inner = scene.vertices.find((v) => v.attrs.aiviz_frame === 'alt')!;
+      const note = scene.vertices.find((v) => v.attrs.aiviz_type === 'note')!;
+      const g0 = scene.vertices.find((v) => v.attrs.aiviz_guard === `${inner.id}:0`)!;
+      const g1 = scene.vertices.find((v) => v.attrs.aiviz_guard === `${inner.id}:1`)!;
+      const bSelf = scene.edges.find((e) => e.attrs.label === 'validate and persist token locally')!;
+      const aSelf = scene.edges.find((e) => e.attrs.label === 'idle self')!;
+      const notify = scene.edges.find((e) => e.attrs.label === 'notify')!;
+      const bar = scene.vertices.find((v) => v.attrs.aiviz_type === 'bar' && v.parent === 'b')!;
+
+      // Outer frame encloses widened inner frame, side note, and self-message loop+label.
+      expect(outer.box.x).toBeLessThanOrEqual(inner.box.x - 10);
+      expect(outer.box.x + outer.box.w).toBeGreaterThanOrEqual(inner.box.x + inner.box.w + 10);
+      expect(inner.box.x + inner.box.w).toBeGreaterThanOrEqual(note.box.x + note.box.w + 10);
+      expect(inner.box.x + inner.box.w).toBeGreaterThanOrEqual(bSelf.points![0]!.x + 6);
+
+      // Guard boxes clear the first message label in both branches.
+      const bSelfY = bSelf.points![0]!.y;
+      const notifyExitY = Number(/exitY=([\d.]+)/.exec(notify.style)![1]);
+      const aVert = scene.vertices.find((v) => v.id === 'a')!;
+      const notifyY = aVert.box.y + notifyExitY * aVert.box.h;
+      expect(bSelfY - edgeLine - 4).toBeGreaterThanOrEqual(g0.box.y + g0.box.h);
+      expect(notifyY - edgeLine - 4).toBeGreaterThanOrEqual(g1.box.y + g1.box.h);
+
+      // Active self-message attaches to the activation bar's right edge; inactive stays on lifeline.
+      expect(bSelf.source).toBe(bar.id);
+      expect(bSelf.target).toBe(bar.id);
+      expect(bSelf.style).toContain('exitX=1;');
+      expect(bSelf.style).toContain('entryX=1;');
+      expect(aSelf.source).toBe('a');
+      expect(aSelf.target).toBe('a');
+      expect(aSelf.style).toContain('exitX=0.5;');
+
+      // Full round-trip stays lossless.
+      const back = toDiagram(readDrawio(serialize(scene)));
+      expect(back.notes).toEqual([]);
+      expect(strip(back.diagram)).toEqual(strip(diagram));
+    }
+  });
+
+  it('uses legible stereotype colors on highlighted/colored class headers and preserves round-trip', async () => {
+    expect(tableLabel('Payable', 'interface', 'clean', { type: 'class', kind: 'interface' })).toContain(`color:${palette('clean').muted}`);
+    expect(tableLabel('Payable', 'interface', 'clean', { type: 'class', kind: 'interface', highlight: true })).toContain('color:rgba(255,255,255,0.9)');
+    expect(tableLabel('Base', 'abstract', 'mono', { type: 'class', kind: 'abstract', highlight: true })).toContain('color:rgba(255,255,255,0.85)');
+    expect(tableLabel('Status', 'enum', 'dark', { type: 'class', kind: 'enum', color: 'blue' })).toContain('color:#C7D0FF');
+    const { diagram } = parseSpecText(
+      'type: class\nnodes:\n  Payable:\n    kind: interface\n    highlight: true\n    members: ["+ pay(): void"]\n  Status:\n    kind: enum\n    color: blue\n    members: [open, closed]\n',
+    );
+    const xml = toMxfile(diagram, await layout(diagram));
+    const m = readDrawio(xml);
+    expect(m.byId.get('Payable')!.attrs.label).toContain('color:rgba(255,255,255,0.9)');
+    const back = toDiagram(m);
+    expect(back.notes).toEqual([]);
+    expect(strip(back.diagram)).toEqual(strip(diagram));
+  });
+
+  it('categorizes common AWS services and lifts uncategorized AWS tiles on dark cards', () => {
+    for (const svc of ['aws.codebuild', 'aws.codepipeline', 'aws.codedeploy', 'aws.opensearch_service', 'aws.ses', 'aws.iot_core', 'aws.amplify', 'aws.xray', 'aws.nat_gateway', 'aws.network_load_balancer']) {
+      const r = resolveIcon(svc);
+      expect('error' in r).toBe(false);
+      if (!('error' in r)) expect(r.style, svc).not.toContain('fillColor=#232F3E;');
+    }
+    const darkFallback = resolveIcon('aws.unlisted_custom_service', { fill: '#212830', ink: '#E6EDF3' });
+    const midnightFallback = resolveIcon('aws.unlisted_custom_service', { fill: '#1B2540', ink: '#E2E8F5' });
+    const lightFallback = resolveIcon('aws.unlisted_custom_service', { fill: '#FFFFFF', ink: '#17171C' });
+    expect(!('error' in darkFallback) && darkFallback.style).toContain('fillColor=#526074;');
+    expect(!('error' in midnightFallback) && midnightFallback.style).toContain('fillColor=#526074;');
+    expect(!('error' in lightFallback) && lightFallback.style).toContain('fillColor=#232F3E;');
   });
 });

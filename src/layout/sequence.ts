@@ -142,6 +142,10 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
   const cx = (id: string) => xs[idx.get(id)!]! + headW[idx.get(id)!]! / 2;
 
   // 4. Rows.
+  const frameAt = new Map(frames.map((f) => [f.start, f]));
+  const sepInfo = new Map(frames.flatMap((f) => f.seps.map((s, k) => [s, { frame: f, branch: k + 1 }] as const)));
+  const endSet = new Set(frames.map((f) => f.end));
+  const guardH = Math.max(22, edgeLine + 6);
   let y = TOP + HEAD + 28;
   rows.forEach((r, i) => {
     r.y = y;
@@ -149,7 +153,16 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
     else if (r.t === 'note') {
       r.h = 14 + noteLines[i]! * edgeLine;
       y += r.h + 16;
-    } else y += (frames.some((f) => f.end === i) ? 20 : 34);
+    } else if (endSet.has(i)) {
+      y += 20;
+    } else {
+      const fs = frameAt.get(i);
+      const si = sepInfo.get(i);
+      const guarded = fs ? !!fs.whens[0] : si ? !!si.frame.whens[si.branch] : false;
+      y += guarded
+        ? guardH + edgeLine + 14
+        : Math.max(34, (fs ? Math.ceil(fonts.group.size * LINE) : edgeLine) + 18);
+    }
   });
   // Lifelines stop a short way past the last row instead of trailing off the page.
   const lifeH = y - TOP - 6;
@@ -162,14 +175,12 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
   const copy = (o: Open): Open => new Map([...o].map(([k, v]) => [k, [...v]]));
   // Each branch of an alt/par starts from the calls open at the top of the frame,
   // not from wherever the previous branch left off.
-  const frameAt = new Map(frames.map((f) => [f.start, f]));
-  const sepOf = new Map(frames.flatMap((f) => f.seps.map((s) => [s, f] as const)));
   const snapshots = new Map<FrameBox, Open>();
   const barAt = new Map<number, { src?: Bar; dst?: Bar }>();
   rows.forEach((r, i) => {
     const fs = frameAt.get(i);
     if (fs) snapshots.set(fs, copy(open));
-    const fsep = sepOf.get(i);
+    const fsep = sepInfo.get(i)?.frame;
     if (fsep) open = copy(snapshots.get(fsep)!);
     if (r.t !== 'msg' || r.item.from === r.item.to) return;
     const { from, to, style } = r.item;
@@ -238,20 +249,54 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
       box: { x: headW[i]! / 2 - BAR_W / 2, y: top(b) - TOP, w: BAR_W, h: barH(b) },
     });
   }
-  // Frames before messages so arrows draw on top.
-  for (const f of frames) {
+  const noteGeom = (it: Extract<SeqItem, { kind: 'note' }>, i: number) => {
+    const ids = it.over.map((p) => idx.get(p)!).sort((a, b) => a - b);
+    const w = rowW[i]! + 24;
+    let x: number, width: number;
+    if (it.side === 'over') {
+      const l = cx(parts[ids[0]!]!.id), rr = cx(parts[ids[ids.length - 1]!]!.id);
+      width = Math.max(w, rr - l + 48, 96);
+      x = (l + rr) / 2 - width / 2;
+    } else {
+      width = Math.min(Math.max(w, 96), NOTE_W);
+      const c = cx(parts[ids[0]!]!.id);
+      x = it.side === 'right' ? c + 16 : c - 16 - width;
+    }
+    return { x, w: Math.ceil(width / 8) * 8 };
+  };
+  // Compute frame widths bottom-up (innermost first) so outer frames enclose
+  // widened child frames, self-message loop+label extents, and side notes.
+  const frameLayout = new Map<FrameBox, { fx: number; fx2: number; fy: number; fy2: number; guards: SceneVertex[] }>();
+  for (const f of [...frames].reverse()) {
     const ps = [...f.parts].map((p) => idx.get(p)!).filter((v) => v != null);
     const lo = ps.length ? Math.min(...ps) : 0, hi = ps.length ? Math.max(...ps) : 0;
     const inset = f.depth * 10;
-    const fx = cx(parts[lo]!.id) - Math.max(80, headW[lo]! / 2 + 16) + inset;
+    let fx = cx(parts[lo]!.id) - Math.max(80, headW[lo]! / 2 + 16) + inset;
     let fx2 = cx(parts[hi]!.id) + Math.max(80, headW[hi]! / 2 + 16) - inset;
+    for (let i = f.start + 1; i < f.end; i++) {
+      const r = rows[i]!;
+      if (r.t === 'msg' && r.item.from === r.item.to) {
+        fx2 = Math.max(fx2, cx(r.item.from) + 46 + Math.ceil(rowW[i]!) + 12);
+      } else if (r.t === 'note') {
+        const nb = noteGeom(r.item, i);
+        fx = Math.min(fx, nb.x - 10);
+        fx2 = Math.max(fx2, nb.x + nb.w + 10);
+      }
+    }
+    for (const g of frames) {
+      if (g !== f && g.start > f.start && g.end < f.end) {
+        const gb = frameLayout.get(g);
+        if (gb) {
+          fx = Math.min(fx, gb.fx - 10);
+          fx2 = Math.max(fx2, gb.fx2 + 10);
+        }
+      }
+    }
     const fy = rows[f.start]!.y - 4, fy2 = rows[f.end]!.y;
-    const frameVertex: SceneVertex = { id: f.id, parent: '1', attrs: { label: f.op, aiviz_type: 'frame', aiviz_frame: f.op }, style: frameStyle(theme), box: { x: fx, y: fy, w: fx2 - fx, h: fy2 - fy } };
-    vertices.push(frameVertex);
     // The first guard shares a line with the operator tab beside it.
     const tabMid = fy + FRAME_TAB_INSET + FRAME_TAB_Y + (fonts.group.size * LINE) / 2;
-    const guardH = Math.max(22, edgeLine + 6);
     const frameLifelines = parts.map((p) => cx(p.id)).filter((c) => c > fx && c < fx2).sort((a, b) => a - b);
+    const guardVerts: SceneVertex[] = [];
     const guard = (when: string | undefined, gy: number, k: number) => {
       if (!when) return;
       // Start right of the operator label on the first branch (or near the frame's left
@@ -268,7 +313,7 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
         }
       }
       if (gx + gw > fx2 - 6) fx2 = gx + gw + 8;
-      vertices.push({
+      guardVerts.push({
         id: `${f.id}_g${k}`,
         parent: '1',
         attrs: { label: htmlEsc(`[${when}]`), aiviz_type: 'guard', aiviz_guard: `${f.id}:${k}` },
@@ -281,7 +326,13 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
       const sy = rows[s]!.y + 4;
       guard(f.whens[k + 1], sy + 2, k + 1);
     });
-    frameVertex.box.w = fx2 - fx;
+    frameLayout.set(f, { fx, fx2, fy, fy2, guards: guardVerts });
+  }
+  // Frames before messages so arrows draw on top.
+  for (const f of frames) {
+    const { fx, fx2, fy, fy2, guards: guardVerts } = frameLayout.get(f)!;
+    vertices.push({ id: f.id, parent: '1', attrs: { label: f.op, aiviz_type: 'frame', aiviz_frame: f.op }, style: frameStyle(theme), box: { x: fx, y: fy, w: fx2 - fx, h: fy2 - fy } });
+    vertices.push(...guardVerts);
     f.seps.forEach((s, k) => {
       const sy = rows[s]!.y + 4;
       edges.push({
@@ -298,24 +349,13 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
   rows.forEach((r, i) => {
     if (r.t === 'note') {
       const it = r.item;
-      const ids = it.over.map((p) => idx.get(p)!).sort((a, b) => a - b);
-      const w = rowW[i]! + 24;
-      let x: number, width: number;
-      if (it.side === 'over') {
-        const l = cx(parts[ids[0]!]!.id), rr = cx(parts[ids[ids.length - 1]!]!.id);
-        width = Math.max(w, rr - l + 48, 96);
-        x = (l + rr) / 2 - width / 2;
-      } else {
-        width = Math.min(Math.max(w, 96), NOTE_W);
-        const c = cx(parts[ids[0]!]!.id);
-        x = it.side === 'right' ? c + 16 : c - 16 - width;
-      }
+      const nb = noteGeom(it, i);
       vertices.push({
         id: `note_${i}`,
         parent: '1',
         attrs: { label: htmlEsc(it.text), aiviz_type: 'note', aiviz_note: it.side, aiviz_over: it.over.join(',') },
         style: noteStyle(theme),
-        box: { x, y: r.y - 4, w: Math.ceil(width / 8) * 8, h: r.h },
+        box: { x: nb.x, y: r.y - 4, w: nb.w, h: r.h },
       });
     }
   });
@@ -326,11 +366,15 @@ export async function sequenceScene(d: Diagram, measure: Measure, opts: Sequence
     const attrs = { label: htmlEsc(label ?? ''), aiviz_msg: style, ...lookAttrs(r.item) };
     const id = `m_${i}`;
     if (self) {
-      const c = cx(from), lh = lifeH;
+      const c = cx(from), bar = activeBar(from, i);
+      const cell = bar ? bar.id : from;
+      const xSide = bar ? 1 : 0.5;
+      const y0 = bar ? top(bar) : TOP;
+      const h = bar ? barH(bar) : lifeH;
       edges.push({
         id, parent: '1', attrs,
-        style: messageStyle(style, theme, true, r.item) + `exitX=0.5;exitY=${((r.y - TOP) / lh).toFixed(4)};entryX=0.5;entryY=${((r.y + 20 - TOP) / lh).toFixed(4)};exitDx=0;exitDy=0;entryDx=0;entryDy=0;`,
-        source: from, target: from,
+        style: messageStyle(style, theme, true, r.item) + `exitX=${xSide};exitY=${((r.y - y0) / h).toFixed(4)};entryX=${xSide};entryY=${((r.y + 20 - y0) / h).toFixed(4)};exitDx=0;exitDy=0;entryDx=0;entryDy=0;`,
+        source: cell, target: cell,
         points: [{ x: c + 40, y: r.y }, { x: c + 40, y: r.y + 20 }],
       });
       return;

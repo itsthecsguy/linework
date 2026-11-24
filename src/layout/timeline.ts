@@ -6,7 +6,7 @@
 import type { Diagram, Node } from '../spec/model.js';
 import { dayOf, isoOf, kindDef } from '../spec/model.js';
 import { autoAttr, diagramMeta, lookAttrs, type Scene, type SceneVertex } from '../drawio/write.js';
-import { groupLabel, groupStyle, nodeLabel, nodeStyle, palette, type ThemeArg } from '../drawio/theme.js';
+import { GROUP_INSET, LINE, PAD_X, groupLabel, groupStyle, nodeLabel, nodeStyle, palette, type ThemeArg } from '../drawio/theme.js';
 import { fontsFor, type Measure } from './layout.js';
 import { TextMeasurer } from './text.js';
 
@@ -54,11 +54,11 @@ function next(day: number, unit: Unit): number {
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + (unit === 'quarter' ? 3 : 1), 1) / DAY;
 }
 
-function tickText(day: number, unit: Unit, first: boolean): string {
+function tickText(day: number, unit: Unit, first: boolean, multiYear = false): string {
   const d = new Date(day * DAY);
   const mon = MONTHS[d.getUTCMonth()]!, year = d.getUTCFullYear();
   if (unit === 'day') return first || d.getUTCDate() === 1 ? `${mon} ${d.getUTCDate()}` : String(d.getUTCDate());
-  if (unit === 'week') return `${mon} ${d.getUTCDate()}`;
+  if (unit === 'week') return multiYear && (first || (d.getUTCMonth() === 0 && d.getUTCDate() <= 7)) ? `${mon} ${d.getUTCDate()} ${year}` : `${mon} ${d.getUTCDate()}`;
   if (unit === 'month') return first || d.getUTCMonth() === 0 ? `${mon} ${year}` : mon;
   return `Q${d.getUTCMonth() / 3 + 1} ${year}`;
 }
@@ -68,8 +68,11 @@ export async function timelineScene(d: Diagram, measure: Measure, opts: { extraM
   const t = palette(theme);
   const fonts = fontsFor(theme);
   const tm = new TextMeasurer(measure);
+  const barH = Math.max(BAR, Math.ceil(fonts.label.size * LINE) + 8);
+  const rowH = barH + 12;
+  const laneHead = Math.max(LANE_HEAD, Math.ceil(fonts.group.size * LINE) + 14);
+  const axisH = Math.max(AXIS_H, Math.ceil(fonts.edge.size * LINE) + 12);
   const items = d.nodes.map((n) => ({ n, start: dayOf(n.start)!, end: dayOf(n.end ?? n.start)!, milestone: kindDef(d.type, n.kind).shape === 'diamond' }));
-  await tm.prepare([...d.nodes.map((n) => [n.label, fonts.label] as const), ...d.groups.map((g) => [g.label, fonts.group] as const)]);
 
   // ---------- the axis: a unit whose ticks have room for their labels ----------
   const lo = Math.min(...items.map((i) => i.start)), hi = Math.max(...items.map((i) => i.end));
@@ -78,24 +81,38 @@ export async function timelineScene(d: Diagram, measure: Measure, opts: { extraM
   const t0 = floorTo(lo, unit);
   let t1 = next(floorTo(hi, unit), unit);
   if (unit === 'day') t1 = hi + 1;
+  const multiYear = new Date(t0 * DAY).getUTCFullYear() !== new Date((t1 - 1) * DAY).getUTCFullYear();
+  const ticks: Array<{ day: number; nextDay: number; label: string }> = [];
+  for (let day = t0, k = 0; day < t1; day = next(day, unit), k++) {
+    ticks.push({ day, nextDay: next(day, unit), label: tickText(day, unit, k === 0, multiYear) });
+  }
+  const groupText = (label: string) => (t.type.upperGroups ? label.toUpperCase() : label);
+  await tm.prepare([
+    ...d.nodes.map((n) => [n.label, fonts.label] as const),
+    ...d.groups.map((g) => [groupText(g.label), fonts.group] as const),
+    ...ticks.map((tk) => [tk.label, fonts.edge] as const),
+  ]);
   const least = { day: 30, week: 8, month: 1.7, quarter: 0.72 }[unit];
-  const ppd = Math.round(Math.min(44, Math.max(least, 760 / (t1 - t0))) * 100) / 100;
+  const basePpd = Math.min(44, Math.max(least, 760 / (t1 - t0)));
+  const needPpd = Math.max(0, ...ticks.map((tk) => (Math.ceil(tm.width(tk.label, fonts.edge)) + 10) / (tk.nextDay - tk.day)));
+  const maxPpd = Math.min(44, Math.max(basePpd, 1600 / (t1 - t0)));
+  const ppd = Math.round(Math.min(maxPpd, Math.max(basePpd, needPpd)) * 100) / 100;
   const x = (day: number) => X0 + (day - t0) * ppd;
   const right = x(t1);
 
   // ---------- rows: tasks outside any lane first, then each lane's ----------
   const vertices: SceneVertex[] = [];
   const bars: SceneVertex[] = [];
-  let y = AXIS_Y + AXIS_H + 10;
+  let y = AXIS_Y + axisH + 10;
   let reach = right;
   const place = (i: (typeof items)[number]) => {
     const n = i.n;
     const textW = tm.width(n.label, fonts.label);
     const box = i.milestone
-      ? { x: x(i.start + 0.5) - MARK / 2, y: y + (ROW - MARK) / 2, w: MARK, h: MARK }
-      : { x: x(i.start), y: y + (ROW - BAR) / 2, w: Math.max(ppd, (i.end - i.start + 1) * ppd), h: BAR };
+      ? { x: x(i.start + 0.5) - MARK / 2, y: y + (rowH - MARK) / 2, w: MARK, h: MARK }
+      : { x: x(i.start), y: y + (rowH - barH) / 2, w: Math.max(ppd, (i.end - i.start + 1) * ppd), h: barH };
     // The name goes in the bar when it fits, and beside it when it doesn't.
-    const fits = !i.milestone && textW + 20 <= box.w;
+    const fits = !i.milestone && textW + 2 * PAD_X <= box.w;
     if (!fits) reach = Math.max(reach, box.x + box.w + 8 + textW);
     const base = nodeStyle(d.type, n.kind, theme, n).replace(/whiteSpace=wrap;/, '');
     bars.push({
@@ -114,21 +131,37 @@ export async function timelineScene(d: Diagram, measure: Measure, opts: { extraM
       style: base + (fits ? '' : `labelPosition=right;verticalLabelPosition=middle;align=left;spacingLeft=8;fontColor=${t.text};`),
       box,
     });
-    y += ROW;
+    y += rowH;
   };
   for (const i of items.filter((i) => !i.n.parent)) place(i);
   const lanes: Array<{ id: string; top: number; bottom: number }> = [];
   for (const g of d.groups) {
+    const titleW = Math.ceil(tm.width(groupText(g.label), fonts.group));
+    reach = Math.max(reach, X0 - 16 + GROUP_INSET + titleW + GROUP_INSET);
     const mine = items.filter((i) => i.n.parent === g.id);
     y += 10;
     const top = y;
-    y += LANE_HEAD;
+    y += laneHead;
     for (const i of mine) place(i);
-    if (!mine.length) y += ROW;
+    if (!mine.length) y += rowH;
     y += 6;
     lanes.push({ id: g.id, top, bottom: y });
   }
   const bottom = y + 4;
+  // Thin any tick labels that still collide when the chart is capped in width.
+  const keptTicks: Array<{ k: number; tx: number; boxW: number; label: string }> = [];
+  let lastTickRight = -Infinity;
+  for (let k = 0; k < ticks.length; k++) {
+    const tk = ticks[k]!;
+    const tx = x(tk.day) + 5;
+    const tw = Math.ceil(tm.width(tk.label, fonts.edge));
+    if (tx >= lastTickRight + 6) {
+      const boxW = Math.max(30, tw + 6, (tk.nextDay - tk.day) * ppd - 6);
+      keptTicks.push({ k, tx, boxW, label: tk.label });
+      lastTickRight = tx + tw;
+      reach = Math.max(reach, tx + tw);
+    }
+  }
   const width = reach + 16 - (X0 - 16);
 
   // Lanes go under everything else: bands across the chart, named at the top left.
@@ -146,12 +179,15 @@ export async function timelineScene(d: Diagram, measure: Measure, opts: { extraM
   // The axis: a label at each tick and a faint line down the chart.
   const tickStyle = `text;html=1;align=left;verticalAlign=middle;fontFamily=${t.type.family};fontSize=${t.type.size.edge};fontColor=${t.muted};`;
   const lineStyle = `rounded=0;html=1;fillColor=${t.edge};strokeColor=none;opacity=22;`;
-  let k = 0;
-  for (let day = t0; day < t1; day = next(day, unit), k++) {
-    vertices.push({ id: `_lw_tick_${k}`, parent: '1', attrs: { label: tickText(day, unit, k === 0), aiviz_type: 'tick' }, style: tickStyle, box: { x: x(day) + 5, y: AXIS_Y, w: Math.max(30, next(day, unit) * ppd - day * ppd - 6), h: AXIS_H } });
-    vertices.push({ id: `_lw_grid_${k}`, parent: '1', attrs: { label: '', aiviz_type: 'grid' }, style: lineStyle, box: { x: x(day), y: AXIS_Y + 2, w: 1, h: bottom - AXIS_Y - 2 } });
+  const keptByIndex = new Map(keptTicks.map((tk) => [tk.k, tk]));
+  for (let k = 0; k < ticks.length; k++) {
+    const tk = ticks[k]!;
+    const kept = keptByIndex.get(k);
+    if (kept) vertices.push({ id: `_lw_tick_${k}`, parent: '1', attrs: { label: kept.label, aiviz_type: 'tick' }, style: tickStyle, box: { x: kept.tx, y: AXIS_Y, w: kept.boxW, h: axisH } });
+    vertices.push({ id: `_lw_grid_${k}`, parent: '1', attrs: { label: '', aiviz_type: 'grid' }, style: lineStyle, box: { x: x(tk.day), y: AXIS_Y + 2, w: 1, h: bottom - AXIS_Y - 2 } });
   }
-  vertices.push({ id: '_lw_axis', parent: '1', attrs: { label: '', aiviz_type: 'grid' }, style: lineStyle.replace('opacity=22', 'opacity=70'), box: { x: X0, y: AXIS_Y + AXIS_H, w: right - X0, h: 1 } });
+  vertices.push({ id: `_lw_grid_${ticks.length}`, parent: '1', attrs: { label: '', aiviz_type: 'grid' }, style: lineStyle, box: { x: x(t1), y: AXIS_Y + 2, w: 1, h: bottom - AXIS_Y - 2 } });
+  vertices.push({ id: '_lw_axis', parent: '1', attrs: { label: '', aiviz_type: 'grid' }, style: lineStyle.replace('opacity=22', 'opacity=70'), box: { x: X0, y: AXIS_Y + axisH, w: Math.max(right, reach) - X0, h: 1 } });
   vertices.push(...bars);
 
   return {

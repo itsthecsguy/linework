@@ -43,8 +43,69 @@ export async function doctor(): Promise<DoctorResult> {
   }
 
   const custom = process.env.LINEWORK_CHROME;
-  if (custom && !fs.existsSync(custom))
-    checks.push({ name: 'LINEWORK_CHROME', ok: false, required: false, detail: `${custom} doesn't exist, so it is ignored`, fix: 'point LINEWORK_CHROME at a Chromium-based browser binary, or unset it' });
+  if (custom) {
+    let problem: string | undefined;
+    try {
+      const st = fs.statSync(custom);
+      if (!st.isFile()) problem = `${custom} is not a file, so it is ignored`;
+      else if (process.platform !== 'win32') {
+        try {
+          fs.accessSync(custom, fs.constants.X_OK);
+        } catch {
+          problem = `${custom} is not executable, so it is ignored`;
+        }
+      }
+    } catch {
+      problem = `${custom} doesn't exist, so it is ignored`;
+    }
+    if (problem) {
+      checks.push({
+        name: 'LINEWORK_CHROME',
+        ok: false,
+        required: false,
+        detail: problem,
+        fix: 'point LINEWORK_CHROME at an executable Chromium-based browser binary, or unset it',
+      });
+    } else {
+      checks.push({
+        name: 'LINEWORK_CHROME',
+        ok: true,
+        required: false,
+        detail: `${custom} (override active)`,
+      });
+    }
+  }
+
+  const { findConfig, loadConfig } = await import('./config.js');
+  const cfgFile = findConfig(process.cwd());
+  if (cfgFile) {
+    const relCfg = path.relative(process.cwd(), cfgFile) || cfgFile;
+    if (process.env.LINEWORK_NO_CONFIG) {
+      checks.push({ name: 'project config', ok: true, required: false, detail: `${relCfg} (ignored: LINEWORK_NO_CONFIG is set)` });
+    } else {
+      try {
+        const cfg = loadConfig(cfgFile);
+        checks.push({ name: 'project config', ok: true, required: false, detail: `${relCfg} (theme: ${cfg.theme ?? 'clean'})` });
+      } catch (e) {
+        const lines = (e as Error).message.split('\n').map((l) => l.trim()).filter(Boolean);
+        const summary = lines.length > 1 ? `${lines[0]} ${lines[1]}` : (lines[0] ?? 'invalid config');
+        checks.push({
+          name: 'project config',
+          ok: false,
+          required: false,
+          detail: summary,
+          fix: `fix ${relCfg}, or set LINEWORK_NO_CONFIG=1 to ignore it`,
+        });
+      }
+    }
+  }
+
+  const envFlags = (['LINEWORK_CHROME', 'LINEWORK_NO_CONFIG', 'LINEWORK_NO_DAEMON', 'LINEWORK_NO_CACHE', 'LINEWORK_ROOT'] as const)
+    .filter((k) => !!process.env[k])
+    .map((k) => `${k}=${process.env[k]}`);
+  if (envFlags.length) {
+    checks.push({ name: 'env overrides', ok: true, required: false, detail: envFlags.join(', ') });
+  }
 
   let browser: Awaited<ReturnType<typeof DrawioBrowser.launch>> | undefined;
   try {

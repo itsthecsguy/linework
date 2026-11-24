@@ -6,9 +6,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { build, importExcalidraw, show, specStamp } from '../src/api.js';
 import { readDrawio } from '../src/drawio/read.js';
-import { toYaml } from '../src/drawio/show.js';
+import { toDiagram, toYaml } from '../src/drawio/show.js';
+import { LINE, PAD_X, typeface } from '../src/drawio/theme.js';
+import { serialize } from '../src/drawio/write.js';
 import { toExcalidraw, type ExcalidrawElement } from '../src/excalidraw/export.js';
 import { importMermaid } from '../src/import/mermaid.js';
+import { estimateMeasure } from '../src/layout/layout.js';
+import { timelineScene, X0 } from '../src/layout/timeline.js';
 import { DrawioBrowser } from '../src/render/browser.js';
 import { dayOf, isoOf } from '../src/spec/model.js';
 import { parseClassEdge, parseMember, parseSpecText, SpecError } from '../src/spec/parse.js';
@@ -130,6 +134,83 @@ describe('timeline specs', () => {
     ]);
     expect(r.diagram.nodes[1]!.highlight).toBe(true);
     expect(() => parseSpecText(toYaml(r.diagram))).not.toThrow();
+  });
+
+  it('scales timeline bars and lane headers to theme typography and checks 2 * PAD_X for inside labels', async () => {
+    const { diagram } = parseSpecText(
+      'type: timeline\ntheme: sketch\ngroups:\n  eng: Engineering\nnodes:\n  a: { label: Alpha, start: 2026-01-05, end: 2026-01-18, in: eng }\n  b: { label: Release, start: 2026-01-12, end: 2026-01-13, in: eng }\n',
+    );
+    const scene = await timelineScene(diagram, estimateMeasure);
+    const tf = typeface('sketch');
+    const wantBar = Math.max(24, Math.ceil(tf.size.label * LINE) + 8);
+    const wantHead = Math.max(26, Math.ceil(tf.size.group * LINE) + 14);
+    const a = scene.vertices.find((v) => v.id === 'a')!;
+    const b = scene.vertices.find((v) => v.id === 'b')!;
+    const lane = scene.vertices.find((v) => v.id === 'eng')!;
+    expect(a.box.h).toBe(wantBar);
+    expect(b.box.y - a.box.y).toBe(wantBar + 12);
+    expect(a.box.y - lane.box.y).toBeGreaterThanOrEqual(wantHead);
+    // At ppd=44, 2 days = 88px; "Release" (~68px) clears +20 but not +2*PAD_X (32px), so it sits outside.
+    expect(a.style).not.toContain('labelPosition=right;');
+    expect(b.box.w).toBeGreaterThanOrEqual(Math.ceil('Release'.length * tf.size.label * 0.6) + 20);
+    expect(b.box.w).toBeLessThan(Math.ceil('Release'.length * tf.size.label * 0.6) + 2 * PAD_X);
+    expect(b.style).toContain('labelPosition=right;');
+  });
+
+  it('shows years on multi-year week ticks, closes the grid, aligns _lw_axis with reach, and includes lane titles', async () => {
+    const { diagram } = parseSpecText(
+      'type: timeline\ntitle: Winter rollout\ngroups:\n  lane1: Build\nnodes:\n  a: { label: Kickoff, start: 2025-12-15, end: 2025-12-26, in: lane1 }\n  b: { label: Launch and post-launch follow-up tasks, start: 2026-01-26, end: 2026-02-06, in: lane1 }\n',
+    );
+    const scene = await timelineScene(diagram, estimateMeasure);
+    const ticks = scene.vertices.filter((v) => v.attrs.aiviz_type === 'tick');
+    const grids = scene.vertices.filter((v) => v.attrs.aiviz_type === 'grid' && v.id !== '_lw_axis');
+    const axis = scene.vertices.find((v) => v.id === '_lw_axis')!;
+    const lane = scene.vertices.find((v) => v.id === 'lane1')!;
+    const labels = ticks.map((v) => v.attrs.label);
+    expect(labels[0]).toMatch(/2025$/);
+    expect(labels.some((l) => /^Jan \d+ 2026$/.test(l!))).toBe(true);
+    expect(labels.some((l) => l === 'Jan 12')).toBe(true);
+    // Closing gridline at t1: one more vertical gridline than the number of intervals.
+    const lastGridX = Math.max(...grids.map((g) => g.box.x));
+    expect(grids.length).toBe(ticks.length + 1);
+    expect(axis.box.x).toBe(X0);
+    // _lw_axis extends to reach (covering right-hanging label past t1).
+    expect(axis.box.x + axis.box.w).toBeGreaterThan(lastGridX);
+    expect(lane.box.x + lane.box.w).toBeGreaterThanOrEqual(axis.box.x + axis.box.w);
+    // Full round-trip stays lossless.
+    const back = toDiagram(readDrawio(serialize(scene)));
+    expect(back.notes).toEqual([]);
+    expect(JSON.parse(JSON.stringify(back.diagram))).toEqual(JSON.parse(JSON.stringify(diagram)));
+
+    // A very long lane title expands lane width and _lw_axis reach even when bars fit inside.
+    const longLaneTitle = 'A very long lane heading that exceeds a short three-day timeline axis width by a wide margin';
+    const shortSpec = parseSpecText(
+      `type: timeline\ngroups:\n  wide: ${longLaneTitle}\nnodes:\n  t: { label: T, start: 2026-01-05, end: 2026-01-07, in: wide }\n`,
+    ).diagram;
+    const shortScene = await timelineScene(shortSpec, estimateMeasure);
+    const wideLane = shortScene.vertices.find((v) => v.id === 'wide')!;
+    const wideAxis = shortScene.vertices.find((v) => v.id === '_lw_axis')!;
+    const titleW = Math.ceil(longLaneTitle.length * typeface('clean').size.group * 0.6);
+    expect(wideLane.box.w).toBeGreaterThanOrEqual(titleW);
+    expect(wideAxis.box.x + wideAxis.box.w).toBeGreaterThanOrEqual(titleW);
+  });
+
+  it('prevents colliding tick labels on multi-year month timelines', async () => {
+    const { diagram } = parseSpecText(
+      'type: timeline\nnodes:\n  a: { label: Phase 1, start: 2026-01-01, end: 2026-12-31 }\n  b: { label: Phase 2, start: 2027-01-01, end: 2028-05-31 }\n',
+    );
+    const scene = await timelineScene(diagram, estimateMeasure);
+    const ticks = scene.vertices.filter((v) => v.attrs.aiviz_type === 'tick');
+    const labels = ticks.map((v) => v.attrs.label);
+    expect(labels).toContain('Jan 2026');
+    expect(labels).toContain('Jan 2027');
+    expect(labels).toContain('Jan 2028');
+    const edgeSize = typeface('clean').size.edge;
+    for (let i = 1; i < ticks.length; i++) {
+      const prev = ticks[i - 1]!, cur = ticks[i]!;
+      const prevW = Math.ceil((prev.attrs.label ?? '').length * edgeSize * 0.55);
+      expect(cur.box.x).toBeGreaterThanOrEqual(prev.box.x + prevW + 5);
+    }
   });
 });
 

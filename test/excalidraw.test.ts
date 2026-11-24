@@ -8,7 +8,7 @@ import path from 'node:path';
 import { build, render } from '../src/api.js';
 import { readDrawio } from '../src/drawio/read.js';
 import { DrawioBrowser } from '../src/render/browser.js';
-import { centreRouteOn, iconPolygons, simplify, toExcalidraw, wrapLines, type ExcalidrawElement, type ExcalidrawFile, type Origin } from '../src/excalidraw/export.js';
+import { centreRouteOn, iconPolygons, simplify, techLine, toExcalidraw, wrapLines, type ExcalidrawElement, type ExcalidrawFile, type Origin } from '../src/excalidraw/export.js';
 import { colorName, embeddedSpec, readEdits, setBoxes, setLabels, tidyPath } from '../src/excalidraw/import.js';
 import { embedInPng, embedInSvg, readScene, sceneFromSvg } from '../src/excalidraw/file.js';
 import { buildLibrary } from '../src/excalidraw/library.js';
@@ -97,6 +97,73 @@ describe('editing draw.io XML', () => {
     const m = readDrawio(setLabels(xml, new Map([['a', 'x < y & z'], ['t', 'Orders']])));
     expect(m.byId.get('a')!.label).toBe('x &lt; y &amp; z');
     expect(m.byId.get('t')!.label).toBe('Orders');
+  });
+});
+
+describe('techLine CSS color parsing and icon deduplication', () => {
+  const cellWith = (label: string, style: Record<string, string> = {}) => ({
+    id: 'n1', attrs: {}, label, style, styleRaw: '', vertex: true, edge: false, raw: '',
+  });
+
+  it('parses rgba(...) and 8-digit #RRGGBBAA into hex fontColor and opacity', () => {
+    const rgba = techLine(cellWith('<b>API</b><br><span style="font-size:12px;color:rgba(255,255,255,0.9)">Go</span>'))!;
+    expect(rgba.text).toBe('Go');
+    expect(rgba.style.fontColor).toBe('#ffffff');
+    expect(rgba.style.opacity).toBe('90');
+    expect(rgba.opacity).toBe(90);
+
+    const hex8 = techLine(cellWith('<b>API</b><br><span style="font-size:12px;color:#1E36B8E0">Rust</span>'))!;
+    expect(hex8.text).toBe('Rust');
+    expect(hex8.style.fontColor).toBe('#1E36B8');
+    expect(hex8.style.opacity).toBe('88');
+    expect(hex8.opacity).toBe(88);
+
+    const hex6 = techLine(cellWith('<b>API</b><br><span style="font-size:12px;color:#6B6B76">Node</span>'))!;
+    expect(hex6.style.fontColor).toBe('#6B6B76');
+    expect(hex6.style.opacity).toBeUndefined();
+    expect(hex6.opacity).toBeUndefined();
+  });
+
+  it('deduplicates identical icon cells before cellSvgs and unique SVGs before iconOutlines', async () => {
+    const iconXml = '<mxfile><diagram><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>' +
+      '<object id="a" label="A"><mxCell style="rounded=1;" vertex="1" parent="1"><mxGeometry x="0" y="0" width="120" height="48" as="geometry"/></mxCell></object>' +
+      '<object id="a__icon" label="" aiviz_type="icon"><mxCell style="shape=mxgraph.aws4.lambda;" vertex="1" parent="a"><mxGeometry x="8" y="8" width="32" height="32" as="geometry"/></mxCell></object>' +
+      '<object id="b" label="B"><mxCell style="rounded=1;" vertex="1" parent="1"><mxGeometry x="200" y="0" width="120" height="48" as="geometry"/></mxCell></object>' +
+      '<object id="b__icon" label="" aiviz_type="icon"><mxCell style="shape=mxgraph.aws4.lambda;" vertex="1" parent="b"><mxGeometry x="8" y="8" width="32" height="32" as="geometry"/></mxCell></object>' +
+      '<object id="c" label="C"><mxCell style="rounded=1;" vertex="1" parent="1"><mxGeometry x="400" y="0" width="120" height="48" as="geometry"/></mxCell></object>' +
+      '<object id="c__icon" label="" aiviz_type="icon"><mxCell style="shape=mxgraph.aws4.sqs;" vertex="1" parent="c"><mxGeometry x="8" y="8" width="32" height="32" as="geometry"/></mxCell></object>' +
+      '</root></mxGraphModel></diagram></mxfile>';
+    const m = readDrawio(iconXml);
+    const svgCalls: string[][] = [];
+    const outlineCalls: Array<Array<string | null>> = [];
+    const stubBrowser = {
+      inspect: async () => [
+        { id: 'a', vertex: true, edge: false, parent: '1', container: false, text: false, shape: null, aivizType: null, source: null, target: null, box: { x: 0, y: 0, w: 120, h: 48 }, textBox: null, label: 'A', points: null },
+        { id: 'a__icon', vertex: true, edge: false, parent: 'a', container: false, text: false, shape: 'mxgraph.aws4.lambda', aivizType: 'icon', source: null, target: null, box: { x: 8, y: 8, w: 32, h: 32 }, textBox: null, label: '', points: null },
+        { id: 'b', vertex: true, edge: false, parent: '1', container: false, text: false, shape: null, aivizType: null, source: null, target: null, box: { x: 200, y: 0, w: 120, h: 48 }, textBox: null, label: 'B', points: null },
+        { id: 'b__icon', vertex: true, edge: false, parent: 'b', container: false, text: false, shape: 'mxgraph.aws4.lambda', aivizType: 'icon', source: null, target: null, box: { x: 208, y: 8, w: 32, h: 32 }, textBox: null, label: '', points: null },
+        { id: 'c', vertex: true, edge: false, parent: '1', container: false, text: false, shape: null, aivizType: null, source: null, target: null, box: { x: 400, y: 0, w: 120, h: 48 }, textBox: null, label: 'C', points: null },
+        { id: 'c__icon', vertex: true, edge: false, parent: 'c', container: false, text: false, shape: 'mxgraph.aws4.sqs', aivizType: 'icon', source: null, target: null, box: { x: 408, y: 8, w: 32, h: 32 }, textBox: null, label: '', points: null },
+      ],
+      measure: async (reqs: Array<[string, number, number, string?]>) => reqs.map(([s]) => s.length * 8),
+      cellSvgs: async (_xml: string, ids: string[]) => {
+        svgCalls.push(ids);
+        // Both distinct cells return the same SVG to test unique-SVG deduplication too.
+        return ids.map(() => '<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10" fill="#ff0000"/></svg>');
+      },
+      iconOutlines: async (svgs: Array<string | null>) => {
+        outlineCalls.push(svgs);
+        return svgs.map(() => [{ path: 0, fill: '#ff0000', stroke: null, strokeWidth: 1, opacity: 1, closed: true, points: [[0, 0], [10, 0], [10, 10], [0, 10]] as Array<[number, number]> }]);
+      },
+    } as unknown as DrawioBrowser;
+    const f = await toExcalidraw(m, stubBrowser, { icons: 'vector' });
+    expect(svgCalls).toEqual([['a__icon', 'c__icon']]);
+    expect(outlineCalls).toHaveLength(1);
+    expect(outlineCalls[0]).toHaveLength(1);
+    // All 3 icons still got their own vector shape elements in their owners' groups.
+    for (const id of ['a', 'b', 'c']) {
+      expect(f.elements.some((e) => e.id === `lw-${id}__icon-i0` && e.groupIds.includes(`lw-${id}-group`))).toBe(true);
+    }
   });
 });
 
@@ -227,6 +294,17 @@ describe.runIf(run)('Excalidraw files', () => {
     const arrow = f.elements.find((e) => e.type === 'arrow' && e.groupIds.some((g) => msg.groupIds.includes(g)))!;
     expect(msg.containerId).toBeNull();
     expect(msg.y + msg.height).toBeLessThanOrEqual(arrow.y + 2);
+    // External participant keeps its dashed border; regular participants stay solid.
+    expect(f.elements.find((e) => e.id === 'lw-stripe')!.strokeStyle).toBe('dashed');
+    expect(f.elements.find((e) => e.id === 'lw-api')!.strokeStyle).toBe('solid');
+    // Sequence frame emits an operator tab chip behind its title, grouped with the frame.
+    const tab = f.elements.find((e) => e.id === 'lw-frame_1-tab')!;
+    const title = f.elements.find((e) => e.id === 'lw-frame_1-title')!;
+    expect(tab).toBeDefined();
+    expect(tab.type).toBe('rectangle');
+    expect(tab.backgroundColor).not.toBe('transparent');
+    expect(tab.groupIds).toContain('lw-frame_1-group');
+    expect(f.elements.indexOf(tab)).toBeLessThan(f.elements.indexOf(title));
   }, 60000);
 
   it('draws an ER table as a grouped body, header and rows, with crow\'s feet on the lines', async () => {
@@ -234,22 +312,58 @@ describe.runIf(run)('Excalidraw files', () => {
     const group = 'lw-orders-group';
     const parts = f.elements.filter((e) => e.groupIds.includes(group));
     expect(parts.filter((e) => e.type === 'rectangle').length).toBe(2);
+    expect(parts.some((e) => e.id === 'lw-orders-head-fill' && e.type === 'line')).toBe(true);
+    expect(parts.some((e) => e.id === 'lw-orders-head-seam' && e.type === 'line')).toBe(true);
     expect(parts.filter((e) => e.type === 'text').map((e) => String(e.text))).toEqual(expect.arrayContaining(['Orders', 'customer_id', 'uuid FK']));
     expect(of(f, 'arrow').some((a) => /^crowfoot/.test(String(a.endArrowhead)) || /^crowfoot/.test(String(a.startArrowhead)))).toBe(true);
   }, 60000);
 
-  it('carries the style across: canvas, hand-drawn roughness, and the bold shadow', async () => {
+  it('carries the style across: canvas, hand-drawn roughness, rgba/hex8 tech opacity, and bold shadows on every shape', async () => {
     expect((await convert('checkout', 'midnight')).appState.viewBackgroundColor).toBe('#101727');
     const sketch = await convert('checkout', 'sketch');
     expect(of(sketch, 'rectangle').filter((e) => e.strokeColor !== 'transparent').every((e) => e.roughness === 1)).toBe(true);
     expect(of(sketch, 'text').every((e) => e.fontFamily === 5)).toBe(true);
+    // Highlighted node's rgba(...) techLine becomes hex strokeColor + element opacity.
+    const clean = await convert('checkout');
+    const apiTech = clean.elements.find((e) => e.id === 'lw-api-tech')!;
+    expect(apiTech.strokeColor).toBe('#ffffff');
+    expect(apiTech.opacity).toBe(90);
+    // Soft theme's #RRGGBBAA techLine also becomes hex strokeColor + element opacity.
+    const soft = await convert('checkout', 'soft');
+    const webTech = soft.elements.find((e) => e.id === 'lw-web-tech')!;
+    expect(String(webTech.strokeColor)).toMatch(/^#[0-9a-fA-F]{6}$/);
+    expect(webTech.opacity).toBe(88);
+    // Bold shadows cover rectangles, cylinders, decisions, parallelograms, tables, and lifelines.
     const bold = await convert('checkout', 'bold');
     const shadow = bold.elements.find((e) => e.id === 'lw-api-shadow')!;
     const api = bold.elements.find((e) => e.id === 'lw-api')!;
     expect([shadow.x - api.x, shadow.y - api.y]).toEqual([3, 3]);
     expect(bold.elements.indexOf(shadow)).toBeLessThan(bold.elements.indexOf(api));
-    expect((await convert('checkout')).elements.every((e) => e.roughness === 0)).toBe(true);
-  }, 120000);
+    for (const part of ['shadow-base', 'shadow-body', 'shadow-lid']) {
+      const sh = bold.elements.find((e) => e.id === `lw-db-${part}`)!;
+      expect(sh, part).toBeDefined();
+      expect(bold.elements.indexOf(sh)).toBeLessThan(bold.elements.indexOf(bold.elements.find((e) => e.id === 'lw-db-base')!));
+    }
+    const boldFlow = await convert('refund-flow', 'bold');
+    const diaShadow = boldFlow.elements.find((e) => e.id === 'lw-window-shadow')!;
+    expect(diaShadow.type).toBe('diamond');
+    expect(boldFlow.elements.indexOf(diaShadow)).toBeLessThan(boldFlow.elements.indexOf(boldFlow.elements.find((e) => e.id === 'lw-window')!));
+    const boldDeploy = await convert('deploy-flow', 'bold');
+    const paraOutline = boldDeploy.elements.find((e) => e.id.endsWith('-outline') && (e.points as number[][]).length === 5)!;
+    const paraShadow = boldDeploy.elements.find((e) => e.id === paraOutline.id.replace('-outline', '-shadow'))!;
+    expect(paraShadow.type).toBe('line');
+    expect(boldDeploy.elements.indexOf(paraShadow)).toBeLessThan(boldDeploy.elements.indexOf(paraOutline));
+    const boldEr = await convert('shop-er', 'bold');
+    const erShadow = boldEr.elements.find((e) => e.id === 'lw-orders-shadow')!;
+    expect(erShadow.type).toBe('rectangle');
+    expect(boldEr.elements.indexOf(erShadow)).toBeLessThan(boldEr.elements.indexOf(boldEr.elements.find((e) => e.id === 'lw-orders')!));
+    const boldSeq = await convert('pay-sequence', 'bold');
+    const lifeShadow = boldSeq.elements.find((e) => e.id === 'lw-api-shadow')!;
+    const lifeHead = boldSeq.elements.find((e) => e.id === 'lw-api')!;
+    expect([lifeShadow.x - lifeHead.x, lifeShadow.y - lifeHead.y, lifeShadow.height]).toEqual([3, 3, lifeHead.height]);
+    expect(boldSeq.elements.indexOf(lifeShadow)).toBeLessThan(boldSeq.elements.indexOf(lifeHead));
+    expect(clean.elements.every((e) => e.roughness === 0)).toBe(true);
+  }, 180000);
 
   it('uses right-angle arrows that Excalidraw reroutes, attached just outside the box edge', async () => {
     const f = await convert('checkout');
@@ -366,6 +480,24 @@ describe.runIf(run)('edits made in Excalidraw come back', () => {
       const r = await roundTrip(example, () => {});
       expect(r.res.changes, example).toEqual([]);
       expect(r.after === r.before, example).toBe(true);
+    }
+  }, 240000);
+
+  it('changes nothing on unedited re-import with theme: bold shadows and frame tabs', async () => {
+    for (const example of ['checkout', 'pay-sequence', 'shop-er', 'refund-flow', 'deploy-flow']) {
+      const out = path.join(tmp, `${example}-bold-rt.drawio.svg`);
+      fs.rmSync(out, { force: true });
+      const src = fs.readFileSync(`examples/${example}.yaml`, 'utf8')
+        .replace(/^theme:.*\n/m, '')
+        .replace(/^type:.*$/m, (l) => `${l}\ntheme: bold`);
+      await build(src, { out, browser: b });
+      const before = fs.readFileSync(out, 'utf8');
+      const f = await toExcalidraw(readDrawio(before), b);
+      const file = path.join(tmp, `${example}-bold-rt.excalidraw`);
+      fs.writeFileSync(file, JSON.stringify(f));
+      const res = await importExcalidraw(file, out, { browser: b });
+      expect(res.changes, example).toEqual([]);
+      expect(fs.readFileSync(out, 'utf8') === before, example).toBe(true);
     }
   }, 240000);
 

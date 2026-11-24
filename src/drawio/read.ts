@@ -60,6 +60,28 @@ export function inflatePage(data: string): string {
   return decodeURIComponent(buf.toString('utf8'));
 }
 
+/**
+ * Extract the `aiviz_spec` stamp from a diagram without building a full DOM.
+ * Falls back to `readDrawio` for compressed draw.io pages or unusual layouts.
+ */
+export function readSpecStamp(text: string): string | undefined {
+  const xml = extractMxfile(text);
+  // Compressed pages have base64 text inside <diagram> instead of <mxGraphModel>.
+  if (!/<mxGraphModel\b/.test(xml)) return readDrawio(text).meta.aiviz_spec;
+  const rootMatch = /<root\b[^>]*>/.exec(xml);
+  if (!rootMatch) return readDrawio(text).meta.aiviz_spec;
+  const afterRoot = rootMatch.index + rootMatch[0].length;
+  const firstTag = /^\s*<(object|UserObject|mxCell)\b([^>]*)>/.exec(xml.slice(afterRoot, afterRoot + 8192));
+  if (!firstTag) return readDrawio(text).meta.aiviz_spec;
+  if (firstTag[1] === 'mxCell') {
+    if (/\bid="0"/.test(firstTag[2]!)) return undefined;
+    return readDrawio(text).meta.aiviz_spec;
+  }
+  if (!/\bid="0"/.test(firstTag[2]!)) return readDrawio(text).meta.aiviz_spec;
+  const m = /\baiviz_spec="([^"]*)"/.exec(firstTag[2]!);
+  return m ? decodeEntities(m[1]!) : undefined;
+}
+
 export function readDrawio(text: string): DrawioModel {
   let xml = extractMxfile(text);
   const doc = new DOMParser().parseFromString(xml, 'text/xml');

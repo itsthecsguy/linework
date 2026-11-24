@@ -199,6 +199,139 @@ describe('mermaid import', () => {
   it('rejects diagram types it does not support', () => {
     expect(() => importMermaid('pie\ntitle x')).toThrow(/unsupported Mermaid diagram "pie"/);
   });
+
+  it('consumes inline :::className on flowchart nodes without dropping edges or target nodes', () => {
+    const { diagram, warnings } = importMermaid(`flowchart LR
+      A[API]:::primary --> B:::secondary & C[Worker]:::accent
+      C:::accent -.-> D@{ shape: cyl, label: Orders DB }:::db
+    `);
+    expect(diagram.nodes.map((n) => n.id)).toEqual(['A', 'B', 'C', 'D']);
+    expect(diagram.edges.map((e) => `${e.from}->${e.to}:${e.style}`)).toEqual(['A->B:sync', 'A->C:sync', 'C->D:async']);
+    expect(warnings.join()).toMatch(/styling directives/);
+    expect(plain(parseSpecText(toYaml(diagram)).diagram)).toEqual(plain(diagram));
+  });
+
+  it('extracts frontmatter title and in-body title lines across diagram types', () => {
+    const fmFlow = importMermaid('---\ntitle: "Checkout Flow"\n---\nflowchart LR\n  A --> B\n').diagram;
+    expect(fmFlow.title).toBe('Checkout Flow');
+    expect(plain(parseSpecText(toYaml(fmFlow)).diagram)).toEqual(plain(fmFlow));
+
+    const fmState = importMermaid('---\ntitle: Order Lifecycle\n---\nstateDiagram-v2\n  [*] --> Open\n').diagram;
+    expect(fmState.title).toBe('Order Lifecycle');
+
+    const seqTitle = importMermaid('sequenceDiagram\n  title: Card Payment\n  a->>b: pay\n').diagram;
+    expect(seqTitle.title).toBe('Card Payment');
+    expect(plain(parseSpecText(toYaml(seqTitle)).diagram)).toEqual(plain(seqTitle));
+
+    const erTitle = importMermaid('erDiagram\n  title Billing Schema\n  USER ||--o{ ORDER : places\n').diagram;
+    expect(erTitle.title).toBe('Billing Schema');
+    expect(plain(parseSpecText(toYaml(erTitle)).diagram)).toEqual(plain(erTitle));
+
+    const clsTitle = importMermaid('classDiagram\n  title Domain Model\n  class Order\n').diagram;
+    expect(clsTitle.title).toBe('Domain Model');
+    expect(plain(parseSpecText(toYaml(clsTitle)).diagram)).toEqual(plain(clsTitle));
+
+    const stateTitleId = importMermaid('stateDiagram-v2\n  title --> body\n').diagram;
+    expect(stateTitleId.title).toBeUndefined();
+    expect(stateTitleId.edges).toHaveLength(1);
+    expect(stateTitleId.edges[0]).toMatchObject({ from: 'title', to: 'body' });
+  });
+
+  it('splits sequence participant <br/> into label + tech, normalizes <br/> in messages/states, and handles create participant/actor', () => {
+    const seq = importMermaid(`sequenceDiagram
+      participant api as Checkout API<br/>Go
+      create participant db as Orders<br/>Postgres
+      create actor support as Support<br/>Tier 2
+      api->>db: INSERT<br/>orders
+      alt card<br/>declined
+        db-->>support: alert<br />operator
+      end
+    `).diagram;
+    expect(seq.nodes.find((n) => n.id === 'api')).toMatchObject({ label: 'Checkout API', tech: 'Go', kind: 'service' });
+    expect(seq.nodes.find((n) => n.id === 'db')).toMatchObject({ label: 'Orders', tech: 'Postgres', kind: 'database' });
+    expect(seq.nodes.find((n) => n.id === 'support')).toMatchObject({ label: 'Support', tech: 'Tier 2', kind: 'person' });
+    expect(seq.seq![0]).toMatchObject({ kind: 'msg', label: 'INSERT orders' });
+    const frame = seq.seq![1] as Extract<NonNullable<typeof seq.seq>[number], { kind: 'frame' }>;
+    expect(frame.branches[0]!.when).toBe('card declined');
+    expect(frame.branches[0]!.items[0]).toMatchObject({ kind: 'msg', label: 'alert operator' });
+    expect(JSON.stringify(seq)).not.toContain('<br');
+    expect(plain(parseSpecText(toYaml(seq)).diagram)).toEqual(plain(seq));
+
+    const st = importMermaid(`stateDiagram-v2
+      state "Waiting<br/>for payment" as wait
+      state "In<br/>Review" as review {
+        check : Run<br/>fraud check
+      }
+      wait --> review : submit<br/>order
+    `).diagram;
+    expect(st.nodes.find((n) => n.id === 'wait')!.label).toBe('Waiting for payment');
+    expect(st.nodes.find((n) => n.id === 'check')!.label).toBe('Run fraud check');
+    expect(st.groups.find((g) => g.id === 'review')!.label).toBe('In Review');
+    expect(st.edges[0]!.label).toBe('submit order');
+    expect(JSON.stringify(st)).not.toContain('<br');
+    expect(plain(parseSpecText(toYaml(st)).diagram)).toEqual(plain(st));
+  });
+
+  it('captures ER display aliases and direction', () => {
+    const er = importMermaid(`erDiagram
+      direction LR
+      ORG ||--o{ USER : employs
+      USER["App User"] {
+        uuid id PK
+      }
+      ORG["Organization"]
+    `).diagram;
+    expect(er.direction).toBe('LR');
+    expect(er.nodes.find((n) => n.id === 'user')!.label).toBe('App User');
+    expect(er.nodes.find((n) => n.id === 'org')!.label).toBe('Organization');
+    expect(plain(parseSpecText(toYaml(er)).diagram)).toEqual(plain(er));
+  });
+
+  it('maps classDiagram namespaces (including nested) to groups', () => {
+    const { diagram, warnings } = importMermaid(`classDiagram
+      Order *-- LineItem
+      namespace Domain {
+        class Order {
+          +id: string
+        }
+        namespace Sub {
+          class LineItem
+        }
+      }
+      namespace Billing {
+        class Invoice
+      }
+    `);
+    expect(warnings).toEqual([]);
+    expect(diagram.groups).toEqual([
+      { id: 'Domain', label: 'Domain' },
+      { id: 'Sub', label: 'Sub', parent: 'Domain' },
+      { id: 'Billing', label: 'Billing' },
+    ]);
+    expect(diagram.nodes.find((n) => n.id === 'Order')!.parent).toBe('Domain');
+    expect(diagram.nodes.find((n) => n.id === 'LineItem')!.parent).toBe('Sub');
+    expect(diagram.nodes.find((n) => n.id === 'Invoice')!.parent).toBe('Billing');
+    expect(plain(parseSpecText(toYaml(diagram)).diagram)).toEqual(plain(diagram));
+  });
+
+  it('expands Mermaid v11 @{ shape: ... } parsing including lean-r, lean-l, in-out, circle, and unquoted labels', () => {
+    const { diagram } = importMermaid(`flowchart LR
+      S@{ shape: circle, label: Start } --> I@{ shape: lean-r, label: Input payload }
+      I --> D@{ shape: diam, label: Valid? }
+      D -->|yes| O@{ shape: lean-l, label: Output record }
+      D -->|no| IO@{ shape: in-out, label: Error stream }
+      O --> E@{ shape: circle, label: Done }
+    `);
+    expect(diagram.type).toBe('flow');
+    const byId = Object.fromEntries(diagram.nodes.map((n) => [n.id, n]));
+    expect(byId.S).toMatchObject({ label: 'Start', kind: 'terminal' });
+    expect(byId.I).toMatchObject({ label: 'Input payload', kind: 'data' });
+    expect(byId.D).toMatchObject({ label: 'Valid?', kind: 'decision' });
+    expect(byId.O).toMatchObject({ label: 'Output record', kind: 'data' });
+    expect(byId.IO).toMatchObject({ label: 'Error stream', kind: 'data' });
+    expect(byId.E).toMatchObject({ label: 'Done', kind: 'terminal' });
+    expect(plain(parseSpecText(toYaml(diagram)).diagram)).toEqual(plain(diagram));
+  });
 });
 
 describe('activation bars across alt branches', () => {

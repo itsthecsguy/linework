@@ -117,17 +117,27 @@ export async function fixLabels(b: DrawioBrowser, xml: string, maxRounds = 6): P
     const targets = labelEdges(check(cells).findings);
     if (!targets.length) break;
     const doc = new DOMParser().parseFromString(cur, 'text/xml');
-    let improved = false;
+    const cands: Array<{ id: string; g: Element; cell: InspectCell | undefined; tries: number[] }> = [];
     for (const id of targets) {
       const g = edgeGeometry(doc, id);
       if (!g) continue;
       const base = Number(g.getAttribute('x') ?? 0);
       const cell = cells.find((c) => c.id === id);
-      const curScore = scoreLabel(id, cell?.textBox ?? null);
-      if (curScore === 0) continue;
       const spots = cell?.points && cell.textBox ? runSpots(cell.points, cell.textBox) : [];
       const tries = [...spots, ...OFFSETS.map((off) => Math.max(-0.9, Math.min(0.9, base + off)))].map((x) => Number(x.toFixed(3)));
-      const boxes = await b.labelBoxes(cur, id, tries);
+      cands.push({ id, g, cell, tries });
+    }
+    if (!cands.length) break;
+    const allBoxes = await b.labelBoxesBatch(
+      cur,
+      cands.map(({ id, tries }) => ({ id, xs: tries })),
+    );
+    let improved = false;
+    for (let ci = 0; ci < cands.length; ci++) {
+      const { id, g, cell, tries } = cands[ci]!;
+      const curScore = scoreLabel(id, cell?.textBox ?? null);
+      if (curScore === 0) continue;
+      const boxes = allBoxes[ci]!;
       let best: { x: number; score: number; box: InspectCell['textBox'] } | undefined;
       for (let i = 0; i < tries.length; i++) {
         const s = scoreLabel(id, boxes[i]!);
@@ -144,9 +154,8 @@ export async function fixLabels(b: DrawioBrowser, xml: string, maxRounds = 6): P
     if (!improved) break;
     cur = new XMLSerializer().serializeToString(doc);
   }
-  const finalCells = moved ? await b.inspect(cur) : cells;
-  cur = await matchLabelBackgrounds(b, cur, finalCells);
-  return { xml: cur, moved, cells: finalCells };
+  cur = await matchLabelBackgrounds(b, cur, cells);
+  return { xml: cur, moved, cells };
 }
 
 /**

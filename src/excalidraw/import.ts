@@ -243,6 +243,11 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
   /** Excalidraw element id to the node it stands for. */
   const nodeOfElement = new Map<string, string>();
 
+  const isDecor = (p: ExcalidrawElement) => {
+    const part = originOf(p)?.part ?? '';
+    return part.startsWith('shadow') || part === 'tab';
+  };
+
   for (const [cellId, specId] of shown.idMap) {
     const c = m.byId.get(cellId)!;
     const el = shapeOf(cellId);
@@ -260,7 +265,7 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
         changes.push(`renamed group "${g.label}" to "${now}"`);
         g.label = now;
       }
-      paint(g, recolour(partsOf(cellId), g.color), `group "${g.label}"`);
+      paint(g, recolour(partsOf(cellId).filter((p) => !isDecor(p)), g.color), `group "${g.label}"`);
       continue;
     }
     const n = d.nodes.find((x) => x.id === specId)!;
@@ -281,7 +286,7 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
         else delete n.tech;
       }
     }
-    paint(n, recolour(partsOf(cellId).filter((p) => originOf(p)?.part !== 'shadow'), n.color), `"${n.label}"`);
+    paint(n, recolour(partsOf(cellId).filter((p) => !isDecor(p)), n.color), `"${n.label}"`);
   }
 
   // ---------- boxes drawn or copied in Excalidraw ----------
@@ -751,7 +756,7 @@ export function readEdits(file: ExcalidrawFile, base: DrawioModel, cells: Inspec
     const taken = new Set<string>();
     /** A box somebody drew that an earlier import already made part of the diagram. */
     const redrawnBox = (label: string, top: boolean) => {
-      const hit = live.find((e) => SHAPES.has(e.type) && !isOriginal(e) && !taken.has(e.id) && alongTop(e) === top && textOf(partOf(e, 'label') ?? boundText(e)) === norm(label));
+      const hit = live.find((e) => SHAPES.has(e.type) && !isOriginal(e) && !taken.has(e.id) && (!originOf(e) || originOf(e)!.part === 'shape') && alongTop(e) === top && textOf(partOf(e, 'label') ?? boundText(e)) === norm(label));
       if (hit) taken.add(hit.id);
       return hit;
     };

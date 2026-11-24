@@ -135,6 +135,28 @@ describe('loading', () => {
     );
   });
 
+  it('memoizes loadConfig and invalidates when the file or an extended parent changes', () => {
+    const parent = write('memo/parent.yaml', 'statuses:\n  ok: green\n');
+    const child = write('memo/linework.yaml', 'extends: ./parent.yaml\ntheme: clean\n');
+    const c1 = loadConfig(child);
+    const c2 = loadConfig(child);
+    expect(c2).toBe(c1);
+    expect(c1.theme).toBe('clean');
+    expect(c1.statuses.ok?.color).toBe('green');
+
+    write('memo/linework.yaml', 'extends: ./parent.yaml\ntheme: dark\n');
+    const c3 = loadConfig(child);
+    expect(c3).not.toBe(c1);
+    expect(c3.theme).toBe('dark');
+
+    write('memo/parent.yaml', 'statuses:\n  ok: blue\n  warn: amber\n');
+    const c4 = loadConfig(child);
+    expect(c4).not.toBe(c3);
+    expect(c4.statuses.ok?.color).toBe('blue');
+    expect(c4.statuses.warn?.color).toBe('amber');
+    expect(fs.existsSync(parent)).toBe(true);
+  });
+
   it('handles empty diagrams, table rows, and segment box hits in check()', () => {
     expect(check([]).stats).toEqual({ nodes: 0, edges: 0, crossings: 0, width: 0, height: 0 });
     const cell = (overrides: Partial<InspectCell>): InspectCell => ({
@@ -291,4 +313,71 @@ edges:
     expect(res.check.findings).toEqual([]);
     expect(fs.readFileSync(plain, 'utf8')).not.toContain('legend_');
   }, 60000);
+
+  it('draws legends for sequence frames and timelines, strips bold swatch shadows, and wraps long rows', async () => {
+    write(
+      'leg/linework.yaml',
+      `theme: bold
+legend: true
+statuses:
+  a: { color: green, label: Alpha Status }
+  b: { color: blue, label: Beta Status }
+  c: { color: amber, label: Gamma Status }
+  d: { color: red, label: Delta Status }
+  e: { color: teal, label: Epsilon Status }
+`,
+    );
+    const seqOut = path.join(tmp, 'leg/seq.drawio.svg');
+    await build(
+      `type: sequence
+participants: { u: User, s: Service }
+messages:
+  - alt:
+      - when: ok
+        do:
+          - { from: u, to: s, label: call, status: a }
+`,
+      { out: seqOut, browser: browser! },
+    );
+    const seqModel = readDrawio(fs.readFileSync(seqOut, 'utf8'));
+    expect(seqModel.byId.get('legend_0_label')?.label).toBe('Alpha Status');
+    expect(seqModel.byId.get('legend_0_swatch')?.styleRaw).not.toContain('shadow=1');
+    const seqYaml = show(seqOut).yaml;
+    expect(seqYaml).not.toContain('legend');
+
+    const tlOut = path.join(tmp, 'leg/tl.drawio.svg');
+    await build(
+      `type: timeline
+nodes:
+  t1: { label: Kickoff, start: 2026-01-05, end: 2026-01-20, status: b }
+`,
+      { out: tlOut, browser: browser! },
+    );
+    const tlModel = readDrawio(fs.readFileSync(tlOut, 'utf8'));
+    expect(tlModel.byId.get('legend_0_label')?.label).toBe('Beta Status');
+    expect(tlModel.byId.get('legend_0_swatch')?.styleRaw).not.toContain('shadow=1');
+    expect(show(tlOut).yaml).not.toContain('legend');
+
+    const wrapOut = path.join(tmp, 'leg/wrap.drawio.svg');
+    await build(
+      `type: flow
+direction: TB
+nodes:
+  n1: { label: One, status: a }
+  n2: { label: Two, status: b }
+  n3: { label: Three, status: c }
+  n4: { label: Four, status: d }
+  n5: { label: Five, status: e }
+edges:
+  - n1 -> n2
+  - n2 -> n3
+  - n3 -> n4
+  - n4 -> n5
+`,
+      { out: wrapOut, browser: browser! },
+    );
+    const wrapModel = readDrawio(fs.readFileSync(wrapOut, 'utf8'));
+    const ys = new Set([0, 1, 2, 3, 4].map((i) => wrapModel.byId.get(`legend_${i}_label`)?.geom?.y));
+    expect(ys.size).toBeGreaterThan(1);
+  }, 90000);
 });

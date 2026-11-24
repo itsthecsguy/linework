@@ -186,12 +186,17 @@ export async function serve(): Promise<void> {
     if (alive) return;
     fs.rmSync(sock, { force: true });
   }
-  const { DrawioBrowser } = await import('./render/browser.js');
-  const { run, warmUp, report, OPTIONS } = await import('./commands.js');
-  const { NO_CONFIG, useConfig } = await import('./config.js');
-  const { parseArgs } = await import('node:util');
-  const browser = await DrawioBrowser.launch({ scale: 2 });
-  await warmUp();
+  const [{ DrawioBrowser }, { run, warmUp, report, OPTIONS }, { NO_CONFIG, useConfig }, { parseArgs }] = await Promise.all([
+    import('./render/browser.js'),
+    import('./commands.js'),
+    import('./config.js'),
+    import('node:util'),
+  ]);
+  const launch = DrawioBrowser.launch({ scale: 2 });
+  const [browser] = await Promise.all([launch, warmUp()]).catch(async (e) => {
+    await (await launch.catch(() => undefined))?.close().catch(() => {});
+    throw e;
+  });
 
   let idle: NodeJS.Timeout;
   let inFlight = 0;

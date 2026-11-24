@@ -64,19 +64,34 @@ export function fontsFor(theme: ThemeArg): Fonts {
   };
 }
 
+function nodeTextReqs(d: Diagram, fonts: Fonts): Array<[string | undefined, FontSpec]> {
+  return d.nodes.flatMap((n): Array<[string | undefined, FontSpec]> => [
+    [stereotype(d.type, n.kind) ? `«${stereotype(d.type, n.kind)}» ${n.label}` : n.label, fonts.label],
+    [n.label, fonts.label],
+    [n.tech, fonts.sub],
+    ...(n.fields ?? []).flatMap((fl): Array<[string | undefined, FontSpec]> => [
+      [fl.name, fl.flags.includes('pk') ? fonts.fieldKey : fonts.field],
+      [fieldRight(fl), fonts.field],
+    ]),
+  ]);
+}
+
+/** Measure each node's natural and uniform size without running ELK layout. */
+export async function measureNodeSizes(
+  d: Diagram,
+  measure: Measure = estimateMeasure,
+): Promise<{ sizes: Map<string, { w: number; h: number }>; natural: Map<string, { w: number; h: number }> }> {
+  const fonts = fontsFor(d.theme);
+  const tm = new TextMeasurer(measure);
+  await tm.prepare(nodeTextReqs(d, fonts));
+  return nodeSizes(d, tm, fonts);
+}
+
 export async function layout(d: Diagram, measure: Measure = estimateMeasure): Promise<Layout> {
   const fonts = fontsFor(d.theme);
   const tm = new TextMeasurer(measure);
   await tm.prepare([
-    ...d.nodes.flatMap((n): Array<[string | undefined, FontSpec]> => [
-      [stereotype(d.type, n.kind) ? `«${stereotype(d.type, n.kind)}» ${n.label}` : n.label, fonts.label],
-      [n.label, fonts.label],
-      [n.tech, fonts.sub],
-      ...(n.fields ?? []).flatMap((fl): Array<[string | undefined, FontSpec]> => [
-        [fl.name, fl.flags.includes('pk') ? fonts.fieldKey : fonts.field],
-        [fieldRight(fl), fonts.field],
-      ]),
-    ]),
+    ...nodeTextReqs(d, fonts),
     ...d.edges.map((e): [string | undefined, FontSpec] => [e.label, fonts.edge]),
     ...d.groups.map((g): [string | undefined, FontSpec] => [groupText(g.label, d.theme), fonts.group]),
   ]);

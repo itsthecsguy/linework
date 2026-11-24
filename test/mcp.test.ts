@@ -120,7 +120,18 @@ describe.runIf(run)('mcp server', () => {
     const imp = await call('import_mermaid', { source: 'flowchart LR\n  A[Web] --> B[(Orders DB)]', path: 'flow.drawio.svg' });
     expect(imp.text).toContain('kind: database');
     expect(imp.images).toHaveLength(1);
+    // Warnings in import_mermaid stay out of content[0] so content[0].text is pure pasteable YAML.
+    const impWarn = await call('import_mermaid', { source: 'flowchart LR\n  subgraph G\n    a[A]\n  end\n  b[B] --> G' });
+    expect(impWarn.content.length).toBeGreaterThanOrEqual(2);
+    expect(impWarn.content[0]!.text).toContain('type: architecture');
+    expect(impWarn.content[0]!.text).not.toContain('import:');
+    expect(impWarn.content[1]!.text).toContain('import:');
+
     expect((await call('list_icons', { provider: 'aws', filter: 'lambda' })).text).toContain('aws.lambda');
+    const allAws = await call('list_icons', { provider: 'aws' });
+    expect(allAws.text).toContain('showing 100 of');
+    const noMatch = await call('list_icons', { provider: 'aws', filter: 'definitely_nonexistent_xyz' });
+    expect(noMatch.text).toContain('no matches for');
   }, 120000);
 
   it('publishes to a synced folder and keeps publish_diagram inside --root', async () => {
@@ -138,11 +149,18 @@ describe.runIf(run)('mcp server', () => {
     expect(noCfg.isError).toBeFalsy();
     expect(noCfg.text).toContain('no linework.yaml');
 
-    fs.mkdirSync(path.join(tmp, 'team-cfg'), { recursive: true });
-    fs.writeFileSync(path.join(tmp, 'team-cfg/linework.yaml'), 'theme: soft\nlockTheme: true\n');
+    fs.mkdirSync(path.join(tmp, 'team-cfg/tpls'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'team-cfg/tpls/starter.yaml'), 'type: flow\nnodes: { a: A }\n');
+    fs.writeFileSync(
+      path.join(tmp, 'team-cfg/linework.yaml'),
+      'theme: soft\nlockTheme: true\nhandStyles: reset\ntemplates: ./tpls\nthemes:\n  brand:\n    extends: clean\n',
+    );
     const hasCfg = await call('get_config', { path: 'team-cfg' });
     expect(hasCfg.isError).toBeFalsy();
     expect(hasCfg.text).toContain('theme: soft (locked');
+    expect(hasCfg.text).toContain('custom themes: brand (extends clean)');
+    expect(hasCfg.text).toContain('hand styles: reset');
+    expect(hasCfg.text).toContain('(starter)');
 
     // A config trying to extend outside --root is rejected
     fs.mkdirSync(path.join(tmp, 'bad-cfg'), { recursive: true });
@@ -158,6 +176,19 @@ describe.runIf(run)('mcp server', () => {
     const tidied = await call('tidy_diagram', { path: 'docs/checkout.drawio.svg' });
     expect(tidied.isError).toBeFalsy();
     expect(tidied.text).toContain('nothing to fix');
+    expect(tidied.images).toHaveLength(0);
+    const tidiedPreview = await call('tidy_diagram', { path: 'docs/checkout.drawio.svg', preview: true });
+    expect(tidiedPreview.isError).toBeFalsy();
+    expect(tidiedPreview.images).toHaveLength(1);
+
+    // show_diagram supports geometry: true and keeps notes out of content[0]
+    const withGeo = await call('show_diagram', { path: 'docs/checkout.drawio.svg', geometry: true });
+    expect(withGeo.content[0]!.text).toContain('# geometry');
+    fs.copyFileSync('test/fixtures/hand-edited.drawio.svg', path.join(tmp, 'docs/hand.drawio.svg'));
+    const handShown = await call('show_diagram', { path: 'docs/hand.drawio.svg' });
+    expect(handShown.content[0]!.text).not.toContain('\nnote:');
+    expect(handShown.content.length).toBeGreaterThanOrEqual(2);
+    expect(handShown.content[1]!.text).toContain('note:');
   }, 60000);
 
   it('opens the local editor without launching a browser', async () => {

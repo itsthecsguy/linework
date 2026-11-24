@@ -389,7 +389,7 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 | `linework config [init]` | print the team settings that apply here, or write a starter `linework.yaml` |
 | `linework lint [dir...] [--strict]` | check every diagram against layout rules and the team config |
 | `linework restyle <dir...>` | bring existing diagrams to the team theme; boxes stay put |
-| `linework new [template]` | print a team template or a built-in example spec |
+| `linework new [template\|type] [-o spec.yaml]` | print or write a team template, starter type, or built-in example spec |
 | `linework show <file> [--geometry]` | print the spec of a diagram, including hand edits |
 | `linework edit <file> [--no-open]` | edit in the bundled draw.io, in your browser; saves write the file |
 | `linework check <file> [--strict]` | lint: overlaps, edges through nodes, labels that don't fit, too wide. Exits 1 on errors; with `--strict`, on warnings too |
@@ -415,7 +415,7 @@ Docs can't hold an SVG, so the diagram lives in Google Drive and draw.io's Googl
 
 ### In scripts and CI
 
-Add `--json` to `build`, `set`, `add`, `rm`, `check`, `lint`, `config`, `restyle`, `tidy`, `show`, `render`, `import`, `sync`, `icons`, `kinds` or `doctor`, and stdout carries one JSON document instead of text:
+Add `--json` to `build`, `set`, `add`, `rm`, `check`, `lint`, `config`, `restyle`, `new`, `tidy`, `show`, `render`, `import`, `sync`, `icons`, `kinds` or `doctor`, and stdout carries one JSON document instead of text:
 
 ```bash
 linework build spec.yaml -o docs/arch.drawio.svg --json

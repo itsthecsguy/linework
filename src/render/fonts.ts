@@ -38,12 +38,29 @@ export function fontFaceCss(url: (file: string) => string): string {
 const faces = (): Face[] => [...FACES, ...activeConfig().fonts];
 
 const cache = new Map<string, Buffer>();
-const read = (f: Face) => {
-  const file = path.isAbsolute(f.file) ? f.file : path.join(fontsDir(), f.file);
-  const key = path.isAbsolute(f.file) ? `${file}:${fs.statSync(file).mtimeMs}` : file;
-  let b = cache.get(key);
-  if (!b) cache.set(key, (b = fs.readFileSync(file)));
+
+/** Read a bundled font file from memory (cached on first read). */
+export async function readBundledFont(file: string): Promise<Buffer> {
+  const p = path.join(fontsDir(), file);
+  let b = cache.get(p);
+  if (!b) {
+    b = await fs.promises.readFile(p);
+    cache.set(p, b);
+  }
   return b;
+}
+
+const loadFace = (f: Face): { font: Buffer; hash: string } => {
+  const isAbs = path.isAbsolute(f.file);
+  const file = isAbs ? f.file : path.join(fontsDir(), f.file);
+  const mtime = isAbs ? fs.statSync(file).mtimeMs : undefined;
+  const cacheKey = isAbs ? `${file}:${mtime}` : file;
+  let font = cache.get(cacheKey);
+  if (!font) cache.set(cacheKey, (font = fs.readFileSync(file)));
+  const fk = isAbs ? `${f.file}:${font.length}:${mtime}` : f.file;
+  let hash = fileHash.get(fk);
+  if (!hash) fileHash.set(fk, (hash = crypto.createHash('sha256').update(font).digest('hex')));
+  return { font, hash };
 };
 
 const ENT: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
@@ -54,10 +71,23 @@ const decode = (s: string) =>
 
 const STYLE_RE = /<style id="aiviz-fonts"[^>]*>[\s\S]*?<\/style>/g;
 
+/** Strip the embedded draw.io `content="..."` attribute from `<svg ...>` so regex scans skip it. */
+function stripSvgContent(svg: string): string {
+  const start = svg.indexOf('<svg');
+  if (start < 0) return svg;
+  const end = svg.indexOf('>', start);
+  if (end < 0) return svg;
+  const head = svg.slice(start, end);
+  const m = /\scontent="[^"]*"/.exec(head);
+  if (!m) return svg;
+  return svg.slice(0, start + m.index) + svg.slice(start + m.index + m[0].length);
+}
+
 /** Families from FACES that the SVG asks for. */
 export function familiesIn(svg: string): string[] {
+  const body = stripSvgContent(svg);
   const used = new Set<string>();
-  for (const m of svg.matchAll(/font-family(?:\s*:\s*|=")(?:&quot;|["'])?([^,;"'&<]+)/g)) used.add(m[1]!.trim());
+  for (const m of body.matchAll(/font-family(?:\s*:\s*|=")(?:&quot;|["'])?([^,;"'&<]+)/g)) used.add(m[1]!.trim());
   return [...new Set(faces().map((f) => f.family))].filter((f) => used.has(f));
 }
 
@@ -67,17 +97,18 @@ export function familiesIn(svg: string): string[] {
  */
 export async function embedFonts(svg: string): Promise<string> {
   svg = svg.replace(STYLE_RE, '');
-  const families = familiesIn(svg);
+  const body = stripSvgContent(svg);
+  const families = familiesIn(body);
   if (!families.length) return svg;
   let text = '';
-  for (const m of svg.matchAll(/>([^<>]+)</g)) text += decode(m[1]!);
+  for (const m of body.matchAll(/>([^<>]+)</g)) text += decode(m[1]!);
   // Blueprint's group titles use CSS text-transform, so they need the capitals too.
-  text = [...new Set(text + text.toUpperCase() + ' ')].join('');
-  const rules: string[] = [];
-  for (const f of faces().filter((x) => families.includes(x.family))) {
-    const sub = await subset(f, text);
-    rules.push(`@font-face{font-family:"${f.family}";font-weight:${f.weight};font-style:normal;src:url(data:font/woff2;base64,${sub.toString('base64')}) format("woff2");}`);
-  }
+  const chars = [...new Set(text + text.toUpperCase() + ' ')].sort().join('');
+  const targetFaces = faces().filter((x) => families.includes(x.family));
+  const b64s = await Promise.all(targetFaces.map((f) => subset(f, chars)));
+  const rules = targetFaces.map(
+    (f, i) => `@font-face{font-family:"${f.family}";font-weight:${f.weight};font-style:normal;src:url(data:font/woff2;base64,${b64s[i]!}) format("woff2");}`,
+  );
   const style = `<style id="aiviz-fonts" type="text/css">${rules.join('')}</style>`;
   if (/<defs\s*\/>/.test(svg)) return svg.replace(/<defs\s*\/>/, `<defs>${style}</defs>`);
   if (/<defs[^>]*>/.test(svg)) return svg.replace(/<defs[^>]*>/, (m) => m + style);
@@ -92,8 +123,10 @@ export async function embedFonts(svg: string): Promise<string> {
 // that pair is the key. Kept in memory and in the user's own cache folder, never
 // a shared temp dir: whatever is there ends up inside the SVGs.
 
-const memo = new Map<string, Buffer>();
+const memo = new Map<string, string>();
 const fileHash = new Map<string, string>();
+const madeDirs = new Set<string>();
+let tmpSeq = 0;
 
 /** Drop the in-memory copies, so the next lookup reads the disk cache. For tests. */
 export function forgetSubsets(): void {
@@ -109,12 +142,8 @@ function cacheDir(): string | undefined {
   return path.join(base, 'linework', 'fonts');
 }
 
-async function subset(f: Face, text: string): Promise<Buffer> {
-  const font = read(f);
-  const fk = path.isAbsolute(f.file) ? `${f.file}:${font.length}:${fs.statSync(f.file).mtimeMs}` : f.file;
-  let fh = fileHash.get(fk);
-  if (!fh) fileHash.set(fk, (fh = crypto.createHash('sha256').update(font).digest('hex')));
-  const chars = [...new Set(text)].sort().join('');
+async function subset(f: Face, chars: string): Promise<string> {
+  const { font, hash: fh } = loadFace(f);
   const key = crypto.createHash('sha256').update(`${fh}\0${chars}`).digest('hex').slice(0, 32);
   const hit = memo.get(key);
   if (hit) return hit;
@@ -129,19 +158,30 @@ async function subset(f: Face, text: string): Promise<Buffer> {
     // not cached yet
   }
   if (!out) {
-    out = await subsetFont(font, text, { targetFormat: 'woff2' });
+    out = await subsetFont(font, chars, { targetFormat: 'woff2' });
     if (file) {
       try {
-        fs.mkdirSync(dir!, { recursive: true });
-        const tmp = `${file}.${process.pid}.tmp`;
-        fs.writeFileSync(tmp, out);
+        if (!madeDirs.has(dir!)) {
+          fs.mkdirSync(dir!, { recursive: true });
+          madeDirs.add(dir!);
+        }
+        const tmp = `${file}.${process.pid}.${++tmpSeq}.tmp`;
+        try {
+          fs.writeFileSync(tmp, out);
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+            fs.mkdirSync(dir!, { recursive: true });
+            fs.writeFileSync(tmp, out);
+          } else throw e;
+        }
         fs.renameSync(tmp, file);
       } catch {
         // A read-only or full disk only costs the cache.
       }
     }
   }
+  const b64 = out.toString('base64');
   if (memo.size >= 64) memo.delete(memo.keys().next().value!);
-  memo.set(key, out);
-  return out;
+  memo.set(key, b64);
+  return b64;
 }

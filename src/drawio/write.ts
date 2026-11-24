@@ -72,7 +72,11 @@ export function diagramMeta(d: Diagram, extra: Record<string, string> = {}): Rec
 export function nodeAttrs(d: Diagram, n: Diagram['nodes'][number]): Record<string, string> {
   const shape = kindDef(d.type, n.kind).shape;
   const label =
-    shape === 'start' || shape === 'end' ? '' : shape === 'table' ? tableLabel(n.label, stereotype(d.type, n.kind), d) : nodeLabel(n.label, n.tech, { theme: d, type: d.type, kind: n.kind, color: n.color, highlight: n.highlight });
+    shape === 'start' || shape === 'end'
+      ? ''
+      : shape === 'table'
+        ? tableLabel(n.label, stereotype(d.type, n.kind), d, { type: d.type, kind: n.kind, color: n.color, highlight: n.highlight })
+        : nodeLabel(n.label, n.tech, { theme: d, type: d.type, kind: n.kind, color: n.color, highlight: n.highlight });
   return {
     label,
     aiviz_kind: n.kind,

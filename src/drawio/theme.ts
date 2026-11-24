@@ -852,10 +852,15 @@ export function relFromArrows(s: Record<string, string>): ClassRel | undefined {
 }
 
 /** A table's heading: its name, after «interface» or the like when the kind has one. */
-export function tableLabel(label: string, mark: string | undefined, theme: ThemeArg = 'clean'): string {
+export function tableLabel(label: string, mark: string | undefined, theme: ThemeArg = 'clean', opts: Omit<LabelOpts, 'theme'> = {}): string {
   if (!mark) return esc(label);
   const t = palette(theme);
-  return `<span style="font-weight:400;font-size:${t.type.size.sub}px;color:${t.muted}">«${mark}»</span> ${esc(label)}`;
+  const type = opts.type ?? 'class';
+  const kind = opts.kind ?? '';
+  const k = kindDef(type, kind);
+  const neutral = !opts.highlight && !opts.color && !(t.kindColors && k.color !== 'neutral');
+  const color = neutral ? t.muted : paintFor(type, kind, theme, opts).sub;
+  return `<span style="font-weight:400;font-size:${t.type.size.sub}px;color:${color}">«${mark}»</span> ${esc(label)}`;
 }
 
 export function cardFromArrow(arrow: string | undefined): Card | undefined {

@@ -18,6 +18,7 @@ import { PatchError, patchSpec } from '../src/patch.js';
 import { publish } from '../src/publish.js';
 import { DrawioBrowser } from '../src/render/browser.js';
 import { SpecError, parseSpecText } from '../src/spec/parse.js';
+import { watchFile } from '../src/watch.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linework-reg-'));
 const at = (name: string) => path.join(tmp, name);
@@ -38,7 +39,7 @@ describe('spec errors', () => {
 
   it('checks the object form of an edge as strictly as the rest', () => {
     expect(issues(flow('  - { from: a, to: b, style: dashed }\n'))).toEqual(['edges[0].style: style must be one of: sync, async, bidir, line']);
-    expect(issues(flow('  - { from: a, to: b, lable: hi }\n'))).toEqual(['edges[0]: unknown key(s) "lable". Allowed here: from, to, label, style, rel, color, status, highlight.']);
+    expect(issues(flow('  - { from: a, to: b, lable: hi }\n'))).toEqual(['edges[0]: unknown key(s) "lable". Allowed here: from, to, label, style, rel, color, status, highlight. Did you mean "label"?']);
     expect(issues(flow('  - { from: a }\n'))).toEqual(['edges[0].to: to is required']);
     expect(parseSpecText(flow('  - { from: a, to: b, label: ok, style: async }\n')).diagram.edges[0]).toMatchObject({ from: 'a', to: 'b', label: 'ok', style: 'async' });
   });
@@ -85,7 +86,7 @@ describe('sequence messages in the long form', () => {
   });
 
   it('says what is wrong with one', () => {
-    expect(issues(seq('  - { from: a, to: c, colour: red }\n'))).toEqual(['messages[0]: unknown key(s) "colour". Allowed here: from, to, label, style, color, status, highlight.']);
+    expect(issues(seq('  - { from: a, to: c, colour: red }\n'))).toEqual(['messages[0]: unknown key(s) "colour". Allowed here: from, to, label, style, color, status, highlight. Did you mean "color"?']);
     expect(issues(seq('  - { from: a, to: b, style: dotted }\n'))).toEqual(['messages[0].style: style must be one of: sync, reply, async']);
     expect(issues(seq('  - { from: a, to: zz }\n'))[0]).toMatch(/participant "zz" doesn't exist/);
   });
@@ -245,6 +246,47 @@ describe('the editor server', () => {
       if (process.platform === 'linux') expect(await openInBrowser('http://127.0.0.1:9/')).toBe(false);
     } finally {
       process.env.PATH = PATH;
+    }
+  });
+
+  it('returns false immediately on headless Linux with no display env', async () => {
+    if (process.platform !== 'linux') return;
+    const prev = { DISPLAY: process.env.DISPLAY, WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY, WSL_DISTRO_NAME: process.env.WSL_DISTRO_NAME };
+    delete process.env.DISPLAY;
+    delete process.env.WAYLAND_DISPLAY;
+    delete process.env.WSL_DISTRO_NAME;
+    try {
+      expect(await openInBrowser('http://127.0.0.1:9/')).toBe(false);
+    } finally {
+      for (const [k, v] of Object.entries(prev)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+});
+
+describe('watchFile', () => {
+  it('rebuilds when an extra file changes and retries mid-write empty saves', async () => {
+    const dir = at('watch-extra');
+    fs.mkdirSync(dir, { recursive: true });
+    const spec = path.join(dir, 'a.yaml');
+    const cfg = path.join(dir, 'linework.yaml');
+    fs.writeFileSync(spec, 'type: flow\nnodes: { a: A }\n');
+    fs.writeFileSync(cfg, 'theme: clean\n');
+    let calls = 0;
+    const w = watchFile(spec, async () => { calls++; }, { settle: 40, extra: [cfg] });
+    try {
+      await new Promise((r) => setTimeout(r, 60));
+      fs.writeFileSync(cfg, 'theme: dark\n');
+      await expect.poll(() => calls, { timeout: 3000 }).toBe(1);
+      // Simulate truncate-then-write where the file is momentarily 0 bytes.
+      fs.writeFileSync(spec, '');
+      setTimeout(() => fs.writeFileSync(spec, 'type: flow\nnodes: { a: B }\n'), 80);
+      await expect.poll(() => calls, { timeout: 3000 }).toBe(2);
+    } finally {
+      w.stop();
+      await w.done;
     }
   });
 });

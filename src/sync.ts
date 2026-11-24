@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { build, specStamp, type BuildResult } from './api.js';
 import { useConfigFor } from './config.js';
-import { readDrawio } from './drawio/read.js';
+import { readSpecStamp } from './drawio/read.js';
 import type { DrawioBrowser } from './render/browser.js';
 import { DIAGRAM_TYPES } from './spec/model.js';
 
@@ -58,28 +58,54 @@ export function findSpecs(roots: string[]): Array<{ spec: string; out: string }>
   return out;
 }
 
-export async function sync(roots: string[], opts: { check?: boolean; browser?: DrawioBrowser } = {}): Promise<SyncItem[]> {
-  const items: SyncItem[] = [];
-  for (const { spec, out } of findSpecs(roots)) {
-    const item: SyncItem = { spec, out, state: 'fresh' };
-    items.push(item);
-    try {
-      useConfigFor(out);
-      const text = fs.readFileSync(spec, 'utf8');
-      const want = specStamp(text);
-      const has = fs.existsSync(out) ? readDrawio(fs.readFileSync(out, 'utf8')).meta.aiviz_spec : undefined;
-      item.missing = !fs.existsSync(out);
-      if (has === want) continue;
-      if (opts.check) {
-        item.state = 'stale';
-        continue;
-      }
-      item.result = await build(text, { out, browser: opts.browser });
-      item.state = 'built';
-    } catch (e) {
-      item.state = 'failed';
-      item.error = (e as Error).message;
+export async function sync(
+  roots: string[],
+  opts: { check?: boolean; browser?: DrawioBrowser | (() => Promise<DrawioBrowser>) } = {},
+): Promise<SyncItem[]> {
+  let browser: DrawioBrowser | undefined = typeof opts.browser === 'function' ? undefined : opts.browser;
+  let ownedBrowser: DrawioBrowser | undefined;
+  const getBrowser = async (): Promise<DrawioBrowser> => {
+    if (browser) return browser;
+    if (typeof opts.browser === 'function') {
+      browser = await opts.browser();
+      return browser;
     }
+    const { DrawioBrowser: Ctor } = await import('./render/browser.js');
+    ownedBrowser = await Ctor.launch();
+    browser = ownedBrowser;
+    return browser;
+  };
+  const items: SyncItem[] = [];
+  try {
+    for (const { spec, out } of findSpecs(roots)) {
+      const item: SyncItem = { spec, out, state: 'fresh' };
+      items.push(item);
+      try {
+        useConfigFor(out);
+        const text = fs.readFileSync(spec, 'utf8');
+        const want = specStamp(text);
+        let existing: string | undefined;
+        try {
+          existing = fs.readFileSync(out, 'utf8');
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+        }
+        item.missing = existing === undefined;
+        const has = existing !== undefined ? readSpecStamp(existing) : undefined;
+        if (has === want) continue;
+        if (opts.check) {
+          item.state = 'stale';
+          continue;
+        }
+        item.result = await build(text, { out, base: existing, browser: await getBrowser() });
+        item.state = 'built';
+      } catch (e) {
+        item.state = 'failed';
+        item.error = (e as Error).message;
+      }
+    }
+  } finally {
+    if (ownedBrowser) await ownedBrowser.close();
   }
   return items;
 }

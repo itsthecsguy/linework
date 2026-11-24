@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parseSpecText, type Issue } from './spec/parse.js';
-import { layout, type Layout } from './layout/layout.js';
-import type { Diagram } from './spec/model.js';
+import { layout, measureNodeSizes, type Layout } from './layout/layout.js';
+import type { Diagram, SeqItem } from './spec/model.js';
 import { edgeCellId, patchEdges, serialize, stampEdgeRoutes, toMxfile } from './drawio/write.js';
 import { absBox, fingerprint, readDrawio, specBase, type DrawioModel } from './drawio/read.js';
 import { manualEdits, toDiagram, toYaml, type ManualEdit } from './drawio/show.js';
@@ -70,7 +70,36 @@ export function specStamp(specText: string): string {
   return createHash('sha1').update(toYaml(parseSpecText(specText).diagram)).digest('hex').slice(0, 12);
 }
 
+interface InternalBuildOpts {
+  /** Skip rendering SVG/PNG and writing `opts.out` (for intermediate passes in importExcalidraw). */
+  skipOutput?: boolean;
+  /** Skip resolving `direction` via ELK when merging an auto-direction diagram whose caller ignores `res.direction`. */
+  skipDirection?: boolean;
+}
+
+interface InternalBuildResult {
+  result: BuildResult;
+  xml: string;
+  cells?: InspectCell[];
+}
+
 export async function build(specText: string, opts: BuildOptions): Promise<BuildResult> {
+  return (await buildInternal(specText, opts)).result;
+}
+
+function hasNewNodes(old: DrawioModel, d: Diagram): boolean {
+  const shown = toDiagram(old);
+  const cellOf = new Map<string, string>();
+  for (const [cellId, specId] of shown.idMap) cellOf.set(specId, cellId);
+  const oldNodes = new Set(shown.diagram.nodes.map((n) => n.id));
+  for (const n of d.nodes) {
+    const cid = cellOf.get(n.id);
+    if (!cid || !oldNodes.has(n.id) || !absBox(old, cid)) return true;
+  }
+  return false;
+}
+
+async function buildInternal(specText: string, opts: BuildOptions, internal?: InternalBuildOpts): Promise<InternalBuildResult> {
   // The repo's linework.yaml, if it has one, decides defaults, names and rules.
   const cfg = useConfigFor(opts.out);
   const { diagram, warnings } = parseSpecText(specText);
@@ -95,12 +124,16 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
   return withBrowser(opts.browser, async (b) => {
     await b.useFonts(cfg.fonts);
     const measure = (r: Array<[string, number, number, string?]>) => b.measure(r);
-    for (const n of diagram.nodes) {
-      if (!n.icon) continue;
-      const r = resolveIcon(n.icon);
-      if ('error' in r || !(await b.hasStencil(r.stencil))) {
-        warnings.push({ path: `nodes.${n.id}.icon`, message: `no icon named "${n.icon}"; run "linework icons ${n.icon.split('.')[0]} ${n.icon.split('.')[1] ?? ''}" to search. Drawing it without one.` });
-        delete n.icon;
+    const iconEntries = diagram.nodes.filter((n) => !!n.icon).map((n) => ({ n, r: resolveIcon(n.icon!) }));
+    if (iconEntries.length) {
+      const stencils = iconEntries.flatMap(({ r }) => ('error' in r ? [] : [r.stencil]));
+      const hasList = stencils.length ? await b.hasStencils(stencils) : [];
+      const hasMap = new Map(stencils.map((s, i) => [s, hasList[i]!]));
+      for (const { n, r } of iconEntries) {
+        if ('error' in r || !hasMap.get(r.stencil)) {
+          warnings.push({ path: `nodes.${n.id}.icon`, message: `no icon named "${n.icon}"; run "linework icons ${n.icon!.split('.')[0]} ${n.icon!.split('.')[1] ?? ''}" to search. Drawing it without one.` });
+          delete n.icon;
+        }
       }
     }
     if (diagram.type === 'sequence') {
@@ -135,9 +168,29 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
     }
     if (diagram.type === 'timeline') {
       const { timelineScene } = await import('./layout/timeline.js');
-      return finish(b, serialize(await timelineScene(diagram, measure)), { mode: 'fresh', warnings, direction: 'LR', edits, old });
+      const xml = await withLegend(b, serialize(await timelineScene(diagram, measure)), diagram, cfg);
+      return finish(b, xml, { mode: 'fresh', warnings, direction: 'LR', edits, old });
     }
-    const l = await layout(diagram, measure);
+    let fullLayout: Layout | undefined;
+    const getLayout = async (): Promise<Layout> => (fullLayout ??= await layout(diagram, measure));
+    let l: Layout;
+    if (mode === 'merge' && !hasNewNodes(old!, diagram)) {
+      const { natural } = await measureNodeSizes(diagram, measure);
+      const keptDir = old!.meta.aiviz_direction;
+      const stubDir: Layout['direction'] =
+        keptDir && keptDir !== 'auto'
+          ? (keptDir as Layout['direction'])
+          : diagram.type === 'er'
+            ? 'LR'
+            : diagram.type === 'class'
+              ? 'TB'
+              : diagram.direction !== 'auto'
+                ? diagram.direction
+                : 'TB';
+      l = { direction: stubDir, width: 0, height: 0, nodes: new Map(), groups: new Map(), edges: new Map(), natural };
+    } else {
+      l = await getLayout();
+    }
     let xml: string;
     let stats: MergeStats | undefined;
     let freshXml: string | undefined;
@@ -160,7 +213,8 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
         const bad = (c: CheckResult) => c.findings.filter((f) => f.level === 'error').length;
         let redo = bad(merged) > 0;
         if (!redo && (stats.placed.length || merged.stats.crossings)) {
-          freshXml = await straightenDetours(b, toMxfile(diagram, l), detourEdges(diagram, l));
+          const fl = await getLayout();
+          freshXml = await straightenDetours(b, toMxfile(diagram, fl), detourEdges(diagram, fl));
           redo = merged.stats.crossings > check(await b.inspect(freshXml)).stats.crossings + 1;
         }
         if (redo) {
@@ -169,48 +223,94 @@ export async function build(specText: string, opts: BuildOptions): Promise<Build
         }
       }
     }
-    if (mode === 'fresh') xml = freshXml ?? (await straightenDetours(b, toMxfile(diagram, l), detourEdges(diagram, l)));
-    else xml = xml!;
+    if (mode === 'fresh') {
+      const fl = await getLayout();
+      xml = freshXml ?? (await straightenDetours(b, toMxfile(diagram, fl), detourEdges(diagram, fl)));
+    } else xml = xml!;
     const fixed = await fixLabels(b, xml);
     xml = fixed.xml;
-    xml = await withLegend(b, stampEdgeRoutes(xml), diagram, cfg);
+    xml = await withLegend(b, stampEdgeRoutes(xml), diagram, cfg, fixed.cells);
+    let direction: string;
+    if (mode === 'merge') {
+      const kept = old!.meta.aiviz_direction;
+      if (kept && kept !== 'auto') direction = kept;
+      else if (diagram.type === 'er') direction = 'LR';
+      else if (diagram.type === 'class') direction = 'TB';
+      else if (diagram.direction !== 'auto') direction = diagram.direction;
+      else direction = internal?.skipDirection ? 'auto' : (await getLayout()).direction;
+    } else {
+      direction = (await getLayout()).direction;
+    }
     // Stamping routes and adding a legend below the diagram changes attributes, not geometry: the cells fixLabels read still hold.
-    return finish(b, xml, { mode, warnings, direction: mode === 'merge' ? keptDirection(old!, l.direction) : l.direction, edits, old, stats, cells: fixed.cells, labelsMoved: fixed.moved });
+    return finish(b, xml, { mode, warnings, direction, edits, old, stats, cells: fixed.cells, labelsMoved: fixed.moved });
   });
 
   async function finish(
     b: DrawioBrowser,
     xml: string,
     r: { mode: 'fresh' | 'merge'; warnings: Issue[]; direction: string; edits: ManualEdit[]; old?: DrawioModel; stats?: MergeStats; cells?: InspectCell[]; labelsMoved?: number },
-  ): Promise<BuildResult> {
+  ): Promise<InternalBuildResult> {
     xml = stamped(xml, stamp);
+    if (internal?.skipOutput) {
+      return {
+        xml,
+        cells: r.cells,
+        result: {
+          out: opts.out,
+          warnings: r.warnings,
+          check: { findings: [], stats: { nodes: 0, edges: 0, crossings: 0, width: 0, height: 0 } },
+          direction: r.direction,
+          mode: r.mode,
+          merge: r.stats,
+          labelsMoved: r.labelsMoved ?? 0,
+          discardedLayout: !!(opts.relayout && r.old && (r.old.meta.aiviz_layout === 'manual' || r.edits.length > 0)),
+        },
+      };
+    }
     fs.mkdirSync(path.dirname(path.resolve(opts.out)), { recursive: true });
-    // Render once into #out when both SVG and PNG are requested, avoiding concurrent DOM writes.
-    const [file, cells] =
-      kind === 'svg' && opts.png
-        ? await Promise.all([b.renderSvgAndPng(xml, opts.png).then((x) => x.svg), r.cells ?? b.inspect(xml)])
-        : await Promise.all([
-            kind === 'svg' ? b.renderSvg(xml) : opts.png ? b.renderPng(xml, opts.png).then(() => xml) : Promise.resolve(xml),
-            r.cells ?? b.inspect(xml),
-          ]);
+    let file: string;
+    let cells: InspectCell[];
+    if (r.cells) {
+      cells = r.cells;
+      // Render once into #out when both SVG and PNG are requested, avoiding concurrent DOM writes.
+      if (kind === 'svg' && opts.png) file = (await b.renderSvgAndPng(xml, opts.png)).svg;
+      else if (kind === 'svg') file = await b.renderSvg(xml);
+      else if (opts.png) {
+        await b.renderPng(xml, opts.png);
+        file = xml;
+      } else file = xml;
+    } else if (kind === 'svg' && opts.png) {
+      const rendered = await b.renderSvgPngAndInspect(xml, opts.png);
+      file = rendered.svg;
+      cells = rendered.cells;
+    } else if (kind === 'svg') {
+      const rendered = await b.renderSvgAndInspect(xml);
+      file = rendered.svg;
+      cells = rendered.cells;
+    } else if (opts.png) {
+      const rendered = await b.renderPngAndInspect(xml, opts.png);
+      file = xml;
+      cells = rendered.cells;
+    } else {
+      file = xml;
+      cells = await b.inspect(xml);
+    }
     fs.writeFileSync(opts.out, file);
     return {
-      out: opts.out,
-      warnings: r.warnings,
-      check: withConventions(check(cells), xml, cfg),
-      direction: r.direction,
-      mode: r.mode,
-      merge: r.stats,
-      labelsMoved: r.labelsMoved ?? 0,
-      discardedLayout: !!(opts.relayout && r.old && (r.old.meta.aiviz_layout === 'manual' || r.edits.length > 0)),
+      xml,
+      cells,
+      result: {
+        out: opts.out,
+        warnings: r.warnings,
+        check: withConventions(check(cells), xml, cfg),
+        direction: r.direction,
+        mode: r.mode,
+        merge: r.stats,
+        labelsMoved: r.labelsMoved ?? 0,
+        discardedLayout: !!(opts.relayout && r.old && (r.old.meta.aiviz_layout === 'manual' || r.edits.length > 0)),
+      },
     };
   }
-}
-
-/** The direction a merged diagram runs in. The file records what the spec asked for, and "auto" isn't a direction. */
-function keptDirection(old: DrawioModel, laidOut: string): string {
-  const d = old.meta.aiviz_direction;
-  return d && d !== 'auto' ? d : laidOut;
 }
 
 /**
@@ -285,7 +385,7 @@ export async function tidy(file: string, browser?: DrawioBrowser): Promise<{ fix
   if (m.meta.aiviz_type && m.meta.aiviz_type !== 'sequence') {
     // The file's own spec merged into itself: positions stay, hand moves become
     // part of the layout, and only stale routes and colliding labels change.
-    const res = await build(show(file).yaml, { out: file, keepLayout: true, browser });
+    const res = (await buildInternal(show(file).yaml, { out: file, keepLayout: true, browser }, { skipDirection: true })).result;
     return { fixed: res.merge?.rerouted ?? 0, labels: res.labelsMoved, check: res.check };
   }
   return withBrowser(browser, async (b) => {
@@ -413,14 +513,20 @@ export async function importExcalidraw(file: string, out: string, opts: { browse
     if (!edits.changes.length || same) return { out, changes: [], notes: edits.notes, check: check(await b.inspect(current.xml)), created };
     if (!edits.diagram.nodes.length) throw new Error(`every box is gone from ${file}, which would leave ${out} empty. Nothing was changed. To drop the diagram, delete ${out} itself.`);
     const edited = readDrawio(edits.xml);
-    let res = await build(specOf(edited, edits.diagram), { out, base: edits.xml, keepLayout: true, browser: b, png: opts.png });
+    const willAdjust = edits.boxes.size > 0 || edits.routes.size > 0;
+    const pass1 = await buildInternal(
+      specOf(edited, edits.diagram),
+      { out, base: edits.xml, keepLayout: true, browser: b, png: opts.png },
+      { skipOutput: willAdjust, skipDirection: true },
+    );
+    let res = pass1.result;
 
-    if (edits.boxes.size || edits.routes.size) {
+    if (willAdjust) {
       // Excalidraw has the last word on where things are. That covers boxes the
       // person moved, boxes they drew, any the build above shifted to make room,
       // and the arrows whose path they drew themselves.
-      const built = readDrawio(fs.readFileSync(out, 'utf8'));
-      const cells = await b.inspect(built.xml);
+      const built = readDrawio(pass1.xml);
+      const cells = pass1.cells ?? (await b.inspect(built.xml));
       const now = new Map(cells.map((c) => [c.id, c.box as Box]));
       const shownBuilt = toDiagram(built);
       const cellOf = new Map([...shownBuilt.idMap].map(([cell, spec]) => [spec, cell]));
@@ -453,7 +559,21 @@ export async function importExcalidraw(file: string, out: string, opts: { browse
         if (stale.length) xml = await rerouteInto(b, xml, stale);
         if (pinned.size) xml = setRoutes(xml, pinned);
         const moved = readDrawio(xml);
-        res = await build(specOf(moved), { out, base: xml, keepLayout: true, browser: b, png: opts.png });
+        res = (await buildInternal(specOf(moved), { out, base: xml, keepLayout: true, browser: b, png: opts.png }, { skipDirection: true })).result;
+      } else {
+        // Every drawn box already matched within tolerance: render and write pass 1 once.
+        const cfg = useConfigFor(out);
+        const kind = outputKind(out);
+        fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
+        let file: string;
+        if (kind === 'svg' && opts.png) file = (await b.renderSvgAndPng(pass1.xml, opts.png)).svg;
+        else if (kind === 'svg') file = await b.renderSvg(pass1.xml);
+        else if (opts.png) {
+          await b.renderPng(pass1.xml, opts.png);
+          file = pass1.xml;
+        } else file = pass1.xml;
+        fs.writeFileSync(out, file);
+        res = { ...res, check: withConventions(check(cells), pass1.xml, cfg) };
       }
     }
     return { out, changes: edits.changes, notes: edits.notes, check: res.check, created };
@@ -484,35 +604,57 @@ function withConventions(res: CheckResult, source: string | DrawioModel, cfg: Co
 
 const esc = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+function collectSeqStatuses(items: SeqItem[] | undefined, out: Set<string>): void {
+  if (!items) return;
+  for (const item of items) {
+    if (item.kind === 'msg' && item.status) out.add(item.status);
+    else if (item.kind === 'frame') {
+      for (const br of item.branches) collectSeqStatuses(br.items, out);
+    }
+  }
+}
+
 /**
  * A legend under the diagram for the statuses it uses, so a reader doesn't need
  * the doc to say what green means. Drawn fresh on every build; show ignores it.
  */
-async function withLegend(b: DrawioBrowser, xml: string, d: Diagram, cfg: Config): Promise<string> {
+async function withLegend(b: DrawioBrowser, xml: string, d: Diagram, cfg: Config, known?: InspectCell[]): Promise<string> {
   if (!cfg.legend) return xml;
   const used = new Set([...d.nodes, ...d.groups, ...d.edges].map((x) => x.status).filter((s): s is string => !!s));
+  collectSeqStatuses(d.seq, used);
   const names = Object.keys(cfg.statuses).filter((s) => used.has(s));
   if (!names.length) return xml;
-  const cells = (await b.inspect(xml)).filter((c) => c.aivizType !== 'legend');
+  const cells = (known ?? (await b.inspect(xml))).filter((c) => c.aivizType !== 'legend');
   const boxes = [...cells.filter((c) => c.vertex).map((c) => c.box), ...cells.flatMap((c) => (c.textBox ? [c.textBox] : []))];
   const pts = cells.flatMap((c) => c.points ?? []);
+  if (!boxes.length && !pts.length) return xml;
   const minX = Math.min(...boxes.map((r) => r.x), ...pts.map((p) => p.x));
+  const maxX = Math.max(...boxes.map((r) => r.x + r.w), ...pts.map((p) => p.x));
   const maxY = Math.max(...boxes.map((r) => r.y + r.h), ...pts.map((p) => p.y));
   const t = palette(d.theme);
   const size = t.type.size.edge;
   const widths = await b.measure(names.map((s) => [cfg.statuses[s]!.label, size, 400, t.type.family]));
-  const SW = 12, H = Math.round(size * 1.5);
-  let x = Math.round(minX);
-  const y = Math.round(maxY + 28);
+  const SW = 12, H = Math.round(size * 1.5), ROW_GAP = 8;
+  const startX = Math.round(minX);
+  const rightEdge = Math.round(maxX);
+  let x = startX;
+  let y = Math.round(maxY + 28);
   const out: string[] = [];
   const cell = (id: string, label: string, style: string, gx: number, gy: number, w: number, h: number) =>
     `<object id="${id}" label="${esc(label)}" aiviz_type="legend"><mxCell style="${esc(style)}" vertex="1" parent="1"><mxGeometry x="${gx}" y="${gy}" width="${w}" height="${h}" as="geometry"/></mxCell></object>`;
   names.forEach((s, i) => {
     const p = t.paint(cfg.statuses[s]!.color, false);
     const w = Math.ceil(widths[i]!) + 6;
-    out.push(cell(`legend_${i}_swatch`, '', `rounded=1;absoluteArcSize=1;arcSize=6;fillColor=${p.fill};strokeColor=${p.stroke === 'none' ? p.fill : p.stroke};strokeWidth=${p.strokeWidth};${t.extra}${p.extra ?? ''}`, x, y + (H - SW) / 2, SW, SW));
+    const itemW = SW + 6 + w;
+    if (x > startX && x + itemW > rightEdge) {
+      x = startX;
+      y += H + ROW_GAP;
+    }
+    const extraParts = `${t.extra}${p.extra ?? ''}`.split(';').filter((part) => part && !part.startsWith('shadow'));
+    const extra = extraParts.length ? `${extraParts.join(';')};` : '';
+    out.push(cell(`legend_${i}_swatch`, '', `rounded=1;absoluteArcSize=1;arcSize=6;fillColor=${p.fill};strokeColor=${p.stroke === 'none' ? p.fill : p.stroke};strokeWidth=${p.strokeWidth};${extra}`, x, y + (H - SW) / 2, SW, SW));
     out.push(cell(`legend_${i}_label`, cfg.statuses[s]!.label, `text;html=1;align=left;verticalAlign=middle;spacing=0;fontFamily=${t.type.family};fontSize=${size};fontColor=${t.muted};`, x + SW + 6, y, w, H));
-    x += SW + 6 + w + 18;
+    x += itemW + 18;
   });
   return xml.replace('</root>', `${out.join('')}</root>`);
 }
@@ -567,7 +709,7 @@ export async function restyleFiles(targets: string[], browser?: DrawioBrowser): 
         let yaml = show(file).yaml;
         // Under a locked theme the file takes the team's, whatever it was drawn in.
         if (cfg.lockTheme) yaml = yaml.replace(/^theme:.*\n/m, '');
-        out.push({ file, result: await build(yaml, { out: file, keepLayout: true, restyle: true, browser: b }) });
+        out.push({ file, result: (await buildInternal(yaml, { out: file, keepLayout: true, restyle: true, browser: b }, { skipDirection: true })).result });
       } catch (e) {
         out.push({ file, error: (e as Error).message });
       }
@@ -593,6 +735,7 @@ export async function listIcons(provider: Provider, filter?: string, browser?: D
   return withBrowser(browser, async (b) => {
     const names = new Set<string>();
     for (const p of stencilSets(provider)) for (const n of await b.stencilNames(p.set)) names.add(n.slice(p.prefix.length));
-    return [...names].filter((n) => !filter || n.includes(filter.toLowerCase())).sort();
+    const tokens = filter ? filter.toLowerCase().split(/[\s_-]+/).filter(Boolean) : [];
+    return [...names].filter((n) => !tokens.length || tokens.every((tok) => n.toLowerCase().includes(tok))).sort();
   });
 }

@@ -51,7 +51,8 @@ export interface PolishInput {
 
 export function polish(d: Diagram, l: Layout, inp: PolishInput): void {
   const f = frame(l.direction);
-  const shapeOf = (id: string) => { const n = d.nodes.find((x) => x.id === id); return n ? kindDef(d.type, n.kind).shape : undefined; };
+  const shapeById = new Map(d.nodes.map((n) => [n.id, kindDef(d.type, n.kind).shape]));
+  const shapeOf = (id: string) => shapeById.get(id);
   const nodes = new Map([...l.nodes].map(([k, b]) => [k, f.boxTo(b)]));
   // Corners are rounded; an edge leaving inside the arc looks detached.
   const R = 8;
@@ -62,24 +63,36 @@ export function polish(d: Diagram, l: Layout, inp: PolishInput): void {
     const le = l.edges.get(e.id);
     if (le) edges.push({ id: e.id, from: e.from, to: e.to, pts: le.points.map(f.to), label: !!le.label });
   }
-  const others = (self: E) => edges.filter((x) => x !== self);
-  const usedAt = (id: string, x: number, skip: E, side: 'top' | 'bottom') =>
-    others(skip).some((o) => {
+  const usedAt = (id: string, x: number, skip: E, side: 'top' | 'bottom') => {
+    const b = nodes.get(id)!;
+    const y = side === 'top' ? b.y : b.y + b.h;
+    for (const o of edges) {
+      if (o === skip) continue;
       const p = o.from === id ? o.pts[0]! : o.to === id ? o.pts[o.pts.length - 1]! : undefined;
-      const b = nodes.get(id)!;
-      return p && near(p.y, side === 'top' ? b.y : b.y + b.h, 1) && Math.abs(p.x - x) < 10;
-    });
+      if (p && near(p.y, y, 1) && Math.abs(p.x - x) < 10) return true;
+    }
+    return false;
+  };
   // A vertical run no other edge already runs along.
-  const free = (a: Point, b: Point, self: E) =>
-    others(self).every((o) =>
-      o.pts.slice(1).every((q, i) => {
-        const p = o.pts[i]!;
+  const free = (a: Point, b: Point, self: E) => {
+    const aLo = Math.min(a.y, b.y), aHi = Math.max(a.y, b.y);
+    for (const o of edges) {
+      if (o === self) continue;
+      const gap = self.label || o.label ? 44 : 8;
+      const pts = o.pts;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const p = pts[i]!, q = pts[i + 1]!;
         // Two labelled runs side by side need room for the labels between them.
-        if (!vert(p, q) || Math.abs(p.x - a.x) > (self.label || o.label ? 44 : 8)) return true;
-        return Math.min(Math.max(p.y, q.y), Math.max(a.y, b.y)) - Math.max(Math.min(p.y, q.y), Math.min(a.y, b.y)) <= 0;
-      }),
-    );
-  const clear = (a: Point, b: Point, except: string[]) => [...nodes].every(([k, r]) => except.includes(k) || !segHits(a, b, r, 6));
+        if (!vert(p, q) || Math.abs(p.x - a.x) > gap) continue;
+        if (Math.min(Math.max(p.y, q.y), aHi) - Math.max(Math.min(p.y, q.y), aLo) > 0) return false;
+      }
+    }
+    return true;
+  };
+  const clear = (a: Point, b: Point, except: string[]) => {
+    for (const [k, r] of nodes) if (!except.includes(k) && segHits(a, b, r, 6)) return false;
+    return true;
+  };
 
   // Edges out of a decision wait until the decision pass below has picked the
   // point they leave from; their start stub isn't a route to straighten toward.
@@ -156,6 +169,11 @@ export function polish(d: Diagram, l: Layout, inp: PolishInput): void {
       for (let i = 1; i < p.length - 1; i++) if (vert(p[i]!, p[i + 1]!) && p[i + 1]!.y > b.y + b.h + 1) return i;
       return -1;
     };
+    const upRunAt = (p: Point[]) => {
+      if (p.length >= 2 && vert(p[0]!, p[1]!) && p[1]!.y < b.y - 24) return 0;
+      for (let i = 1; i < p.length - 1; i++) if (vert(p[i]!, p[i + 1]!) && p[i + 1]!.y < b.y - 1) return i;
+      return -1;
+    };
     const runX = (e: E) => {
       const i = runAt(e.pts);
       return (i >= 0 ? e.pts[i]! : e.pts[e.pts.length - 1]!).x;
@@ -165,10 +183,30 @@ export function polish(d: Diagram, l: Layout, inp: PolishInput): void {
       const i = runAt(e.pts);
       return i >= 0 ? e.pts.slice(i) : e.pts.slice(-1);
     };
-    const sorted = [...outs].sort((a, c) => runX(a) - runX(c));
+    const isUp = (e: E) => runAt(e.pts) < 0 && upRunAt(e.pts) >= 0;
+    const up = outs.filter(isUp);
+    const sorted = outs.filter((e) => !isUp(e)).sort((a, c) => runX(a) - runX(c));
     let bottomTaken = false;
     // One branch per side point: a second one there would hide the first.
     const taken = { left: false, right: false };
+    // Upward/back-edges attach to a free side point when clear; otherwise keep
+    // ELK's orthogonal back-edge intact instead of shooting through the diamond.
+    for (const e of up) {
+      const p = e.pts;
+      const i = upRunAt(p);
+      if (i < 0) continue;
+      const ux = p[i + 1]!.x;
+      const left = ux < cx;
+      const key = left ? 'left' : 'right';
+      if (taken[key]) continue;
+      const sideP = { x: left ? b.x : b.x + b.w, y: cy };
+      const corner = { x: ux, y: cy };
+      const vertOk = p[i]!.y > cy || clear(corner, p[i]!, [n.id, e.to]);
+      if ((left ? ux < b.x - 10 : ux > b.x + b.w + 10) && clear(sideP, corner, [n.id]) && vertOk) {
+        e.pts = simplify([sideP, corner, ...p.slice(i + 1)]);
+        taken[key] = true;
+      }
+    }
     // A branch whose run sits under the diamond would have to fork off the bottom
     // point next to its sibling. Move the run out past the side point instead, so
     // each branch leaves from its own corner: side point, a short stub, then down.
@@ -237,6 +275,8 @@ export function polish(d: Diagram, l: Layout, inp: PolishInput): void {
           continue;
         }
       }
+      // Never route upward from the bottom point through the diamond itself.
+      if (!onEdge && rest[0]!.y <= b.y + b.h) continue;
       // Branches that both head down fork from the bottom point on a short stem.
       // Such a run turns onto the stem below the point.
       const y = onEdge ? b.y + b.h + 16 : Math.min(rest[0]!.y, b.y + b.h + 16);
@@ -375,25 +415,30 @@ export function polish(d: Diagram, l: Layout, inp: PolishInput): void {
   l.height = Math.max(l.height, ...shifted.map((b) => b.y + b.h + 16));
 
   // Group titles: slide a title right when an edge runs through it.
-  for (const [gid, g] of l.groups) {
-    const tt = inp.groupTitle.get(gid);
-    if (!tt) continue;
-    const segs = [...l.edges.values()].flatMap((le) => le.points.slice(1).map((p, i) => [le.points[i]!, p] as const));
-    const blocked = (x: number) => {
-      const r = { x: g.x + x - 6, y: g.y + 4, w: tt.w + 12, h: Math.min(inp.groupTop, tt.h + 14) };
-      return segs.some(([a, b]) => segHits(a, b, r));
-    };
-    if (!blocked(inp.titleInset)) continue;
-    // The other top corner reads as a choice; a title halfway along reads as an accident.
-    const right = Math.floor(g.w - tt.w - inp.titleInset);
-    if (right > inp.titleInset && !blocked(right)) {
-      (l.titleInset ??= new Map()).set(gid, right);
-      continue;
+  if (l.groups.size) {
+    const segs: Array<readonly [Point, Point]> = [];
+    for (const le of l.edges.values()) {
+      for (let i = 0; i < le.points.length - 1; i++) segs.push([le.points[i]!, le.points[i + 1]!]);
     }
-    for (let x = inp.titleInset + 8; x + tt.w + 14 <= g.w; x += 8) {
-      if (!blocked(x)) {
-        (l.titleInset ??= new Map()).set(gid, x);
-        break;
+    for (const [gid, g] of l.groups) {
+      const tt = inp.groupTitle.get(gid);
+      if (!tt) continue;
+      const blocked = (x: number) => {
+        const r = { x: g.x + x - 6, y: g.y + 4, w: tt.w + 12, h: Math.min(inp.groupTop, tt.h + 14) };
+        return segs.some(([a, b]) => segHits(a, b, r));
+      };
+      if (!blocked(inp.titleInset)) continue;
+      // The other top corner reads as a choice; a title halfway along reads as an accident.
+      const right = Math.floor(g.w - tt.w - inp.titleInset);
+      if (right > inp.titleInset && !blocked(right)) {
+        (l.titleInset ??= new Map()).set(gid, right);
+        continue;
+      }
+      for (let x = inp.titleInset + 8; x + tt.w + 14 <= g.w; x += 8) {
+        if (!blocked(x)) {
+          (l.titleInset ??= new Map()).set(gid, x);
+          break;
+        }
       }
     }
   }

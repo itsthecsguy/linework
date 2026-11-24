@@ -178,12 +178,46 @@ export function findConfig(from: string, rootBoundary?: string): string | undefi
   }
 }
 
-function readRaw(file: string, seen: string[] = [], boundary?: string): ConfigInput & { __dir: string; __fontDirs: Record<string, string> } {
+interface LoadedFile {
+  path: string;
+  real: string;
+  mtimeMs: number;
+  ctimeMs: number;
+  size: number;
+  ino: number;
+}
+
+interface ConfigCacheEntry {
+  files: LoadedFile[];
+  fontFiles: Array<{ path: string; real: string }>;
+  boundary?: string;
+  config: Config;
+}
+
+const configCache = new Map<string, ConfigCacheEntry>();
+
+function cacheValid(entry: ConfigCacheEntry): boolean {
+  for (const f of entry.files) {
+    const st = fs.statSync(f.path, { throwIfNoEntry: false });
+    if (!st || st.mtimeMs !== f.mtimeMs || st.ctimeMs !== f.ctimeMs || st.size !== f.size || st.ino !== f.ino || realPath(f.path) !== f.real) {
+      return false;
+    }
+  }
+  for (const ff of entry.fontFiles) {
+    if (!fs.existsSync(ff.path) || realPath(ff.path) !== ff.real) return false;
+    if (entry.boundary && !insideBoundary(ff.path, entry.boundary)) return false;
+  }
+  return true;
+}
+
+function readRaw(file: string, seen: string[] = [], boundary?: string, loaded: LoadedFile[] = []): ConfigInput & { __dir: string; __fontDirs: Record<string, string> } {
   if (boundary && !insideBoundary(file, boundary)) throw new ConfigError(file, [`config file resolves outside ${boundary}`]);
   if (seen.includes(file)) throw new ConfigError(file, [`extends loops back on itself: ${[...seen, file].join(' -> ')}`]);
   let doc: unknown;
   try {
+    const st = fs.statSync(file);
     doc = YAML.parse(fs.readFileSync(file, 'utf8')) ?? {};
+    loaded.push({ path: file, real: realPath(file), mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs, size: st.size, ino: st.ino });
   } catch (e) {
     throw new ConfigError(file, [`can't read it: ${(e as Error).message}`]);
   }
@@ -210,7 +244,7 @@ function readRaw(file: string, seen: string[] = [], boundary?: string): ConfigIn
   }
   if (boundary && !insideBoundary(parentFile, boundary)) throw new ConfigError(file, [`extends: "${own.extends}" resolves outside ${boundary}`]);
   if (!fs.existsSync(parentFile)) throw new ConfigError(file, [`extends: ${parentFile} doesn't exist`]);
-  const base = readRaw(parentFile, [...seen, file], boundary);
+  const base = readRaw(parentFile, [...seen, file], boundary, loaded);
   const maps = <K extends 'rules' | 'themes' | 'components' | 'statuses'>(k: K) => ({ ...base[k], ...own[k] }) as ConfigInput[K];
   const kinds: ConfigInput['kinds'] = {};
   for (const t of DIAGRAM_TYPES) if (base.kinds?.[t] || own.kinds?.[t]) kinds[t] = { ...base.kinds?.[t], ...own.kinds?.[t] };
@@ -237,7 +271,12 @@ const humanize = (id: string) => id.replace(/[_-]+/g, ' ').replace(/^./, (c) => 
 /** Read and check a config file. Throws ConfigError with every problem found. */
 export function loadConfig(file: string, rootBoundary?: string): Config {
   const boundary = rootBoundary !== undefined ? realPath(path.resolve(rootBoundary)) : configRoot;
-  const raw = readRaw(file, [], boundary);
+  const resolved = path.resolve(file);
+  const cacheKey = `${resolved}\0${file}\0${boundary ?? ''}`;
+  const hit = configCache.get(cacheKey);
+  if (hit && cacheValid(hit)) return hit.config;
+  const loaded: LoadedFile[] = [];
+  const raw = readRaw(file, [], boundary, loaded);
   const issues: string[] = [];
   const themes: Theme[] = [];
   const fonts: CustomFont[] = [];
@@ -280,7 +319,7 @@ export function loadConfig(file: string, rootBoundary?: string): Config {
   for (const [name, s] of Object.entries(raw.statuses ?? {})) statuses[name] = typeof s === 'string' ? { color: s, label: humanize(name) } : { color: s.color, label: s.label ?? humanize(name) };
 
   if (issues.length) throw new ConfigError(file, issues);
-  return {
+  const config: Config = {
     path: file,
     theme: raw.theme,
     lockTheme: !!raw.lockTheme,
@@ -298,6 +337,14 @@ export function loadConfig(file: string, rootBoundary?: string): Config {
     naming: { case: raw.naming?.case ?? 'any', maxLength: raw.naming?.maxLength, banned: raw.naming?.banned ?? [] },
     handStyles: raw.handStyles ?? 'keep',
   };
+  if (configCache.size >= 64) configCache.delete(configCache.keys().next().value!);
+  configCache.set(cacheKey, {
+    files: loaded,
+    fontFiles: fonts.map((f) => ({ path: f.file, real: realPath(f.file) })),
+    boundary,
+    config,
+  });
+  return config;
 }
 
 /** Text a team's theme would make hard to read: under 4.5:1 against what it sits on. */

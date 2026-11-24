@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import type { BuildResult } from './api.js';
+import type { Config } from './config.js';
+import { themeNames } from './drawio/theme.js';
 import type { CheckResult } from './lint/check.js';
 import type { DrawioBrowser } from './render/browser.js';
 import type { DiagramType } from './spec/model.js';
@@ -35,8 +37,9 @@ Usage:
   linework restyle <dir|file...>
       Bring existing diagrams back to the team's theme and colors. Boxes stay
       where they are; styling changed by hand in draw.io is reset.
-  linework new [template] [-o spec.yaml]
-      Print a starter spec: one of the team's templates, or a built-in example.
+  linework new [template|type] [-o spec.yaml]
+      Print a starter spec: one of the team's templates, a built-in example, or a
+      diagram type (architecture, flow, state, sequence, er, class, timeline).
       With no name, list them.
   linework show <file.drawio.svg> [--geometry]
       Print the spec of an existing diagram (including hand edits) as YAML.
@@ -115,8 +118,8 @@ Usage:
 Options for scripts and agents:
   --json   One JSON document on stdout instead of text, errors included
            ({ "ok": false, "error": { ... } }). For build, set, add, rm, config,
-           lint, restyle, check, tidy, show, render, import, sync, icons, kinds
-           and doctor.
+           lint, restyle, new, check, tidy, show, render, import, sync, icons,
+           kinds and doctor.
   -q       show, sync: leave out the notes.
 
 Exit codes: 0 done; 1 the command failed, or check/sync found a problem; 2 bad usage.
@@ -304,7 +307,64 @@ export const OPTIONS = {
   help: { type: 'boolean', short: 'h' },
 } as const;
 
-export async function run(cmd: string, values: Values, positionals: string[], launching: Promise<DrawioBrowser> | undefined, io: IO = processIO) {
+/** Human-readable lines describing a loaded linework.yaml, shared by CLI `config` and MCP `get_config`. */
+export function formatConfigLines(cfg: Config, root: string): string[] {
+  const rel = (p: string) => path.relative(root, p) || '.';
+  const lines: string[] = [
+    ...(cfg.path ? [`config: ${rel(cfg.path)}`] : []),
+    `theme: ${cfg.theme ?? 'clean'}${cfg.lockTheme ? ' (locked: leave "theme:" out of specs)' : ` (default; a spec may pick another of: ${themeNames().join(', ')})`}`,
+  ];
+  if (cfg.themes.length) lines.push(`custom themes: ${cfg.themes.map((t) => `${t.name} (extends ${t.base})`).join(', ')}`);
+  if (cfg.direction) lines.push(`direction: ${cfg.direction}`);
+  if (cfg.out) lines.push(`save new diagrams in: ${rel(cfg.out)}`);
+  lines.push(`hand styles: ${cfg.handStyles}${cfg.handStyles === 'reset' ? ' (build resets hand-changed colors and fonts to the theme)' : ''}`);
+  const comps = Object.entries(cfg.components);
+  if (comps.length) {
+    lines.push('shared components (use these ids; leave out the fields shown, they are filled in):');
+    for (const [id, c] of comps) lines.push(`  ${id}: { ${Object.entries(c).map(([k, v]) => `${k}: ${v}`).join(', ')} }`);
+  }
+  const sts = Object.entries(cfg.statuses);
+  if (sts.length) {
+    lines.push('statuses (write "status: <name>" on a node, group or edge instead of "color:"):');
+    for (const [name, st] of sts) lines.push(`  ${name}: ${st.color}${st.label ? `, shown as "${st.label}"` : ''}`);
+    if (cfg.legend) lines.push('  a legend for the statuses used is drawn under each diagram');
+  }
+  for (const [type, kinds] of Object.entries(cfg.kinds)) {
+    lines.push(`extra ${type} kinds:`);
+    for (const [k, def] of Object.entries(kinds ?? {})) lines.push(`  ${k}: ${def.description}`);
+  }
+  const n = cfg.naming;
+  const naming = [n.case !== 'any' ? `${n.case} case` : '', n.maxLength ? `at most ${n.maxLength} characters` : '', n.banned.length ? `never: ${n.banned.join(', ')}` : ''].filter(Boolean);
+  if (naming.length) lines.push(`labels: ${naming.join('; ')}`);
+  lines.push(`limits: ${cfg.limits.nodes} nodes, ${cfg.limits.width}px wide`);
+  const rules = Object.entries(cfg.rules);
+  if (rules.length) lines.push(`rule levels: ${rules.map(([r, l]) => `${r}=${l}`).join(', ')}`);
+  if (cfg.templates) {
+    const names = fs.existsSync(cfg.templates)
+      ? fs
+          .readdirSync(cfg.templates)
+          .filter((f) => /\.ya?ml$/i.test(f))
+          .map((f) => f.replace(/\.ya?ml$/i, ''))
+          .sort()
+      : [];
+    lines.push(`templates: ${rel(cfg.templates)}${names.length ? ` (${names.join(', ')})` : ''}`);
+  }
+  return lines;
+}
+
+function clock(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+export async function run(
+  cmd: string,
+  values: Values,
+  positionals: string[],
+  launching: Promise<DrawioBrowser> | (() => Promise<DrawioBrowser>) | undefined,
+  io: IO = processIO,
+) {
   const console = { log: (m = '') => io.out(m + '\n'), error: (m = '') => io.err(m + '\n') };
   const fail: (msg: string) => never = (msg) => {
     throw new Exit(msg, 2);
@@ -313,11 +373,12 @@ export async function run(cmd: string, values: Values, positionals: string[], la
     const { checkLines } = await import('./report.js');
     for (const line of checkLines(res)) console.log(line);
   };
-  const browser = async () => {
+  const browser = async (): Promise<DrawioBrowser> => {
+    const p = typeof launching === 'function' ? launching() : launching;
     // ELK compiles its code on first use. Laying out a tiny graph while Chromium
     // is still starting takes that cost off the real layout.
-    if (launching && !io.warm && ['build', 'import', 'set', 'add', 'rm'].includes(cmd)) await warmUp();
-    return launching!;
+    if (p && !io.warm && ['build', 'import', 'set', 'add', 'rm'].includes(cmd)) await warmUp();
+    return p!;
   };
   const { buildLines, buildJson, checkJson } = await import('./report.js');
   const json = values.json;
@@ -344,14 +405,35 @@ export async function run(cmd: string, values: Values, positionals: string[], la
       };
       if (!values.watch) return once(values.relayout);
       const { watchFile } = await import('./watch.js');
+      const { findConfig } = await import('./config.js');
+      const cfgFile = process.env.LINEWORK_NO_CONFIG ? undefined : findConfig(out);
       // A spec with a mistake in it is the normal state of a file being edited: say so and keep watching.
-      const attempt = (relayout: boolean) => once(relayout).catch((e) => void report(e, io, json));
-      await attempt(values.relayout);
-      console.error(`watching ${src}. Save it to rebuild ${out}. Ctrl+C to stop.`);
+      const attempt = async (relayout: boolean, rebuild: boolean) => {
+        const t0 = Date.now();
+        try {
+          await once(relayout);
+          if (rebuild) console.error(`[${clock()}] rebuilt ${out} in ${Date.now() - t0}ms`);
+        } catch (e) {
+          report(e, io, json);
+          console.error(`[${clock()}] build failed (${Date.now() - t0}ms) — fix and save to retry`);
+        }
+      };
+      await attempt(values.relayout, false);
+      console.error(`watching ${src}${cfgFile ? ` (+ ${path.relative(process.cwd(), cfgFile) || cfgFile})` : ''}. Save to rebuild ${out}. Ctrl+C to stop.`);
       // --relayout applies to the first build only: after it, each save merges into the layout like any rebuild.
-      const w = watchFile(src, () => attempt(false));
-      process.once('SIGINT', () => w.stop());
-      await w.done;
+      const w = watchFile(src, () => attempt(false, true), {
+        extra: cfgFile ? [cfgFile] : undefined,
+        onError: (e) => console.error(`[${clock()}] watch error: ${e.message}`),
+      });
+      const onSignal = () => w.stop();
+      process.once('SIGINT', onSignal);
+      process.once('SIGTERM', onSignal);
+      try {
+        await w.done;
+      } finally {
+        process.off('SIGINT', onSignal);
+        process.off('SIGTERM', onSignal);
+      }
       return;
     }
     case 'set':
@@ -359,16 +441,16 @@ export async function run(cmd: string, values: Values, positionals: string[], la
     case 'rm': {
       const [file, ...args] = positionals;
       if (!file || !args.length) fail(`usage: linework ${cmd} <file.drawio.svg> ${cmd === 'set' ? 'id.field=value...' : cmd === 'add' ? '"id: { label: .. }" | "a -> b: label"...' : 'id | "a -> b"...'}`);
-      const { patchFile, patchSpec } = await import('./patch.js');
-      const { show } = await import('./api.js');
+      const { patchSpec } = await import('./patch.js');
+      const { build, show } = await import('./api.js');
       // Bad arguments first: they shouldn't wait on, or hide behind, a browser problem.
-      (await import('./spec/parse.js')).parseSpecText(patchSpec(show(file).yaml, [{ op: cmd, args }]));
-      built(await patchFile(file, [{ op: cmd, args }], { png: values.png, browser: await browser() }));
+      const yaml = patchSpec(show(file).yaml, [{ op: cmd, args }]);
+      (await import('./spec/parse.js')).parseSpecText(yaml);
+      built(await build(yaml, { out: file, png: values.png, browser: await browser() }));
       return;
     }
     case 'config': {
       const { useConfigFor } = await import('./config.js');
-      const { themeNames } = await import('./drawio/theme.js');
       if (positionals[0] === 'init') {
         const target = path.resolve('linework.yaml');
         if (fs.existsSync(target) && !values.force) fail('linework.yaml already exists here. Use --force to overwrite it.');
@@ -399,44 +481,21 @@ export async function run(cmd: string, values: Values, positionals: string[], la
         });
       }
       if (!cfg.path) return void console.log('no linework.yaml here or in any folder above. Built-in defaults apply: theme clean, direction auto. "linework config init" writes a starter file.');
-      const rel = (p: string) => path.relative(process.cwd(), p) || '.';
-      console.log(`config: ${rel(cfg.path)}`);
-      console.log(`theme: ${cfg.theme ?? 'clean'}${cfg.lockTheme ? ' (locked: leave "theme:" out of specs)' : ` (default; a spec may pick another of: ${themeNames().join(', ')})`}`);
-      if (cfg.direction) console.log(`direction: ${cfg.direction}`);
-      if (cfg.out) console.log(`save new diagrams in: ${rel(cfg.out)}`);
-      const comps = Object.entries(cfg.components);
-      if (comps.length) {
-        console.log('shared components (use these ids; leave out the fields shown, they are filled in):');
-        for (const [id, c] of comps) console.log(`  ${id}: { ${Object.entries(c).map(([k, v]) => `${k}: ${v}`).join(', ')} }`);
-      }
-      const sts = Object.entries(cfg.statuses);
-      if (sts.length) {
-        console.log(`statuses (write "status: <name>" on a node, group or edge instead of "color:"):`);
-        for (const [name, st] of sts) console.log(`  ${name}: ${st.color}${st.label ? `, shown as "${st.label}"` : ''}`);
-        if (cfg.legend) console.log('  a legend for the statuses used is drawn under each diagram');
-      }
-      for (const [type, kinds] of Object.entries(cfg.kinds)) {
-        console.log(`extra ${type} kinds:`);
-        for (const [k, def] of Object.entries(kinds ?? {})) console.log(`  ${k}: ${def.description}`);
-      }
-      const n = cfg.naming;
-      const naming = [n.case !== 'any' ? `${n.case} case` : '', n.maxLength ? `at most ${n.maxLength} characters` : '', n.banned.length ? `never: ${n.banned.join(', ')}` : ''].filter(Boolean);
-      if (naming.length) console.log(`labels: ${naming.join('; ')}`);
-      console.log(`limits: ${cfg.limits.nodes} nodes, ${cfg.limits.width}px wide`);
-      const rules = Object.entries(cfg.rules);
-      if (rules.length) console.log(`rule levels: ${rules.map(([r, l]) => `${r}=${l}`).join(', ')}`);
-      if (cfg.templates) console.log(`templates: run "linework new" to list them`);
+      for (const line of formatConfigLines(cfg, process.cwd())) console.log(line);
       return;
     }
     case 'lint': {
       const { lintFiles } = await import('./api.js');
-      const res = await lintFiles(positionals.length ? positionals : ['.'], await browser());
+      const targets = positionals.length ? positionals : ['.'];
+      const res = await lintFiles(targets, await browser());
       let errors = 0, warnings = 0;
+      const seenRules = new Set<string>();
       for (const r of res) {
         const fs_ = r.check?.findings ?? [];
         const e = fs_.filter((f) => f.level === 'error').length + (r.error ? 1 : 0);
         errors += e;
         warnings += fs_.length - (e - (r.error ? 1 : 0));
+        for (const f of fs_) seenRules.add(f.rule);
       }
       const failed = errors > 0 || (values.strict && warnings > 0);
       if (json) {
@@ -461,6 +520,17 @@ export async function run(cmd: string, values: Values, positionals: string[], la
         for (const f of fs_) console.log(`  ${f.level}: ${f.message} [${f.rule}]`);
       }
       console.log(`${res.length} diagram${res.length === 1 ? '' : 's'} checked: ${errors} errors, ${warnings} warnings`);
+      if (res.length === 0) {
+        console.log(`no .drawio.svg or .drawio files found under ${targets.join(', ')}.`);
+      } else {
+        if (failed && errors === 0 && values.strict) console.log('failed because --strict treats warnings as errors.');
+        if (['edge-through-node', 'edge-through-endpoint', 'label-on-node', 'label-on-edge', 'label-collision'].some((r) => seenRules.has(r))) {
+          console.log('tip: run "linework tidy <file>" to reroute broken edges and move colliding labels.');
+        }
+        if (['off-theme', 'hand-styled'].some((r) => seenRules.has(r))) {
+          console.log(`tip: run "linework restyle ${targets.join(' ')}" to reset diagrams to the team theme.`);
+        }
+      }
       if (failed) io.code = 1;
       return;
     }
@@ -494,23 +564,81 @@ export async function run(cmd: string, values: Values, positionals: string[], la
     }
     case 'new': {
       const { useConfigFor } = await import('./config.js');
+      const { DIAGRAM_TYPES } = await import('./spec/model.js');
       const { fileURLToPath } = await import('node:url');
       const cfg = useConfigFor(process.cwd());
       const builtin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'linework', 'examples');
-      const list = (dir: string | undefined) => (dir && fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /\.ya?ml$/.test(f)).map((f) => ({ name: f.replace(/\.ya?ml$/, ''), file: path.join(dir, f) })) : []);
+      const headerOf = (file: string) => {
+        const head = fs.readFileSync(file, 'utf8').slice(0, 512);
+        const type = /^type:\s*["']?([^"'\r\n#]+?)["']?\s*(?:#.*)?$/m.exec(head)?.[1]?.trim();
+        const title = /^title:\s*["']?([^"'\r\n#]+?)["']?\s*(?:#.*)?$/m.exec(head)?.[1]?.trim();
+        return { type, title };
+      };
+      const list = (dir: string | undefined) =>
+        dir && fs.existsSync(dir)
+          ? fs
+              .readdirSync(dir)
+              .filter((f) => /\.ya?ml$/i.test(f))
+              .sort()
+              .map((f) => {
+                const file = path.join(dir, f);
+                return { name: f.replace(/\.ya?ml$/i, ''), file, ...headerOf(file) };
+              })
+          : [];
       const team = list(cfg.templates), examples = list(builtin);
       const name = positionals[0];
       if (!name) {
-        if (team.length) console.log(`team templates:\n${team.map((t) => `  ${t.name}`).join('\n')}`);
-        console.log(`built-in examples:\n${examples.map((t) => `  ${t.name}`).join('\n')}`);
+        if (json) {
+          return emit({
+            ok: true,
+            templates: team.map(({ name: n, type, title }) => ({ name: n, ...(type ? { type } : {}), ...(title ? { title } : {}) })),
+            examples: examples.map(({ name: n, type, title }) => ({ name: n, ...(type ? { type } : {}), ...(title ? { title } : {}) })),
+          });
+        }
+        const width = Math.max(12, ...[...team, ...examples].map((t) => t.name.length));
+        const fmt = (t: { name: string; type?: string; title?: string }) =>
+          `  ${t.name.padEnd(width)}  ${(t.type ?? '').padEnd(12)}${t.title ? `  ${t.title}` : ''}`.trimEnd();
+        if (team.length) console.log(`team templates:\n${team.map(fmt).join('\n')}`);
+        console.log(`built-in examples:\n${examples.map(fmt).join('\n')}`);
+        console.log(`\nYou can also pass a diagram type (${DIAGRAM_TYPES.join(', ')}) as a starter alias.`);
         return;
       }
-      const hit = [...team, ...examples].find((t) => t.name === name) ?? fail(`no template named "${name}". Run "linework new" to list them.`);
+      const all = [...team, ...examples];
+      const byName = all.find((t) => t.name === name);
+      const byType = !byName && (DIAGRAM_TYPES as readonly string[]).includes(name) ? all.find((t) => t.type === name) : undefined;
+      const hit = byName ?? byType ?? fail(`no template or diagram type named "${name}". Run "linework new" to list them.`);
+      const source = team.includes(hit) ? 'team' : 'builtin';
       const text = fs.readFileSync(hit.file, 'utf8');
-      if (!values.out) return void io.out(text);
+      if (!values.out) {
+        if (json) {
+          return emit({
+            ok: true,
+            name: hit.name,
+            source,
+            ...(hit.type ? { type: hit.type } : {}),
+            ...(hit.title ? { title: hit.title } : {}),
+            yaml: text,
+          });
+        }
+        return void io.out(text);
+      }
       if (fs.existsSync(values.out) && !values.force) fail(`${values.out} exists. Use --force to overwrite it.`);
+      fs.mkdirSync(path.dirname(path.resolve(values.out)), { recursive: true });
       fs.writeFileSync(values.out, text);
-      console.log(`wrote ${values.out} from ${team.includes(hit) ? 'the team template' : 'the built-in example'} "${name}"`);
+      if (json) {
+        return emit({
+          ok: true,
+          name: hit.name,
+          source,
+          ...(hit.type ? { type: hit.type } : {}),
+          ...(hit.title ? { title: hit.title } : {}),
+          out: values.out,
+        });
+      }
+      const diagOut = values.out.replace(/\.ya?ml$/i, '.drawio.svg');
+      const buildTarget = diagOut === values.out ? `${values.out}.drawio.svg` : diagOut;
+      console.log(`wrote ${values.out} from ${source === 'team' ? 'the team template' : 'the built-in example'} "${hit.name}"`);
+      console.log(`next: linework build ${values.out} -o ${buildTarget}`);
       return;
     }
     case 'show': {
@@ -567,9 +695,23 @@ export async function run(cmd: string, values: Values, positionals: string[], la
       const opened = !values['no-open'] && (await openInBrowser(session.url));
       console.log(`${opened ? 'opened' : 'open'} ${session.url}`);
       console.log(`editing ${file}. Save in the editor (Ctrl/Cmd+S) to write the file. Exit the editor, close the tab or press Ctrl+C to stop.`);
-      process.once('SIGINT', () => void session.close());
-      const res = await session.done;
-      console.log(res.saves ? `saved ${file} ${res.saves - res.conflicts.length} time(s)` : 'closed without saving');
+      const onSignal = () => void session.close();
+      process.once('SIGINT', onSignal);
+      process.once('SIGTERM', onSignal);
+      const res = await session.done.finally(() => {
+        process.off('SIGINT', onSignal);
+        process.off('SIGTERM', onSignal);
+      });
+      const direct = Math.max(0, res.saves - res.conflicts.length);
+      if (direct && res.conflicts.length) {
+        console.log(`saved ${file} ${direct} time(s) (${res.conflicts.length} conflict ${res.conflicts.length === 1 ? 'copy' : 'copies'})`);
+      } else if (direct) {
+        console.log(`saved ${file} ${direct} time(s)`);
+      } else if (res.conflicts.length) {
+        console.log(`saved ${res.conflicts.length} conflict ${res.conflicts.length === 1 ? 'copy' : 'copies'} (${file} changed on disk)`);
+      } else {
+        console.log('closed without saving');
+      }
       for (const c of res.conflicts) console.log(`note: ${file} changed on disk while it was open, so one save went to ${c}`);
       return;
     }
@@ -599,18 +741,31 @@ export async function run(cmd: string, values: Values, positionals: string[], la
         };
         if (!values.watch) return once();
         const { watchFile } = await import('./watch.js');
-        await once();
-        console.log(`watching ${src}. Save it in Excalidraw to update ${out}. Ctrl+C to stop.`);
-        const w = watchFile(src, async () => {
+        const attempt = async (rebuild: boolean) => {
+          const t0 = Date.now();
           try {
             await once();
+            if (rebuild) console.error(`[${clock()}] imported ${src} in ${Date.now() - t0}ms`);
           } catch (e) {
             // A half-written save, or an edit import can't read: say so and keep watching.
             report(e, io, json);
+            console.error(`[${clock()}] import failed (${Date.now() - t0}ms) — fix and save to retry`);
           }
+        };
+        await attempt(false);
+        console.error(`watching ${src}. Save it in Excalidraw to update ${out}. Ctrl+C to stop.`);
+        const w = watchFile(src, () => attempt(true), {
+          onError: (e) => console.error(`[${clock()}] watch error: ${e.message}`),
         });
-        process.once('SIGINT', () => w.stop());
-        await w.done;
+        const onSignal = () => w.stop();
+        process.once('SIGINT', onSignal);
+        process.once('SIGTERM', onSignal);
+        try {
+          await w.done;
+        } finally {
+          process.off('SIGINT', onSignal);
+          process.off('SIGTERM', onSignal);
+        }
         return;
       }
       const { importMermaid, mermaidBlocks } = await import('./import/mermaid.js');
@@ -640,7 +795,9 @@ export async function run(cmd: string, values: Values, positionals: string[], la
     }
     case 'sync': {
       const { sync } = await import('./sync.js');
-      const items = await sync(positionals, { check: values.check, browser: values.check ? undefined : await browser() });
+      // Pass lazy factory through when cli.ts deferred Chromium launch so fresh syncs never boot a browser.
+      const syncBrowser = values.check ? undefined : typeof launching === 'function' ? (browser as unknown as DrawioBrowser) : await browser();
+      const items = await sync(positionals, { check: values.check, browser: syncBrowser });
       // Short for a file under this folder; a climb of ../../.. is harder to read than the full path.
       const rel = (p: string) => (path.relative(process.cwd(), p).startsWith('..') ? path.resolve(p) : path.relative(process.cwd(), p) || p);
       if (json) {
@@ -654,13 +811,22 @@ export async function run(cmd: string, values: Values, positionals: string[], la
           if (!values.quiet) console.log(`up to date  ${rel(i.out)}`);
         } else if (i.state === 'built') {
           console.log(`${i.missing ? 'built      ' : 'rebuilt    '} ${rel(i.out)}  (from ${rel(i.spec)})`);
-          for (const f of i.result!.check.findings.filter((x) => x.level === 'error')) console.log(`  error: ${f.message}`);
+          for (const f of i.result!.check.findings.filter((x) => x.level === 'error')) console.log(`  error: ${f.message} [${f.rule}]`);
         } else if (i.state === 'stale') console.log(i.missing ? `missing     ${rel(i.out)}  (not built yet from ${rel(i.spec)})` : `out of date ${rel(i.out)}  (${rel(i.spec)} changed)`);
         else console.error(`failed      ${rel(i.spec)}: ${i.error}`);
       }
       const stale = items.filter((i) => i.state === 'stale').length, failed = items.filter((i) => i.state === 'failed').length;
+      const builtCount = items.filter((i) => i.state === 'built').length, freshCount = items.filter((i) => i.state === 'fresh').length;
       if (!items.length) console.log('no specs found. A spec is a .yaml file with "type: architecture" (or flow, state, ...) at the top.');
       else if (stale) console.log(`\n${stale} diagram${stale === 1 ? ' is' : 's are'} out of date. Run "linework sync" and commit the result.`);
+      else if (!values.quiet) {
+        const parts = [
+          builtCount ? `${builtCount} rebuilt` : '',
+          freshCount ? `${freshCount} up to date` : '',
+          failed ? `${failed} failed` : '',
+        ].filter(Boolean);
+        if (parts.length) console.log(`\n${items.length} diagram${items.length === 1 ? '' : 's'}: ${parts.join(', ')}`);
+      }
       if (stale || failed) io.code = 1;
       return;
     }

@@ -144,4 +144,32 @@ edges: ["[*] -> a", "a -> b", "a -> [*]", "b -> [*]"]
   it('rejects nested timeline groups', () => {
     expect(errs('type: timeline\ngroups: { a: {}, b: { in: a } }\nnodes:\n  t: { start: 2026-01-01, end: 2026-01-05, in: b }\n')).toMatch(/groups\.b\.in: timeline lanes cannot be nested/);
   });
+
+  it('suggests fixes for mistyped kinds, colors, themes and common key aliases', () => {
+    expect(errs('type: architecture\nnodes: { a: { kind: databse } }')).toContain('Did you mean "database"?');
+    expect(errs('type: sequence\nparticipants: { a: { kind: servce } }\nmessages: []')).toContain('Did you mean "service"?');
+    expect(errs('type: flow\nnodes: { a: { color: grey } }')).toContain('Did you mean "gray"?');
+    expect(errs('type: flow\nnodes: { a: { color: purple } }')).toContain('Did you mean "violet"?');
+    expect(errs('type: flow\ntheme: drak\nnodes: { a: A }')).toContain('Did you mean "dark"?');
+    expect(errs('type: architecture\nnodes: { a: { name: API, group: vpc, type: service, subtitle: Go } }')).toContain('Did you mean "label" / "in" / "kind" / "tech"?');
+    expect(errs('type: flow\nnodes: { a: A, b: B }\nedges:\n  - { from: a, to: b, source: a }')).toContain('Did you mean "from"?');
+    expect(errs('type: sequence\nparticipants: { a: {}, b: {} }\nmessages:\n  - alt:\n      - condition: ok\n        steps: []\n        do: []\n')).toContain('Did you mean "when" / "do"?');
+  });
+
+  it('gives actionable hints for YAML quoting traps, --> arrows, and null entries', () => {
+    expect(errs('type: state\nnodes: { idle: {} }\nedges:\n  - [*] -> idle\n')).toMatch(/quote state edges containing \[\*\]/);
+    expect(errs('type: flow\nnodes: { a: A, b: B }\nedges:\n  - a -> b: auth: ok\n')).toMatch(/quote edge lines whose label contains ": "/);
+    expect(errs('type: flow\nnodes: { a: A, b: B }\nedges:\n  - a --> b: next\n')).toMatch(/use "->" \(call\) or "-\.->" \(async\)/);
+    expect(errs('type: architecture\nnodes:\n  stripe:\n')).toContain('write "stripe: {}" or "stripe: Label"');
+    expect(errs('type: architecture\ngroups:\n  vpc:\nnodes: { a: A }\n')).toContain('write "vpc: {}" or "vpc: Label"');
+  });
+
+  it('rejects disallowed fields on sequence participants and rel on non-class edges', () => {
+    const seqOut = errs('type: sequence\nparticipants:\n  a: { in: vpc, icon: aws.lambda, members: ["+ x"], start: 2026-01-01 }\nmessages: []\n');
+    expect(seqOut).toContain('participants.a.in:');
+    expect(seqOut).toContain('participants.a.icon:');
+    expect(seqOut).toContain('participants.a.members:');
+    expect(seqOut).toContain('participants.a.start:');
+    expect(errs('type: flow\nnodes: { a: A, b: B }\nedges:\n  - { from: a, to: b, rel: inherits }\n')).toMatch(/edges\[0\]\.rel: rel \("inherits"\) is only for type: class/);
+  });
 });

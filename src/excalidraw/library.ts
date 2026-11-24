@@ -107,12 +107,15 @@ export async function buildLibrary(set: string, b: DrawioBrowser, opts: { theme?
     wants = (opts.names ?? []).map((name): Want => ({ name: `${set}.${name}`, type: 'architecture', kind: 'service', label: humanize(name), icon: `${set}.${name}` }));
   } else throw new Error(`unknown library "${set}". Choose one of: ${LIBRARY_SETS.join(', ')}`);
   // A name draw.io has no stencil for would come out as an empty box.
-  const real: Want[] = [];
-  for (const w of wants) {
-    const r = w.icon ? resolveIcon(w.icon) : undefined;
-    if (!w.icon || (r && !('error' in r) && (await b.hasStencil(r.stencil)))) real.push(w);
-  }
-  wants = real;
+  const resolved = wants.map((w) => (w.icon ? resolveIcon(w.icon) : undefined));
+  const stencils = resolved.flatMap((r) => (r && !('error' in r) ? [r.stencil] : []));
+  const okList = stencils.length ? await b.hasStencils(stencils) : [];
+  const okSet = new Set(stencils.filter((_, i) => okList[i]));
+  wants = wants.filter((w, i) => {
+    if (!w.icon) return true;
+    const r = resolved[i];
+    return !!r && !('error' in r) && okSet.has(r.stencil);
+  });
   if (!wants.length) throw new Error(`nothing in "${set}" matches "${(opts.filters ?? []).join(' ')}"`);
   return { type: 'excalidrawlib', version: 2, source: 'https://github.com/itsthecsguy/linework', libraryItems: await itemsFor(wants, theme, b, `lw${set}`) };
 }

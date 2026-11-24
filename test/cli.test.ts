@@ -5,10 +5,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { COMMANDS, Exit, OPTIONS, USAGE, nearestCommand, needsBrowser, packageVersion, report, run, type IO } from '../src/commands.js';
-import { ConfigError } from '../src/config.js';
+import { ConfigError, useConfig } from '../src/config.js';
 import { DrawioBrowser, systemBrowsers } from '../src/render/browser.js';
 import { SpecError } from '../src/spec/parse.js';
 import { findSpecs } from '../src/sync.js';
@@ -148,10 +148,42 @@ describe('errors and usage', () => {
     const listNew = await cli(['new']);
     expect(listNew.code).toBe(0);
     expect(listNew.out).toContain('built-in examples:');
-    const newOut = at('starter.yaml');
+    expect(listNew.out).toContain('architecture');
+    const listNewJson = await cli(['new', '--json']);
+    expect(listNewJson.code).toBe(0);
+    expect(listNewJson.json.ok).toBe(true);
+    expect(listNewJson.json.examples.some((e: { name: string; type?: string }) => e.name === 'checkout' && e.type === 'architecture')).toBe(true);
+    const newOut = at('nested/dir/starter.yaml');
     const wroteNew = await cli(['new', 'checkout', '-o', newOut]);
     expect(wroteNew.code).toBe(0);
+    expect(wroteNew.out).toContain('next: linework build');
     expect(fs.readFileSync(newOut, 'utf8')).toContain('type: architecture');
+    // Diagram type aliases work too (e.g. `linework new sequence`)
+    const seqAlias = await cli(['new', 'sequence', '--json']);
+    expect(seqAlias.code).toBe(0);
+    expect(seqAlias.json).toMatchObject({ ok: true, type: 'sequence' });
+    expect(seqAlias.json.yaml).toContain('type: sequence');
+
+    // `linework config` prints custom themes, hand styles, and template names
+    const cfgDir = at('cfg-fmt');
+    fs.mkdirSync(path.join(cfgDir, 'tpls'), { recursive: true });
+    fs.writeFileSync(path.join(cfgDir, 'tpls/service.yaml'), 'type: architecture\ntitle: Svc\nnodes: { a: A }\n');
+    fs.writeFileSync(
+      path.join(cfgDir, 'linework.yaml'),
+      'theme: corp\nhandStyles: reset\ntemplates: ./tpls\nthemes:\n  corp:\n    extends: clean\n    accent: "#0A6E5C"\n',
+    );
+    const cfgText = await cli(['config', cfgDir]);
+    useConfig();
+    expect(cfgText.code).toBe(0);
+    expect(cfgText.out).toContain('custom themes: corp (extends clean)');
+    expect(cfgText.out).toContain('hand styles: reset');
+    expect(cfgText.out).toContain('templates:');
+    expect(cfgText.out).toContain('(service)');
+
+    // `linework daemon --help` exits 0 with usage
+    const daemonHelp = spawnSync(process.execPath, ['--import', 'tsx', path.resolve('src/cli.ts'), 'daemon', '--help'], { encoding: 'utf8' });
+    expect(daemonHelp.status).toBe(0);
+    expect(daemonHelp.stdout).toContain('usage: linework daemon');
   });
 });
 
@@ -277,6 +309,11 @@ describe.runIf(e2e)('drawing commands', () => {
     expect(restyleJson.code).toBe(0);
     expect(restyleJson.json).toMatchObject({ ok: true });
     expect(restyleJson.json.files).toHaveLength(1);
+    const emptyDir = at('empty-lint');
+    fs.mkdirSync(emptyDir, { recursive: true });
+    const lintEmpty = await cli(['lint', emptyDir]);
+    expect(lintEmpty.code).toBe(0);
+    expect(lintEmpty.out).toContain('no .drawio.svg or .drawio files found');
   }, 60000);
 
   it('sync honors linework.yaml when checking stamps', async () => {
@@ -308,6 +345,32 @@ describe.runIf(e2e)('drawing commands', () => {
     expect(res.json.checks.every((c: { ok: boolean }) => c.ok)).toBe(true);
     const text = await cli(['doctor']);
     expect(text.out).toContain('linework can draw on this machine.');
+
+    // Doctor warns on invalid project config and non-file LINEWORK_CHROME without failing required checks.
+    const badProj = at('bad-doc-cfg');
+    fs.mkdirSync(badProj, { recursive: true });
+    fs.writeFileSync(path.join(badProj, 'linework.yaml'), 'theme: nonexistent_theme\n');
+    const prevCwd = process.cwd();
+    const prevChrome = process.env.LINEWORK_CHROME;
+    process.chdir(badProj);
+    try {
+      const badCfgDoc = await cli(['doctor', '--json']);
+      expect(badCfgDoc.code).toBe(0);
+      const checks = badCfgDoc.json.checks as Array<{ name: string; ok: boolean; required: boolean; detail: string }>;
+      expect(checks.find((c) => c.name === 'project config')).toMatchObject({ ok: false, required: false });
+
+      process.env.LINEWORK_CHROME = badProj; // a directory, not an executable file
+      const badChromeDoc = await cli(['doctor', '--json']);
+      const chromeChecks = badChromeDoc.json.checks as Array<{ name: string; ok: boolean; required: boolean; detail: string }>;
+      const chromeCheck = chromeChecks.find((c) => c.name === 'LINEWORK_CHROME');
+      expect(chromeCheck).toMatchObject({ ok: false, required: false });
+      expect(chromeCheck!.detail).toContain('is not a file');
+      expect(chromeChecks.some((c) => c.name === 'env overrides' && c.detail.includes('LINEWORK_CHROME='))).toBe(true);
+    } finally {
+      process.chdir(prevCwd);
+      if (prevChrome === undefined) delete process.env.LINEWORK_CHROME;
+      else process.env.LINEWORK_CHROME = prevChrome;
+    }
   }, 60000);
 
   it('build --watch rebuilds on every save and survives a broken spec', async () => {

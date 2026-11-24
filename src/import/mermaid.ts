@@ -11,18 +11,24 @@ export interface ImportResult {
 }
 
 export function importMermaid(src: string): ImportResult {
-  const lines = src
-    .replace(/^---[\s\S]*?\n---\s*\n/, '') // front matter
+  const normSrc = src.replace(/\r\n?/g, '\n');
+  let fmTitle: string | undefined;
+  const fm = /^---\s*\n([\s\S]*?)\n---\s*(?:\n|$)/.exec(normSrc);
+  if (fm) {
+    const tm = /^\s*title\s*:\s*(.+?)\s*$/m.exec(fm[1]!);
+    if (tm) fmTitle = clean(tm[1]!.replace(/^'(.*)'$/, '$1')) || undefined;
+  }
+  const lines = (fm ? normSrc.slice(fm[0].length) : normSrc)
     .split('\n')
     .map((l) => l.replace(/%%.*$/, '').trimEnd())
     .filter((l) => l.trim());
   const head = (lines[0] ?? '').trim();
-  if (/^(flowchart|graph)\b/i.test(head)) return flowchart(lines);
-  if (/^stateDiagram(-v2)?\b/.test(head)) return stateDiagram(lines);
-  if (/^sequenceDiagram\b/.test(head)) return sequenceDiagram(lines);
-  if (/^erDiagram\b/.test(head)) return erDiagram(lines);
-  if (/^classDiagram(-v2)?\b/.test(head)) return classDiagram(lines);
-  if (/^gantt\b/.test(head)) return gantt(lines);
+  if (/^(flowchart|graph)\b/i.test(head)) return flowchart(lines, fmTitle);
+  if (/^stateDiagram(-v2)?\b/.test(head)) return stateDiagram(lines, fmTitle);
+  if (/^sequenceDiagram\b/.test(head)) return sequenceDiagram(lines, fmTitle);
+  if (/^erDiagram\b/.test(head)) return erDiagram(lines, fmTitle);
+  if (/^classDiagram(-v2)?\b/.test(head)) return classDiagram(lines, fmTitle);
+  if (/^gantt\b/.test(head)) return gantt(lines, fmTitle);
   throw new Error(`unsupported Mermaid diagram "${head.split(/\s/)[0]}". linework imports flowchart/graph, stateDiagram, sequenceDiagram, erDiagram, classDiagram and gantt.`);
 }
 
@@ -42,6 +48,8 @@ const clean = (s: string) =>
     .trim();
 
 const brSplit = (s: string) => clean(s).split(/<br\s*\/?>|\\n/i).map((x) => x.replace(/<[^>]+>/g, '').trim()).filter(Boolean);
+const normBr = (s: string) => clean(s).replace(/\s*(?:<br\s*\/?>|\\n)\s*/gi, ' ').replace(/\s+/g, ' ').trim();
+const STYLE_WARNING = 'styling directives (classDef, style, click, ...) are dropped; linework applies its own theme';
 
 function safeId(raw: string, used: Set<string>, prefer?: string): string {
   let id = (prefer ?? raw).replace(/[^\w.-]+/g, '_').replace(/^[^A-Za-z_]+/, '');
@@ -74,7 +82,7 @@ const SHAPES: Array<[string, string, string]> = [
 
 interface FNode { id: string; text?: string; shape?: string }
 
-function flowchart(lines: string[]): ImportResult {
+function flowchart(lines: string[], fmTitle?: string): ImportResult {
   const warnings = new Set<string>();
   const dirTok = /^(?:flowchart|graph)\s+(TD|TB|BT|RL|LR)/i.exec(lines[0]!.trim())?.[1]?.toUpperCase();
   const direction = dirTok === 'TD' ? 'TB' : ((dirTok as Diagram['direction']) ?? 'auto');
@@ -122,7 +130,7 @@ function flowchart(lines: string[]): ImportResult {
         continue;
       }
       if (/^(classDef|class|style|linkStyle|click|accTitle|accDescr)\b/.test(stmt)) {
-        warnings.add('styling directives (classDef, style, click, ...) are dropped; linework applies its own theme');
+        warnings.add(STYLE_WARNING);
         continue;
       }
       if (/^direction\s+/.test(stmt)) continue;
@@ -178,7 +186,7 @@ function flowchart(lines: string[]): ImportResult {
     counts.set(base, k);
     return { id: k === 1 ? base : `${base}#${k}`, from, to, label: e.label, style: e.style, ...(e.highlight ? { highlight: true } : {}) };
   });
-  return { diagram: { type, direction, theme: 'clean', groups: outGroups, nodes: outNodes, edges: outEdges }, warnings: [...warnings] };
+  return { diagram: { type, ...(fmTitle ? { title: fmTitle } : {}), direction, theme: 'clean', groups: outGroups, nodes: outNodes, edges: outEdges }, warnings: [...warnings] };
 }
 
 function splitStatements(line: string): string[] {
@@ -198,9 +206,9 @@ function splitStatements(line: string): string[] {
   return out;
 }
 
-const ID_AT = /^[\w.À-￿-]+?(?=\s|$|[\[({>&|]|-->|---|-\.|==|--|<--|<==)/u;
+const ID_AT = /^[\w.À-￿-]+?(?=\s|$|[\[({>&|]|:::|@\{|-->|---|-\.|==|--|<--|<==)/u;
 
-function parseNodeAt(s: string, pos: number): { node: FNode; end: number } | null {
+function parseNodeAt(s: string, pos: number): { node: FNode; end: number; styled?: boolean } | null {
   const rest = s.slice(pos);
   const idm = ID_AT.exec(rest) ?? /^[\w.-]+/.exec(rest);
   if (!idm) return null;
@@ -209,29 +217,39 @@ function parseNodeAt(s: string, pos: number): { node: FNode; end: number } | nul
   // new-style shape syntax: A@{ shape: cyl, label: "x" }
   const at = /^@\{([^}]*)\}/.exec(s.slice(end));
   if (at) {
-    const lab = /label:\s*"([^"]*)"/.exec(at[1]!);
-    const shape = /shape:\s*([\w-]+)/.exec(at[1]!)?.[1];
-    node.text = lab?.[1];
-    node.shape = shape === 'cyl' || shape === 'database' ? 'cylinder' : shape === 'diam' || shape === 'decision' ? 'diamond' : shape === 'stadium' || shape === 'terminal' ? 'stadium' : 'rect';
-    return { node, end: end + at[0].length };
-  }
-  for (const [open, close, shape] of SHAPES) {
-    if (!s.startsWith(open, end)) continue;
-    const textStart = end + open.length;
-    let i = textStart;
-    if (s[i] === '"') {
-      const qEnd = s.indexOf('"', i + 1);
-      if (qEnd < 0) continue;
-      i = qEnd + 1;
+    const lab = /\blabel\s*:\s*(?:"([^"]*)"|'([^']*)'|`([^`]*)`|([^,}]+))/.exec(at[1]!);
+    const rawLabel = lab ? (lab[1] ?? lab[2] ?? lab[3] ?? lab[4]?.trim()) : undefined;
+    const shape = /\bshape\s*:\s*["']?([\w-]+)["']?/.exec(at[1]!)?.[1]?.toLowerCase();
+    if (rawLabel != null) node.text = rawLabel;
+    node.shape =
+      shape === 'cyl' || shape === 'cylinder' || shape === 'database' || shape === 'db' || shape === 'disk' ? 'cylinder' :
+      shape === 'diam' || shape === 'diamond' || shape === 'decision' || shape === 'question' ? 'diamond' :
+      shape === 'stadium' || shape === 'terminal' || shape === 'pill' ? 'stadium' :
+      shape === 'lean-r' || shape === 'lean-l' || shape === 'in-out' || shape === 'out-in' ? 'para' :
+      shape === 'circle' || shape === 'circ' || shape === 'dbl-circ' || shape === 'sm-circ' || shape === 'fr-circ' || shape === 'start' || shape === 'stop' ? 'circle' :
+      'rect';
+    end += at[0].length;
+  } else {
+    for (const [open, close, shape] of SHAPES) {
+      if (!s.startsWith(open, end)) continue;
+      const textStart = end + open.length;
+      let i = textStart;
+      if (s[i] === '"') {
+        const qEnd = s.indexOf('"', i + 1);
+        if (qEnd < 0) continue;
+        i = qEnd + 1;
+      }
+      const closeAt = s.indexOf(close, i);
+      if (closeAt < 0) continue;
+      node.text = s.slice(textStart, closeAt);
+      node.shape = shape;
+      end = closeAt + close.length;
+      break;
     }
-    const closeAt = s.indexOf(close, i);
-    if (closeAt < 0) continue;
-    node.text = s.slice(textStart, closeAt);
-    node.shape = shape;
-    end = closeAt + close.length;
-    break;
   }
-  return { node, end };
+  const cls = /^(?::::[\w-]+)+/.exec(s.slice(end));
+  if (cls) end += cls[0].length;
+  return { node, end, ...(cls ? { styled: true } : {}) };
 }
 
 function parseEdgeAt(s: string, pos: number): { style: EdgeStyle; label?: string; end: number; thick?: boolean; reverse?: boolean } | null {
@@ -269,6 +287,7 @@ function parseChain(stmt: string, touch: (n: FNode) => void, edges: Array<{ from
       while (stmt[pos] === ' ') pos++;
       const r = parseNodeAt(stmt, pos);
       if (!r) return ids.length ? ids : null;
+      if (r.styled) warnings.add(STYLE_WARNING);
       touch(r.node);
       ids.push(r.node.id);
       pos = r.end;
@@ -313,8 +332,9 @@ function kindFor(type: Diagram['type'], shape: string | undefined, label: string
 
 // ---------- state ----------
 
-function stateDiagram(lines: string[]): ImportResult {
+function stateDiagram(lines: string[], fmTitle?: string): ImportResult {
   const warnings = new Set<string>();
+  let title = fmTitle;
   let direction: Diagram['direction'] = 'auto';
   const labels = new Map<string, string>();
   const order: string[] = [];
@@ -332,14 +352,21 @@ function stateDiagram(lines: string[]): ImportResult {
   for (const raw of lines.slice(1)) {
     const l = raw.trim();
     let m: RegExpExecArray | null;
-    if ((m = /^direction\s+(LR|TB|RL|BT)/.exec(l))) { if (!stack.length) direction = m[1] as Diagram['direction']; continue; }
+    if ((m = /^direction\s+(LR|TB|TD|RL|BT)/i.exec(l))) {
+      if (!stack.length) {
+        const d = m[1]!.toUpperCase();
+        direction = d === 'TD' ? 'TB' : (d as Diagram['direction']);
+      }
+      continue;
+    }
+    if (!stack.length && (m = /^title\s+(?!:)(.+)$/.exec(l)) && !/^-->/.test(m[1]!)) { title = normBr(m[1]!) || title; continue; }
     if ((m = /^state\s+"([^"]+)"\s+as\s+([\w.-]+)\s*\{$/.exec(l))) {
-      labels.set(m[2]!, m[1]!);
+      labels.set(m[2]!, normBr(m[1]!));
       groups.push({ raw: m[2]!, parent: stack[stack.length - 1] });
       stack.push(m[2]!);
       continue;
     }
-    if ((m = /^state\s+"([^"]+)"\s+as\s+([\w.-]+)$/.exec(l))) { labels.set(m[2]!, m[1]!); touch(m[2]!); continue; }
+    if ((m = /^state\s+"([^"]+)"\s+as\s+([\w.-]+)$/.exec(l))) { labels.set(m[2]!, normBr(m[1]!)); touch(m[2]!); continue; }
     if ((m = /^state\s+([\w.-]+)\s*\{$/.exec(l))) { groups.push({ raw: m[1]!, parent: stack[stack.length - 1] }); stack.push(m[1]!); continue; }
     if ((m = /^state\s+([\w.-]+)\s*<<\w+>>/.exec(l))) { touch(m[1]!); warnings.add('choice/fork/join states become plain states'); continue; }
     if (l === '}') { stack.pop(); continue; }
@@ -349,10 +376,10 @@ function stateDiagram(lines: string[]): ImportResult {
       if (stack.length && (m[1] === '[*]' || m[2] === '[*]')) { touch(m[1]!); touch(m[2]!); continue; }
       touch(m[1]!);
       touch(m[2]!);
-      edges.push({ from: m[1]!, to: m[2]!, label: m[3] ? clean(m[3]) : undefined });
+      edges.push({ from: m[1]!, to: m[2]!, label: m[3] ? normBr(m[3]) || undefined : undefined });
       continue;
     }
-    if ((m = /^([\w.-]+)\s*:\s*(.+)$/.exec(l))) { labels.set(m[1]!, clean(m[2]!)); touch(m[1]!); continue; }
+    if ((m = /^([\w.-]+)\s*:\s*(.+)$/.exec(l))) { labels.set(m[1]!, normBr(m[2]!)); touch(m[1]!); continue; }
     if ((m = /^([\w.-]+)$/.exec(l))) { touch(m[1]!); continue; }
     warnings.add(`skipped a line linework couldn't read: "${l.slice(0, 60)}"`);
   }
@@ -390,7 +417,7 @@ function stateDiagram(lines: string[]): ImportResult {
   if (startUsed) nodes.unshift({ id: '_start', label: '', kind: 'start' });
   for (const f of endFor) nodes.push({ id: `_end_${f === '_start' ? 'start' : f}`, label: '', kind: 'end' });
   const outGroups: Group[] = groups.map((g) => ({ id: ids.get(g.raw)!, label: labels.get(g.raw) ?? humanize(g.raw), parent: g.parent ? ids.get(g.parent) : undefined }));
-  return { diagram: { type: 'state', direction, theme: 'clean', groups: outGroups, nodes, edges: outEdges }, warnings: [...warnings] };
+  return { diagram: { type: 'state', ...(title ? { title } : {}), direction, theme: 'clean', groups: outGroups, nodes, edges: outEdges }, warnings: [...warnings] };
 }
 
 // ---------- sequence ----------
@@ -406,19 +433,26 @@ const SEQ_ARROWS: Array<[string, MessageStyle]> = [
   ['->', 'sync'],
 ];
 
-function sequenceDiagram(lines: string[]): ImportResult {
+function sequenceDiagram(lines: string[], fmTitle?: string): ImportResult {
   const warnings = new Set<string>();
+  let title = fmTitle;
   const parts = new Map<string, Node>();
   const used = new Set<string>();
   const pid = new Map<string, string>();
-  const declare = (raw: string, label?: string, kind = 'service') => {
+  const declare = (raw: string, label?: string, kind = 'service', tech?: string) => {
     if (pid.has(raw)) {
-      if (label) parts.get(pid.get(raw)!)!.label = label;
+      const node = parts.get(pid.get(raw)!)!;
+      if (label) node.label = label;
+      if (tech) node.tech = tech;
+      if (label || tech || kind !== 'service') {
+        node.kind = inferParticipant([node.label, node.tech].filter(Boolean).join(' '), kind === 'service' ? node.kind : kind);
+      }
       return pid.get(raw)!;
     }
     const id = safeId(raw, used);
     pid.set(raw, id);
-    parts.set(id, { id, label: label ?? (raw.length <= 3 ? raw : humanize(raw)), kind: inferParticipant(label ?? raw, kind) });
+    const full = [label, tech].filter(Boolean).join(' ') || raw;
+    parts.set(id, { id, label: label ?? (raw.length <= 3 ? raw : humanize(raw)), kind: inferParticipant(full, kind), ...(tech ? { tech } : {}) });
     return id;
   };
   const root: SeqItem[] = [];
@@ -441,9 +475,13 @@ function sequenceDiagram(lines: string[]): ImportResult {
   for (const raw of lines.slice(1)) {
     const l = raw.trim();
     let m: RegExpExecArray | null;
-    if ((m = /^(participant|actor)\s+(\S+?)(?:\s+as\s+(.+))?$/.exec(l))) { declare(m[2]!, m[3] ? clean(m[3]) : undefined, m[1] === 'actor' ? 'person' : 'service'); continue; }
-    if ((m = /^(alt|opt|loop|par|critical|break)\b\s*(.*)$/.exec(l))) { stack.push({ op: m[1] as FrameOp, branches: [{ when: m[2] ? clean(m[2]) : undefined, items: [] }] }); continue; }
-    if ((m = /^(else|and|option)\b\s*(.*)$/.exec(l))) { stack[stack.length - 1]?.branches.push({ when: m[2] ? clean(m[2]) : undefined, items: [] }); continue; }
+    if ((m = /^(?:create\s+)?(participant|actor)\s+(\S+?)(?:\s+as\s+(.+))?$/.exec(l))) {
+      const sp = m[3] ? brSplit(m[3]) : [];
+      declare(m[2]!, sp[0], m[1] === 'actor' ? 'person' : 'service', sp.length > 1 ? sp.slice(1).join(' ') : undefined);
+      continue;
+    }
+    if ((m = /^(alt|opt|loop|par|critical|break)\b\s*(.*)$/.exec(l))) { stack.push({ op: m[1] as FrameOp, branches: [{ when: m[2] ? normBr(m[2]) || undefined : undefined, items: [] }] }); continue; }
+    if ((m = /^(else|and|option)\b\s*(.*)$/.exec(l))) { stack[stack.length - 1]?.branches.push({ when: m[2] ? normBr(m[2]) || undefined : undefined, items: [] }); continue; }
     if (/^rect\b/.test(l)) { stack.push({ op: 'rect', branches: [{ items: [] }] }); warnings.add('rect highlights are dropped'); continue; }
     if (l === 'end') {
       closeFrame();
@@ -452,10 +490,14 @@ function sequenceDiagram(lines: string[]): ImportResult {
     if ((m = /^note\s+(over|left of|right of)\s+([^:]+):\s*(.*)$/i.exec(l))) {
       const over = m[2]!.split(',').map((s) => declare(s.trim()));
       const side = m[1]!.toLowerCase().startsWith('left') ? 'left' : m[1]!.toLowerCase().startsWith('right') ? 'right' : 'over';
-      cur().push({ kind: 'note', over, side, text: clean(m[3]!).replace(/<br\s*\/?>/gi, ' ') });
+      cur().push({ kind: 'note', over, side, text: normBr(m[3]!) });
       continue;
     }
-    if (/^(activate|deactivate|autonumber|box|end box|title|create|destroy|links?|properties|details)\b/.test(l)) continue;
+    if ((m = /^title(?::\s*|\s+)(.+)$/i.exec(l)) && !/^(?:--?>>?|--?[x)])\s*/.test(m[1]!)) {
+      title = normBr(m[1]!) || title;
+      continue;
+    }
+    if (/^(activate|deactivate|autonumber|box|end box|create|destroy|links?|properties|details)\b/.test(l)) continue;
     let matched = false;
     // The arrow is in the part before the message text, and it is the first one
     // there: "A->B: retry with -x flag" is an arrow from A to B, not one ending in "x".
@@ -468,7 +510,7 @@ function sequenceDiagram(lines: string[]): ImportResult {
       const after = l.slice(i + tok.length);
       const mm = /^\s*[+-]?\s*([^:]+?)\s*:\s*(.*)$/.exec(after) ?? /^\s*[+-]?\s*(\S+)\s*$/.exec(after);
       if (!mm || !from) continue;
-      cur().push({ kind: 'msg', from: declare(from), to: declare(mm[1]!.trim()), label: mm[2] ? clean(mm[2]) : undefined, style });
+      cur().push({ kind: 'msg', from: declare(from), to: declare(mm[1]!.trim()), label: mm[2] ? normBr(mm[2]) || undefined : undefined, style });
       matched = true;
       break;
     }
@@ -478,7 +520,7 @@ function sequenceDiagram(lines: string[]): ImportResult {
     warnings.add(`unclosed "${stack[stack.length - 1]!.op}" frame was closed at the end of the diagram`);
     closeFrame();
   }
-  return { diagram: { type: 'sequence', direction: 'auto', theme: 'clean', groups: [], nodes: [...parts.values()], edges: [], seq: root }, warnings: [...warnings] };
+  return { diagram: { type: 'sequence', ...(title ? { title } : {}), direction: 'auto', theme: 'clean', groups: [], nodes: [...parts.values()], edges: [], seq: root }, warnings: [...warnings] };
 }
 
 function inferParticipant(label: string, kind: string): string {
@@ -495,17 +537,22 @@ function inferParticipant(label: string, kind: string): string {
 const L_CARD: Record<string, Card> = { '|o': 'zero_or_one', '||': 'one', '}o': 'many', '}|': 'one_or_many' };
 const R_CARD: Record<string, Card> = { 'o|': 'zero_or_one', '||': 'one', 'o{': 'many', '|{': 'one_or_many' };
 
-function erDiagram(lines: string[]): ImportResult {
+function erDiagram(lines: string[], fmTitle?: string): ImportResult {
   const warnings = new Set<string>();
+  let title = fmTitle;
+  let direction: Diagram['direction'] = 'auto';
   const ents = new Map<string, Node>();
   const used = new Set<string>();
   const eid = new Map<string, string>();
-  const ent = (raw: string) => {
+  const ent = (raw: string, alias?: string) => {
     const name = raw.replace(/^"|"$/g, '');
+    const display = alias ? normBr(alias) : undefined;
     if (!eid.has(name)) {
       const id = safeId(name.toLowerCase(), used);
       eid.set(name, id);
-      ents.set(id, { id, label: name, kind: 'entity', fields: [] });
+      ents.set(id, { id, label: display || name, kind: 'entity', fields: [] });
+    } else if (display) {
+      ents.get(eid.get(name)!)!.label = display;
     }
     return ents.get(eid.get(name)!)!;
   };
@@ -523,7 +570,11 @@ function erDiagram(lines: string[]): ImportResult {
       } else warnings.add(`skipped a field line: "${l.slice(0, 60)}"`);
       continue;
     }
-    if ((m = /^("[^"]+"|[\w.-]+)\s*(?:\["[^"]*"\])?\s*\{$/.exec(l))) { open = ent(m[1]!); continue; }
+    if ((m = /^("[^"]+"|[\w.-]+)\s*(?:\["([^"]*)"\])?\s*\{(\s*\})?$/.exec(l))) {
+      const n = ent(m[1]!, m[2]);
+      if (!m[3]) open = n;
+      continue;
+    }
     if ((m = /^("[^"]+"|[\w.-]+)\s+([|}][o|])(--|\.\.)([o|][|{])\s+("[^"]+"|[\w.-]+)\s*:\s*(.+)$/.exec(l))) {
       const a = ent(m[1]!), b = ent(m[5]!);
       const base = `${a.id}->${b.id}`;
@@ -532,13 +583,19 @@ function erDiagram(lines: string[]): ImportResult {
       edges.push({ id: k === 1 ? base : `${base}#${k}`, from: a.id, to: b.id, label: clean(m[6]!) || undefined, style: 'line', card: { from: L_CARD[m[2]!]!, to: R_CARD[m[4]!]!, identifying: m[3] === '--' } });
       continue;
     }
-    if ((m = /^("[^"]+"|[\w.-]+)$/.exec(l))) { ent(m[1]!); continue; }
-    if (/^(direction|title|classDef|class|style)\b/.test(l)) continue;
+    if ((m = /^direction\s+(TB|TD|BT|LR|RL)\b/i.exec(l))) {
+      const d = m[1]!.toUpperCase();
+      direction = d === 'TD' ? 'TB' : (d as Diagram['direction']);
+      continue;
+    }
+    if ((m = /^title(?::\s*|\s+)(.+)$/i.exec(l))) { title = normBr(m[1]!) || title; continue; }
+    if ((m = /^("[^"]+"|[\w.-]+)\s*(?:\["([^"]*)"\])?$/.exec(l))) { ent(m[1]!, m[2]); continue; }
+    if (/^(classDef|class|style)\b/.test(l)) continue;
     warnings.add(`skipped a line linework couldn't read: "${l.slice(0, 60)}"`);
   }
   // Mermaid entity names are often UPPERCASE; show them as written.
   for (const n of ents.values()) if (!n.fields?.length) delete n.fields;
-  return { diagram: { type: 'er', direction: 'auto', theme: 'clean', groups: [], nodes: [...ents.values()], edges }, warnings: [...warnings] };
+  return { diagram: { type: 'er', ...(title ? { title } : {}), direction, theme: 'clean', groups: [], nodes: [...ents.values()], edges }, warnings: [...warnings] };
 }
 
 // ---------- class ----------
@@ -556,17 +613,23 @@ function mermaidMember(raw: string) {
   return parts.length >= 2 ? { name: vis + parts[parts.length - 1]!, type: parts.slice(0, -1).join(' '), flags: [] } : { name: vis + body, type: undefined, flags: [] };
 }
 
-function classDiagram(lines: string[]): ImportResult {
+function classDiagram(lines: string[], fmTitle?: string): ImportResult {
   const warnings = new Set<string>();
+  let title = fmTitle;
   const classes = new Map<string, Node>();
   const used = new Set<string>();
   const ids = new Map<string, string>();
+  const groups: Group[] = [];
+  const nsStack: string[] = [];
+  const nsIds = new Map<string, string>();
   const cls = (raw: string) => {
     const name = raw.replace(/^`|`$/g, '').replace(/~.*~$/, '');
     if (!ids.has(name)) {
       const id = safeId(name, used);
       ids.set(name, id);
-      classes.set(id, { id, label: name, kind: 'class', fields: [] });
+      classes.set(id, { id, label: name, kind: 'class', ...(nsStack.length ? { parent: nsStack[nsStack.length - 1] } : {}), fields: [] });
+    } else if (nsStack.length && !classes.get(ids.get(name)!)!.parent) {
+      classes.get(ids.get(name)!)!.parent = nsStack[nsStack.length - 1];
     }
     return classes.get(ids.get(name)!)!;
   };
@@ -588,6 +651,20 @@ function classDiagram(lines: string[]): ImportResult {
         const member = mermaidMember(l);
         if (member?.name) open.fields!.push(member);
       }
+      continue;
+    }
+    if (l === '}') { nsStack.pop(); continue; }
+    if ((m = /^namespace\s+("[^"]+"|[\w.-]+)\s*\{(\s*\})?$/.exec(l))) {
+      const label = clean(m[1]!);
+      const parent = nsStack[nsStack.length - 1];
+      const key = `${parent ?? ''}\0${label}`;
+      let id = nsIds.get(key);
+      if (!id) {
+        id = safeId(label, used);
+        nsIds.set(key, id);
+        groups.push({ id, label, ...(parent ? { parent } : {}) });
+      }
+      if (!m[2]) nsStack.push(id);
       continue;
     }
     if ((m = /^direction\s+(TB|TD|BT|LR|RL)$/.exec(l))) { direction = m[1] === 'TD' ? 'TB' : (m[1] as Diagram['direction']); continue; }
@@ -615,32 +692,37 @@ function classDiagram(lines: string[]): ImportResult {
         continue;
       }
     }
+    if ((m = /^title(?::\s+|\s+)(?!:)(.+)$/.exec(l))) { title = normBr(m[1]!) || title; continue; }
     // "Duck : +swim()" adds a member to a class from outside its braces.
     if ((m = /^(`[^`]+`|[\w.-]+)\s*:\s*(.+)$/.exec(l))) {
       const member = mermaidMember(m[2]!);
       if (member?.name) cls(m[1]!).fields!.push(member);
       continue;
     }
-    if (/^(note|link|click|callback|style|classDef|cssClass|namespace|\}|title)\b/.test(l) || l === '}') {
-      if (/^(note|namespace)/.test(l)) warnings.add('notes and namespaces are dropped');
+    if (/^(note|link|click|callback|style|classDef|cssClass)\b/.test(l)) {
+      if (/^note\b/.test(l)) warnings.add('notes are dropped');
       continue;
     }
     warnings.add(`skipped a line linework couldn't read: "${l.slice(0, 60)}"`);
   }
   for (const n of classes.values()) if (!n.fields?.length) delete n.fields;
-  return { diagram: { type: 'class', direction, theme: 'clean', groups: [], nodes: [...classes.values()], edges }, warnings: [...warnings] };
+  const keepGroup = new Set<string>();
+  for (const n of classes.values()) {
+    for (let p = n.parent; p && !keepGroup.has(p); p = groups.find((g) => g.id === p)?.parent) keepGroup.add(p);
+  }
+  return { diagram: { type: 'class', ...(title ? { title } : {}), direction, theme: 'clean', groups: groups.filter((g) => keepGroup.has(g.id)), nodes: [...classes.values()], edges }, warnings: [...warnings] };
 }
 
 // ---------- gantt ----------
 
-function gantt(lines: string[]): ImportResult {
+function gantt(lines: string[], fmTitle?: string): ImportResult {
   const warnings = new Set<string>();
   const used = new Set<string>();
   const groups: Group[] = [];
   const nodes: Node[] = [];
   /** Mermaid task id to the day after it ends, for "after a1". */
   const endOf = new Map<string, number>();
-  let title: string | undefined, lane: string | undefined, last: number | undefined;
+  let title: string | undefined = fmTitle, lane: string | undefined, last: number | undefined;
   const skipWeekends = lines.some((l) => /^\s*excludes\s+.*weekends/.test(l));
   if (skipWeekends) warnings.add('"excludes weekends" is not applied: durations count calendar days');
   for (const raw of lines.slice(1)) {

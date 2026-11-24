@@ -152,7 +152,18 @@ export function parseSpecText(text: string): ParseResult {
   try {
     raw = YAML.parse(text);
   } catch (e) {
-    throw new SpecError([{ path: '', message: `invalid YAML: ${(e as Error).message}` }]);
+    const err = e as Error & { linePos?: Array<{ line: number; col: number }> };
+    let msg = `invalid YAML: ${err.message}`;
+    const lines = text.split(/\r?\n/);
+    const lineIdx = err.linePos?.[0]?.line ? err.linePos[0].line - 1 : -1;
+    const line = lineIdx >= 0 ? (lines[lineIdx] ?? '') : '';
+    const probe = line || text;
+    if (/\[\*\]/.test(probe)) {
+      msg += '\nHint: quote state edges containing [*], e.g. - "[*] -> idle".';
+    } else if (/(?:<->|-\.->|==>|-->|->|--)\s+[^:\n]+:\s/.test(line)) {
+      msg += '\nHint: quote edge lines whose label contains ": " or special YAML characters, e.g. - "api -> db: auth: ok".';
+    }
+    throw new SpecError([{ path: '', message: msg }]);
   }
   return parseSpec(raw);
 }
@@ -169,7 +180,7 @@ function accentOf(raw: string | null | undefined, issues: Issue[]): { accent?: s
 
 export function parseSpec(raw: unknown): ParseResult {
   const res = SpecInput.safeParse(raw);
-  if (!res.success) throw new SpecError(res.error.issues.flatMap(zodIssues));
+  if (!res.success) throw new SpecError(res.error.issues.flatMap((i) => zodIssues(i, raw)));
   const spec = res.data;
   const type = spec.type;
   const issues: Issue[] = [];
@@ -198,7 +209,7 @@ export function parseSpec(raw: unknown): ParseResult {
     const known = Object.hasOwn(KINDS[type], kind);
     if (!obj.icon && known && KINDS[type][kind]!.icon && type === 'architecture') obj.icon = KINDS[type][kind]!.icon;
     if (!known) {
-      issues.push({ path: `${path}.kind`, message: `unknown kind "${kind}" for a ${type} diagram. Use one of: ${Object.keys(KINDS[type]).join(', ')}.` });
+      issues.push({ path: `${path}.kind`, message: `unknown kind "${kind}" for a ${type} diagram. Use one of: ${Object.keys(KINDS[type]).join(', ')}.${suggest(kind, Object.keys(KINDS[type]))}` });
     }
     const node: Node = { id, label: oneLine(obj.label) ?? humanize(id), kind, tech: oneLine(obj.tech), parent: obj.in, ...look(obj, path, issues) };
     if (type === 'timeline') {
@@ -290,10 +301,19 @@ export function parseSpec(raw: unknown): ParseResult {
       // The object form is checked as strictly as the rest of the spec: a misspelt key is an error, not a dropped label.
       const checked = EdgeObject.safeParse(item);
       if (!checked.success) {
-        for (const i of checked.error.issues.flatMap(zodIssues)) issues.push({ path: i.path ? `${path}.${i.path}` : path, message: i.path || !/^unknown key/.test(i.message) ? i.message : i.message.replace(/Allowed here: .*$/, `Allowed here: ${EDGE_KEYS}.`) });
+        for (const issue of checked.error.issues) {
+          if (issue.code === 'unrecognized_keys') {
+            issues.push({ path, message: `unknown key(s) ${issue.keys.map((k) => `"${k}"`).join(', ')}. Allowed here: ${EDGE_KEYS}.${suggestKey(issue.keys, EDGE_KEY_LIST)}` });
+          } else {
+            for (const i of zodIssues(issue, item)) issues.push({ path: i.path ? `${path}.${i.path}` : path, message: i.message });
+          }
+        }
         return;
       }
       const o = checked.data;
+      if (o.rel && type !== 'class') {
+        issues.push({ path: `${path}.rel`, message: `rel ("${o.rel}") is only for type: class. Use style (sync, async, bidir, line) for ${type} edges.` });
+      }
       parsed = { from: o.from, to: o.to, label: o.label, style: o.style ?? 'sync', ...(o.rel && type === 'class' ? { rel: o.rel } : {}), ...look(o, path, issues) };
     } else {
       const entries = Object.entries(item);
@@ -478,10 +498,21 @@ function parseSequence(spec: z.infer<typeof SpecInput>): ParseResult {
   for (const [id, n] of Object.entries(spec.participants ?? {})) {
     const path = `participants.${id}`;
     if (!ID_RE.test(id)) issues.push({ path, message: badId(id) });
-    const obj = withComponent(id, typeof n === 'string' ? { label: n } : n);
+    const rawObj = typeof n === 'string' ? { label: n } : n;
+    const obj = withComponent(id, rawObj);
     const kind = obj.kind ?? 'service';
-    if (!Object.hasOwn(KINDS.sequence, kind)) issues.push({ path: `${path}.kind`, message: `unknown kind "${kind}" for a sequence diagram. Use one of: ${Object.keys(KINDS.sequence).join(', ')}.` });
-    if ('fields' in obj && obj.fields) issues.push({ path: `${path}.fields`, message: 'fields are for type: er' });
+    if (!Object.hasOwn(KINDS.sequence, kind)) {
+      issues.push({ path: `${path}.kind`, message: `unknown kind "${kind}" for a sequence diagram. Use one of: ${Object.keys(KINDS.sequence).join(', ')}.${suggest(kind, Object.keys(KINDS.sequence))}` });
+    }
+    if (typeof n !== 'string') {
+      if (n.fields !== undefined) issues.push({ path: `${path}.fields`, message: 'fields are for type: er' });
+      if (n.members !== undefined) issues.push({ path: `${path}.members`, message: 'members are for type: class' });
+      if (n.in !== undefined) issues.push({ path: `${path}.in`, message: 'sequence diagrams have no groups, so participants cannot use "in"' });
+      if (n.icon !== undefined) issues.push({ path: `${path}.icon`, message: 'icons are only for type: architecture, not sequence participants' });
+      for (const tk of ['start', 'end', 'at'] as const) {
+        if (n[tk] !== undefined) issues.push({ path: `${path}.${tk}`, message: 'start, end and at are for type: timeline' });
+      }
+    }
     nodes.push({ id, label: oneLine(obj.label) ?? humanize(id), kind, tech: oneLine(obj.tech), ...look(obj, path, issues) });
   }
   const ids = new Set(nodes.map((n) => n.id));
@@ -508,7 +539,7 @@ function parseSequence(spec: z.infer<typeof SpecInput>): ParseResult {
       if (op === 'alt' || op === 'par' || (op === 'critical' && Array.isArray(v))) {
         const extraFrame = Object.keys(o).filter((k) => k !== op);
         if (extraFrame.length) {
-          issues.push({ path, message: `unknown key(s) ${extraFrame.map((k) => `"${k}"`).join(', ')}. Allowed here: ${op}.` });
+          issues.push({ path, message: `unknown key(s) ${extraFrame.map((k) => `"${k}"`).join(', ')}. Allowed here: ${op}.${suggestKey(extraFrame, [op])}` });
         }
         if (!Array.isArray(v)) {
           issues.push({ path, message: `${op} takes a list of branches: - ${op}: [ { when: condition, do: [messages] }, ... ]` });
@@ -523,7 +554,7 @@ function parseSequence(spec: z.infer<typeof SpecInput>): ParseResult {
           const bo = b as Record<string, unknown>;
           const extra = Object.keys(bo).filter((k) => k !== 'when' && k !== 'do');
           if (extra.length) {
-            issues.push({ path: bPath, message: `unknown key(s) ${extra.map((k) => `"${k}"`).join(', ')}. Allowed here: when, do.` });
+            issues.push({ path: bPath, message: `unknown key(s) ${extra.map((k) => `"${k}"`).join(', ')}. Allowed here: when, do.${suggestKey(extra, ['when', 'do'])}` });
           }
           if (!Array.isArray(bo.do)) issues.push({ path: bPath, message: 'each branch needs do: [messages]' });
           return { when: bo.when == null ? undefined : String(bo.when), items: items(Array.isArray(bo.do) ? bo.do : [], `${bPath}.do`) };
@@ -532,7 +563,7 @@ function parseSequence(spec: z.infer<typeof SpecInput>): ParseResult {
       }
       const extra = Object.keys(o).filter((k) => k !== op && k !== 'do');
       if (extra.length) {
-        issues.push({ path, message: `unknown key(s) ${extra.map((k) => `"${k}"`).join(', ')}. Allowed here: ${op}, do.` });
+        issues.push({ path, message: `unknown key(s) ${extra.map((k) => `"${k}"`).join(', ')}. Allowed here: ${op}, do.${suggestKey(extra, [op, 'do'])}` });
       }
       if (!Array.isArray(o.do)) {
         issues.push({ path, message: `${op} needs do: [messages], e.g. - ${op}: every 5s\n    do:\n      - a -> b: poll` });
@@ -544,7 +575,13 @@ function parseSequence(spec: z.infer<typeof SpecInput>): ParseResult {
       // The long form, for a message with a color: { from: a, to: b, label: text, style: reply, color: red }.
       const checked = MessageObject.safeParse(o);
       if (!checked.success) {
-        for (const i of checked.error.issues.flatMap(zodIssues)) issues.push({ path: i.path ? `${path}.${i.path}` : path, message: i.path || !/^unknown key/.test(i.message) ? i.message : i.message.replace(/Allowed here: .*$/, 'Allowed here: from, to, label, style, color, status, highlight.') });
+        for (const issue of checked.error.issues) {
+          if (issue.code === 'unrecognized_keys') {
+            issues.push({ path, message: `unknown key(s) ${issue.keys.map((k) => `"${k}"`).join(', ')}. Allowed here: from, to, label, style, color, status, highlight.${suggestKey(issue.keys, MSG_KEY_LIST)}` });
+          } else {
+            for (const i of zodIssues(issue, o)) issues.push({ path: i.path ? `${path}.${i.path}` : path, message: i.message });
+          }
+        }
         return null;
       }
       const msg = checked.data;
@@ -598,6 +635,13 @@ function parseEdgeString(s: string, path: string, issues: Issue[]) {
   const label = colon >= 0 ? s.slice(colon + 1).trim() : '';
   const m = EDGE_RE.exec(head);
   if (!m) {
+    if (/\s-->\s/.test(head)) {
+      issues.push({
+        path,
+        message: `can't read edge "${s}". "-->" is for sequence replies or class associations; use "->" (call) or "-.->" (async) instead, e.g. "${s.replace(/\s-->\s/, ' -> ')}".`,
+      });
+      return null;
+    }
     issues.push({ path, message: `can't read edge "${s}". Write it as "from -> to: label", with spaces around the arrow. Arrows: -> (call), ==> (highlighted call), -.-> (async), <-> (two-way), -- (no arrow).` });
     return null;
   }
@@ -609,7 +653,7 @@ function look(o: { color?: string; highlight?: boolean; status?: string }, path:
   if (o.color != null) {
     const c = o.color.toLowerCase();
     if ((COLORS as readonly string[]).includes(c)) out.color = c as ColorName;
-    else issues.push({ path: `${path}.color`, message: `unknown color "${o.color}". Use one of: ${COLORS.join(', ')}.` });
+    else issues.push({ path: `${path}.color`, message: `unknown color "${o.color}". Use one of: ${COLORS.join(', ')}.${colorSuggest(o.color)}` });
   }
   if (o.status != null) {
     const all = activeConfig().statuses;
@@ -622,7 +666,7 @@ function look(o: { color?: string; highlight?: boolean; status?: string }, path:
     } else
       issues.push({
         path: `${path}.status`,
-        message: names.length ? `unknown status "${o.status}". This repo's linework.yaml defines: ${names.join(', ')}.` : `status needs a "statuses:" section in linework.yaml, like "statuses: { ${o.status}: green }". Without one, use color.`,
+        message: names.length ? `unknown status "${o.status}". This repo's linework.yaml defines: ${names.join(', ')}.${suggest(o.status, names)}` : `status needs a "statuses:" section in linework.yaml, like "statuses: { ${o.status}: green }". Without one, use color.`,
       });
   }
   if (o.highlight) out.highlight = true;
@@ -638,7 +682,7 @@ function withComponent<T extends { label?: string; kind?: string; tech?: string;
 /** The theme and direction a spec gets, after the team's defaults and lock. */
 function settings(spec: { theme?: string; direction?: Direction }, issues: Issue[]): { theme: string; direction: Direction } {
   const cfg = activeConfig();
-  if (spec.theme && !isTheme(spec.theme)) issues.push({ path: 'theme', message: `unknown theme "${spec.theme}". Use one of: ${themeNames().join(', ')}.` });
+  if (spec.theme && !isTheme(spec.theme)) issues.push({ path: 'theme', message: `unknown theme "${spec.theme}". Use one of: ${themeNames().join(', ')}.${suggest(spec.theme, themeNames())}` });
   else if (spec.theme && cfg.lockTheme && spec.theme !== cfg.theme)
     issues.push({ path: 'theme', message: `this repo's linework.yaml sets every diagram to theme "${cfg.theme}". Remove the theme line.` });
   return { theme: spec.theme ?? cfg.theme ?? 'clean', direction: spec.direction ?? cfg.direction ?? 'auto' };
@@ -656,6 +700,43 @@ function highlightWarning(nodes: Array<{ highlight?: boolean }>, edges: Array<{ 
 
 const NODE_KEYS = 'label, kind, tech, in, icon, color, status, highlight; fields (er), members (class); start, end, at (timeline)';
 const EDGE_KEYS = 'from, to, label, style, rel, color, status, highlight';
+const TOP_KEY_LIST = ['type', 'title', 'direction', 'theme', 'accent', 'groups', 'nodes', 'edges', 'participants', 'messages'];
+const NODE_KEY_LIST = ['label', 'kind', 'tech', 'in', 'icon', 'color', 'status', 'highlight', 'fields', 'members', 'start', 'end', 'at'];
+const GROUP_KEY_LIST = ['label', 'in', 'color', 'status', 'highlight'];
+const EDGE_KEY_LIST = ['from', 'to', 'label', 'style', 'rel', 'color', 'status', 'highlight'];
+const MSG_KEY_LIST = ['from', 'to', 'label', 'style', 'color', 'status', 'highlight'];
+
+const KEY_ALIASES: Record<string, string> = {
+  name: 'label',
+  text: 'label',
+  group: 'in',
+  parent: 'in',
+  container: 'in',
+  type: 'kind',
+  subtitle: 'tech',
+  description: 'tech',
+  desc: 'tech',
+  source: 'from',
+  target: 'to',
+  src: 'from',
+  dst: 'to',
+  condition: 'when',
+  cond: 'when',
+  messages: 'do',
+  steps: 'do',
+  colour: 'color',
+  node: 'nodes',
+  edge: 'edges',
+  participant: 'participants',
+  message: 'messages',
+};
+
+const COLOR_ALIASES: Record<string, ColorName> = {
+  grey: 'gray',
+  purple: 'violet',
+  yellow: 'amber',
+  cyan: 'teal',
+};
 
 /** A label is one line: it wraps where the box needs it to. A typed line break would read back as the tech line. */
 function oneLine(s: string | undefined): string | undefined {
@@ -664,34 +745,40 @@ function oneLine(s: string | undefined): string | undefined {
 
 const pathOf = (p: ReadonlyArray<PropertyKey>) => p.map((k) => (typeof k === 'number' ? `[${k}]` : `.${String(k)}`)).join('').replace(/^\./, '');
 
+function valueAt(root: unknown, path: ReadonlyArray<PropertyKey>): unknown {
+  let cur: unknown = root;
+  for (const seg of path) {
+    if (cur == null || typeof cur !== 'object') return undefined;
+    cur = (cur as Record<PropertyKey, unknown>)[seg];
+  }
+  return cur;
+}
+
 /**
  * A node, group or edge that is neither of the forms it may take. Zod reports
  * that as one "invalid union"; what the writer needs is the key that is wrong
  * inside the object they wrote, which is in the branch that got furthest.
  */
-function zodIssues(i: z.core.$ZodIssue): Issue[] {
+function zodIssues(i: z.core.$ZodIssue, raw?: unknown): Issue[] {
   if (i.code === 'invalid_union') {
     const deep = (i.errors ?? []).find((branch) => branch.length > 0 && branch.every((x) => x.path.length > 0 || x.code === 'unrecognized_keys'));
-    if (deep) return deep.flatMap((x) => zodIssues({ ...x, path: [...i.path, ...x.path] } as z.core.$ZodIssue));
+    if (deep) return deep.flatMap((x) => zodIssues({ ...x, path: [...i.path, ...x.path] } as z.core.$ZodIssue, raw));
   }
-  return [zodIssue(i)];
+  return [zodIssue(i, raw)];
 }
 
-function zodIssue(i: z.core.$ZodIssue): Issue {
+function zodIssue(i: z.core.$ZodIssue, raw?: unknown): Issue {
   const path = pathOf(i.path);
   if (i.code === 'unrecognized_keys') {
     const known: Record<string, string> = {
       '': 'type, title, direction, theme, accent, groups, nodes, edges (or participants, messages for sequence)',
     };
-    const where =
-      path.startsWith('nodes') || path.startsWith('participants')
-        ? NODE_KEYS
-        : path.startsWith('groups')
-          ? 'label, in, color, status, highlight'
-          : path.startsWith('edges')
-            ? EDGE_KEYS
-            : known[''];
-    return { path, message: `unknown key(s) ${i.keys.map((k) => `"${k}"`).join(', ')}. Allowed here: ${where}.` };
+    const isNode = path.startsWith('nodes') || path.startsWith('participants');
+    const isGroup = path.startsWith('groups');
+    const isEdge = path.startsWith('edges');
+    const where = isNode ? NODE_KEYS : isGroup ? 'label, in, color, status, highlight' : isEdge ? EDGE_KEYS : known[''];
+    const pool = isNode ? NODE_KEY_LIST : isGroup ? GROUP_KEY_LIST : isEdge ? EDGE_KEY_LIST : TOP_KEY_LIST;
+    return { path, message: `unknown key(s) ${i.keys.map((k) => `"${k}"`).join(', ')}. Allowed here: ${where}.${suggestKey(i.keys, pool)}` };
   }
   if (i.code === 'invalid_value' && path === 'type') return { path, message: `type must be one of: ${DIAGRAM_TYPES.join(', ')}` };
   if (i.code === 'invalid_value' && path === 'theme') return { path, message: `theme must be one of: ${themeNames().join(', ')}` };
@@ -699,7 +786,13 @@ function zodIssue(i: z.core.$ZodIssue): Issue {
   if (i.code === 'invalid_type' && path === 'nodes') return { path, message: 'nodes is required: a map of id -> { label, kind, tech, in }' };
   if (i.code === 'invalid_union') {
     if (/^edges\[\d+\]$/.test(path)) return { path, message: 'each edge is a string like "a -> b: label"' };
-    if (/^(nodes|participants|groups)\.[^.]+$/.test(path)) return { path, message: 'expected a label string or an object' };
+    if (/^(nodes|participants|groups)\.[^.]+$/.test(path)) {
+      if (valueAt(raw, i.path) === null) {
+        const id = String(i.path.at(-1) ?? 'id');
+        return { path, message: `expected a label string or an object (for an empty entry, write "${id}: {}" or "${id}: Label")` };
+      }
+      return { path, message: 'expected a label string or an object' };
+    }
     return { path, message: 'expected one line of text, not a list or a map' };
   }
   const key = String(i.path.at(-1) ?? 'this');
@@ -718,13 +811,40 @@ export function humanize(id: string) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function suggest(id: string, pool: Set<string>) {
+function nearest(id: string, pool: Iterable<string>): string | undefined {
   let best: string | undefined, bestD = Infinity;
   for (const p of pool) {
     const d = lev(id.toLowerCase(), p.toLowerCase());
     if (d < bestD) [best, bestD] = [p, d];
   }
-  return best && bestD <= Math.max(2, Math.floor(id.length / 3)) ? ` Did you mean "${best}"?` : '';
+  return best && bestD <= Math.max(2, Math.floor(id.length / 3)) ? best : undefined;
+}
+
+function suggest(id: string, pool: Iterable<string>) {
+  const hit = nearest(id, pool);
+  return hit ? ` Did you mean "${hit}"?` : '';
+}
+
+function colorSuggest(raw: string): string {
+  const alias = COLOR_ALIASES[raw.toLowerCase()];
+  if (alias) return ` Did you mean "${alias}"?`;
+  return suggest(raw, COLORS);
+}
+
+function suggestKey(keys: string[], allowed: Iterable<string>): string {
+  const pool = new Set(allowed);
+  const hints: string[] = [];
+  for (const k of keys) {
+    const alias = KEY_ALIASES[k.toLowerCase()];
+    if (alias && pool.has(alias)) {
+      hints.push(alias);
+      continue;
+    }
+    const hit = nearest(k, pool);
+    if (hit) hints.push(hit);
+  }
+  const uniq = [...new Set(hints)];
+  return uniq.length ? ` Did you mean ${uniq.map((h) => `"${h}"`).join(' / ')}?` : '';
 }
 
 function lev(a: string, b: string) {

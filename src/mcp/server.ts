@@ -8,11 +8,11 @@ import * as z from 'zod';
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { build, checkFile, importExcalidraw, lintFiles, listIcons, render, show, tidy } from '../api.js';
+import { formatConfigLines } from '../commands.js';
 import { setConfigRoot, useConfigFor } from '../config.js';
 import { readDrawio } from '../drawio/read.js';
-import { themeNames } from '../drawio/theme.js';
 import { DrawioBrowser } from '../render/browser.js';
-import { SpecError } from '../spec/parse.js';
+import { parseSpecText, SpecError } from '../spec/parse.js';
 import { buildLines, checkLines } from '../report.js';
 import { PROVIDERS, type Provider } from '../drawio/icons.js';
 
@@ -147,6 +147,9 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
     (args) =>
       wrap(async () => {
         const out = resolvePath(args.path);
+        // Fail fast on config or spec errors without waiting for Chromium.
+        useConfigFor(out);
+        parseSpecText(args.spec);
         const res = await build(args.spec, { out, relayout: args.relayout, browser: await getBrowser() });
         const content: Content[] = [text(buildLines(res).join('\n'))];
         if (args.preview) content.push(await preview(out));
@@ -159,15 +162,20 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
     {
       title: 'Show a diagram as a spec',
       description: 'Returns the YAML spec of an existing .drawio.svg, including edits people made by hand in draw.io. Edit this output and pass it to build_diagram to change the diagram.',
-      inputSchema: z.object({ path: pathArg }),
+      inputSchema: z.object({
+        path: pathArg,
+        geometry: z.boolean().default(false).describe('Append node positions as YAML comments.'),
+      }),
       annotations: { readOnlyHint: true },
     },
     (args) =>
       wrap(async () => {
-        const res = show(resolvePath(args.path));
+        const res = show(resolvePath(args.path), { geometry: args.geometry });
         const notes = res.notes.map((n) => `note: ${n}`);
         if (res.edits.length) notes.push(`note: edited by hand since the last build. build_diagram keeps those positions and merges your changes in.`);
-        return { content: [text(res.yaml + (notes.length ? '\n' + notes.join('\n') : ''))] };
+        const content: Content[] = [text(res.yaml)];
+        if (notes.length) content.push(text(notes.join('\n')));
+        return { content };
       })(),
   );
 
@@ -209,7 +217,10 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
     {
       title: 'Reroute broken edges',
       description: 'Reroutes edges that pass through shapes, e.g. after someone moved shapes by hand. Nothing else in the file changes.',
-      inputSchema: z.object({ path: pathArg }),
+      inputSchema: z.object({
+        path: pathArg,
+        preview: z.boolean().default(false).describe('Return a PNG preview.'),
+      }),
       annotations: { idempotentHint: true },
     },
     (args) =>
@@ -220,7 +231,9 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
           res.fixed ? `rerouted ${res.fixed} edge${res.fixed === 1 ? '' : 's'}` : '',
           res.labels ? `moved ${res.labels} label${res.labels === 1 ? '' : 's'}` : '',
         ].filter(Boolean);
-        return { content: [text([did.length ? `${did.join(', ')} in ${file}` : 'nothing to fix', ...checkLines(res.check)].join('\n'))] };
+        const content: Content[] = [text([did.length ? `${did.join(', ')} in ${file}` : 'nothing to fix', ...checkLines(res.check)].join('\n'))];
+        if (args.preview) content.push(await preview(file));
+        return { content };
       })(),
   );
 
@@ -237,14 +250,18 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
         const { toYaml } = await import('../drawio/show.js');
         const res = importMermaid(args.source);
         const yaml = toYaml(res.diagram, 'imported from Mermaid');
-        const lines = [yaml, ...res.warnings.map((w) => `import: ${w}`)];
-        const content: Content[] = [];
+        const content: Content[] = [text(yaml)];
+        const extra: string[] = res.warnings.map((w) => `import: ${w}`);
         if (args.path) {
           const out = resolvePath(args.path);
           const built = await build(yaml, { out, browser: await getBrowser() });
-          lines.push('', ...buildLines(built));
-          content.push(text(lines.join('\n')), await preview(out));
-        } else content.push(text(lines.join('\n')));
+          if (extra.length) extra.push('');
+          extra.push(...buildLines(built));
+          if (extra.length) content.push(text(extra.join('\n')));
+          content.push(await preview(out));
+        } else if (extra.length) {
+          content.push(text(extra.join('\n')));
+        }
         return { content };
       })(),
   );
@@ -276,8 +293,21 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
     },
     (args) =>
       wrap(async () => {
+        const MAX_UNFILTERED = 100;
         const names = await listIcons(args.provider, args.filter, await getBrowser());
-        return { content: [text(names.map((n) => `${args.provider}.${n}`).join('\n') || 'no matches')] };
+        if (!names.length) {
+          const tip = args.filter
+            ? `no matches for "${args.filter}" in ${args.provider}. Try a shorter keyword (e.g. "db", "queue", "lambda") or omit filter to sample available icons.`
+            : `no icons found for ${args.provider}`;
+          return { content: [text(tip)] };
+        }
+        const filtered = !!args.filter?.trim();
+        if (!filtered && names.length > MAX_UNFILTERED) {
+          const shown = names.slice(0, MAX_UNFILTERED).map((n) => `${args.provider}.${n}`);
+          shown.push(`... showing ${MAX_UNFILTERED} of ${names.length} ${args.provider} icons. Pass filter (e.g. "queue", "lambda", "database") to narrow the list.`);
+          return { content: [text(shown.join('\n'))] };
+        }
+        return { content: [text(names.map((n) => `${args.provider}.${n}`).join('\n'))] };
       })(),
   );
 
@@ -348,36 +378,7 @@ export function createServer(opts: McpOptions): { server: McpServer; dispose: ()
         const target = resolvePath(args.path ?? '.');
         const cfg = useConfigFor(target);
         if (!cfg.path) return { content: [text('no linework.yaml here or in any folder above. Built-in defaults apply: theme clean, direction auto.')] };
-        const rel = (p: string) => path.relative(opts.root, p) || '.';
-        const lines: string[] = [
-          `config: ${rel(cfg.path)}`,
-          `theme: ${cfg.theme ?? 'clean'}${cfg.lockTheme ? ' (locked: leave "theme:" out of specs)' : ` (default; a spec may pick another of: ${themeNames().join(', ')})`}`,
-        ];
-        if (cfg.direction) lines.push(`direction: ${cfg.direction}`);
-        if (cfg.out) lines.push(`save new diagrams in: ${rel(cfg.out)}`);
-        const comps = Object.entries(cfg.components);
-        if (comps.length) {
-          lines.push('shared components (use these ids; leave out the fields shown, they are filled in):');
-          for (const [id, c] of comps) lines.push(`  ${id}: { ${Object.entries(c).map(([k, v]) => `${k}: ${v}`).join(', ')} }`);
-        }
-        const sts = Object.entries(cfg.statuses);
-        if (sts.length) {
-          lines.push('statuses (write "status: <name>" on a node, group or edge instead of "color:"):');
-          for (const [name, st] of sts) lines.push(`  ${name}: ${st.color}${st.label ? `, shown as "${st.label}"` : ''}`);
-          if (cfg.legend) lines.push('  a legend for the statuses used is drawn under each diagram');
-        }
-        for (const [type, kinds] of Object.entries(cfg.kinds)) {
-          lines.push(`extra ${type} kinds:`);
-          for (const [k, def] of Object.entries(kinds ?? {})) lines.push(`  ${k}: ${def.description}`);
-        }
-        const n = cfg.naming;
-        const naming = [n.case !== 'any' ? `${n.case} case` : '', n.maxLength ? `at most ${n.maxLength} characters` : '', n.banned.length ? `never: ${n.banned.join(', ')}` : ''].filter(Boolean);
-        if (naming.length) lines.push(`labels: ${naming.join('; ')}`);
-        lines.push(`limits: ${cfg.limits.nodes} nodes, ${cfg.limits.width}px wide`);
-        const rules = Object.entries(cfg.rules);
-        if (rules.length) lines.push(`rule levels: ${rules.map(([r, l]) => `${r}=${l}`).join(', ')}`);
-        if (cfg.templates) lines.push(`templates: ${rel(cfg.templates)}`);
-        return { content: [text(lines.join('\n'))] };
+        return { content: [text(formatConfigLines(cfg, opts.root).join('\n'))] };
       })(),
   );
 

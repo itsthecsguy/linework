@@ -48,16 +48,89 @@ describe('linework edit server (HTTP)', () => {
         body: JSON.stringify({ data, mtime: oldMtime }),
       });
       expect(res.status).toBe(409);
-      const body = (await res.json()) as { error: string };
+      const body = (await res.json()) as { conflict: string; error: string; mtime: number };
       expect(body.error).toMatch(/changed on disk/);
+      expect(body.conflict).toMatch(/conflict\.edited-/);
       expect(fs.readFileSync(file, 'utf8')).toContain('<!-- disk -->');
+
+      // Repeat save against the same stale disk version reuses the same conflict copy.
+      const savedSvg2 = MINIMAL_SVG() + '<!-- editor-2 -->';
+      const data2 = `data:image/svg+xml;base64,${Buffer.from(savedSvg2, 'utf8').toString('base64')}`;
+      const res2 = await fetch(`${base}/save`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ data: data2, mtime: oldMtime }),
+      });
+      expect(res2.status).toBe(409);
+      const body2 = (await res2.json()) as { conflict: string };
+      expect(body2.conflict).toBe(body.conflict);
+
+      // /latest returns the latest on-disk XML and mtime.
+      const latest = (await (await fetch(`${base}/latest`)).json()) as { xml: string; mtime: number };
+      expect(latest.xml).toContain('<mxfile');
+      expect(latest.mtime).toBe(body.mtime);
+
+      // force: true overwrites the original file cleanly.
+      const forceRes = await fetch(`${base}/save`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ data: data2, mtime: oldMtime, force: true }),
+      });
+      expect(forceRes.status).toBe(200);
+      expect(fs.readFileSync(file, 'utf8')).toContain('<!-- editor-2 -->');
     } finally {
       await session.close();
     }
     const done = await session.done;
     expect(done.conflicts.length).toBe(1);
+    expect(done.saves).toBe(2);
     expect(fs.existsSync(done.conflicts[0]!)).toBe(true);
-    expect(fs.readFileSync(done.conflicts[0]!, 'utf8')).toContain('<!-- editor -->');
+    expect(fs.readFileSync(done.conflicts[0]!, 'utf8')).toContain('<!-- editor-2 -->');
+  });
+
+  it('serves dark-aware host UI with dirty guard, disconnect backup, and SSE disk-change events', async () => {
+    const darkXml = '<mxfile><diagram><mxGraphModel background="#0D1117"><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>';
+    const darkSvg = `<svg xmlns="http://www.w3.org/2000/svg" content="${darkXml.replace(/"/g, '&quot;')}"><defs/></svg>`;
+    const file = path.join(tmp, 'dark.drawio.svg');
+    fs.writeFileSync(file, darkSvg);
+    const session = await startEditor(file);
+    const ac = new AbortController();
+    try {
+      const base = session.url.replace(/\/$/, '');
+      const html = await (await fetch(session.url)).text();
+      expect(html).toContain('dark=1');
+      expect(html).toContain('autosave: 1');
+      expect(html).toContain('beforeunload');
+      expect(html).toContain('Download backup');
+      expect(html).toContain('prefers-color-scheme:dark');
+
+      const sseRes = await fetch(`${base}/events`, { signal: ac.signal });
+      expect(sseRes.status).toBe(200);
+      expect(sseRes.headers.get('content-type')).toContain('text/event-stream');
+      const reader = sseRes.body!.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      // Read initial comment, then bump the file on disk and expect a changed event.
+      const first = await reader.read();
+      buf += dec.decode(first.value, { stream: true });
+      const oldMtime = fs.statSync(file).mtimeMs;
+      fs.writeFileSync(file, darkSvg + '<!-- external -->');
+      const bumped = new Date(oldMtime + 5000);
+      fs.utimesSync(file, bumped, bumped);
+      const deadline = Date.now() + 5000;
+      while (!buf.includes('event: changed') && Date.now() < deadline) {
+        const chunk = await Promise.race([
+          reader.read(),
+          new Promise<{ done: true; value: undefined }>((r) => setTimeout(() => r({ done: true, value: undefined }), 500)),
+        ]);
+        if (chunk.value) buf += dec.decode(chunk.value, { stream: true });
+        if (chunk.done) break;
+      }
+      expect(buf).toContain('event: changed');
+    } finally {
+      ac.abort();
+      await session.close();
+    }
   });
 
   it('blocks path traversal under /app/ and returns 400 on malformed URIs', async () => {
